@@ -174,7 +174,6 @@ class LIBARDOUR_API Session : public PBD::StatefulDestructible, public PBD::Scop
 {
 private:
 	enum SubState {
-		//PendingDeclickIn      = 0x1,  ///< pending de-click fade-in for start
 		PendingDeclickOut     = 0x2,  ///< pending de-click fade-out for stop
 		StopPendingCapture    = 0x4,
 		PendingLocate         = 0x20,
