@@ -66,10 +66,8 @@ static const gchar * _onset_function_strings[] = {
 
 static const gchar * _operation_strings[] = {
 	N_("Split region"),
-#if 0 // these don't do what a user expects
 	N_("Snap regions"),
 	N_("Conform regions"),
-#endif
 	0
 };
 
@@ -109,6 +107,7 @@ RhythmFerret::RhythmFerret (Editor& e)
 	 */
 	onset_detection_function_selector.set_active_text (onset_function_strings[3]);
 	detection_threshold_scale.set_digits (3);
+	filter_to_grid.set_active(true);
 
 	Table* t = manage (new Table (7, 3));
 	t->set_spacings (12);
@@ -152,6 +151,10 @@ RhythmFerret::RhythmFerret (Editor& e)
 	t->attach (*manage (new Label (_("Cut Pos Threshold"), 1, 0.5)), 0, 1, n, n + 1, FILL);
 	t->attach (detection_threshold_scale, 1, 2, n, n + 1, FILL);
 	t->attach (*manage (new Label (_("dB"))), 2, 3, n, n + 1, FILL);
+	++n;
+	
+	t->attach (*manage (new Label (_("Filter results on grid"), 1, 0.5)), 0, 1, n, n + 1, FILL);
+	t->attach (filter_to_grid, 1, 2, n, n + 1, FILL);
 	++n;
 
 	t->attach (*manage (new Label (_("Operation"), 1, 0.5)), 0, 1, n, n + 1, FILL);
@@ -219,7 +222,7 @@ RhythmFerret::get_action () const
 	return SplitRegion;
 }
 
-void
+	void
 RhythmFerret::run_analysis ()
 {
 	if (!_session) {
@@ -235,6 +238,9 @@ RhythmFerret::run_analysis ()
 	if (regions_with_transients.empty()) {
 		return;
 	}
+	
+	bool active_filter = filter_to_grid.get_active();
+	vector<GridFilterElement> filter_list;
 
 	for (RegionSelection::iterator i = regions_with_transients.begin(); i != regions_with_transients.end(); ++i) {
 
@@ -250,10 +256,55 @@ RhythmFerret::run_analysis ()
 		default:
 			break;
 		}
-
-		(*i)->region()->set_onsets (current_results);
+		
+		for (AnalysisFeatureList::iterator j = current_results.begin(); j != current_results.end(); ++j) {
+			MusicSample snaped_transient(*j + (*i)->region()->position(), 0);
+			editor.snap_to(snaped_transient, ARDOUR::RoundNearest, false, true);
+			
+			GridFilterElement gfe((*i), *j, snaped_transient.sample);
+			filter_list.push_back(gfe);
+		}
 		current_results.clear();
 	}
+	std::sort(begin(filter_list), end(filter_list), [](GridFilterElement const &gf1,
+														GridFilterElement const &gf2 ) {
+			if (gf1.snaped_sample != gf2.snaped_sample){
+				return gf1.snaped_sample < gf2.snaped_sample;
+			}
+		
+		return gf1.distance < gf2.distance;
+		}
+	);
+	
+	for (RegionSelection::iterator r = regions_with_transients.begin(); r != regions_with_transients.end(); ++r) {
+		current_results.clear();
+		samplepos_t last_snaped_sample = -1;
+		
+		for (vector<GridFilterElement>::iterator f = filter_list.begin(); f != filter_list.end(); ++f){
+			if (active_filter && (*f).snaped_sample == last_snaped_sample){
+				continue;
+			}
+			last_snaped_sample = (*f).snaped_sample;
+			
+			if ((*f).region_view == (*r)) {
+				current_results.push_back((*f).sample);
+			} else {
+// 				if onset is on an equivalent region, we put it on this region too.
+				vector<RegionView*> all_equivalent_regions;
+				editor.get_equivalent_regions((*f).region_view, all_equivalent_regions, ARDOUR::Properties::group_select.property_id);
+				
+				for (vector<RegionView*>::iterator eqr = all_equivalent_regions.begin(); eqr!= all_equivalent_regions.end(); ++eqr){
+					if ((*eqr) == (*r)){
+						current_results.push_back((*f).sample + ((*f).region_view->region()->position() - (*r)->region()->position()));
+						break;
+					}
+				}
+			}
+		}
+		
+		(*r)->region()->set_onsets (current_results);
+	}
+	current_results.clear();
 }
 
 int
@@ -363,13 +414,16 @@ RhythmFerret::do_action ()
 	switch (get_action()) {
 	case SplitRegion:
 		do_split_action ();
+		operation_selector.set_active(1);
 		break;
 	case SnapRegionsToGrid:
 		// split first, select all.. ?!
 		editor.snap_regions_to_grid();
+		operation_selector.set_active(2);
 		break;
 	case ConformRegion:
 		editor.close_region_gaps();
+		operation_selector.set_active(0);
 		break;
 	default:
 		break;
@@ -414,15 +468,16 @@ RhythmFerret::do_split_action ()
 		tmp = i;
 		++tmp;
 
-		editor.split_region_at_points ((*i)->region(), merged_features, false, false);
+		editor.split_region_at_points ((*i)->region(), merged_features, false, true);
 
 		/* i is invalid at this point */
 		i = tmp;
 	}
 
 	editor.commit_reversible_command ();
-
+	RegionSelection selected_regions = editor.get_regions_from_selection_and_entered ();
 	editor.EditorThaw(); /* Emit signal */
+	editor.selection->add(selected_regions);
 }
 
 void
@@ -452,3 +507,9 @@ RhythmFerret::clear_transients ()
 	regions_with_transients.clear ();
 }
 
+GridFilterElement::GridFilterElement(RegionView* reg_view, samplepos_t onset, samplepos_t snaped){
+	region_view = reg_view;
+	sample = onset;
+	snaped_sample = snaped;
+	distance = std::abs((region_view->region()->position() + sample) - snaped_sample);
+}

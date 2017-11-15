@@ -1710,7 +1710,7 @@ AudioRegionView::transients_changed ()
 }
 
 void
-AudioRegionView::update_transient(float /*old_pos*/, float new_pos)
+AudioRegionView::update_transient(float global_pos, float new_pos)
 {
 	/* Find sample at old pos, calulate new sample then update region transients*/
 	list<std::pair<samplepos_t, ArdourCanvas::Line*> >::iterator l;
@@ -1720,11 +1720,10 @@ AudioRegionView::update_transient(float /*old_pos*/, float new_pos)
 		/* Line has been updated in drag so we compare to new_pos */
 
 		float* pos = (float*) (*l).second->get_data ("position");
-
+		
 		if (rint(new_pos) == rint(*pos)) {
-			samplepos_t position = _region->position();
 			samplepos_t old_sample = (*l).first;
-			samplepos_t new_sample = trackview.editor().pixel_to_sample (new_pos) + position;
+			samplepos_t new_sample = trackview.editor().pixel_to_sample (global_pos);
 			_region->update_transient (old_sample, new_sample);
 			break;
 		}
@@ -1746,6 +1745,32 @@ AudioRegionView::remove_transient (float pos)
 		if (rint(pos) == rint(*line_pos)) {
 			_region->remove_transient ((*l).first);
 			break;
+		}
+	}
+}
+
+ARDOUR::samplepos_t
+AudioRegionView::get_transient_position(float pos){
+	list<std::pair<samplepos_t, ArdourCanvas::Line*> >::iterator l;
+	for (l = feature_lines.begin(); l != feature_lines.end(); ++l) {
+		float *line_pos = (float*) (*l).second->get_data ("position");
+		if (rint(pos) == (rint(*line_pos))) {
+			return (*l).first;
+		}
+	}
+	return 0;
+}
+
+void
+AudioRegionView::get_transient_feature_line(samplepos_t pos, std::list<ArdourCanvas::Item*>& equivalent_transient_items)
+{
+	list<std::pair<samplepos_t, ArdourCanvas::Line*> >::iterator l;
+	for (l = feature_lines.begin(); l != feature_lines.end(); ++l) {
+// 		float *line_pos = (float*) (*l).second->get_data ("position");
+		cout << pos << endl;
+		cout << ((*l).first + _region->position()) << endl;
+		if (pos == (*l).first) {
+			equivalent_transient_items.push_back((*l).second);
 		}
 	}
 }
