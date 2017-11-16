@@ -5057,10 +5057,10 @@ FeatureLineDrag::motion (GdkEvent*, bool)
 }
 
 void
-FeatureLineDrag::finished (GdkEvent*, bool)
+FeatureLineDrag::finished (GdkEvent* event, bool)
 {
 	_arv = reinterpret_cast<AudioRegionView*> (_item->get_data ("regionview"));
-	_arv->update_transient(_before, _before);
+	_arv->update_transient(event->button.x, _before);
 }
 
 void
