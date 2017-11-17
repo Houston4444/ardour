@@ -558,7 +558,7 @@ Full information on all the above can be found on the support page at\n\
 	d.get_vbox()->pack_start (*label, false, false, 12);
 	d.get_vbox()->show_all ();
 
-	d.run ();
+// 	d.run ();
 }
 
 GlobalPortMatrixWindow*
@@ -1107,7 +1107,7 @@ ARDOUR_UI::starting ()
 			 * The wrapper startup script should set the environment variable 'ARDOUR_SELF'
 			 */
 			const char *process_name = g_getenv ("ARDOUR_SELF");
-			nsm->announce (PROGRAM_NAME, ":dirty:", process_name ? process_name : "ardour6");
+			nsm->announce (PROGRAM_NAME, ":dirty:switch:", process_name ? process_name : "ardour6");
 
 			unsigned int i = 0;
 			// wait for announce reply from nsm server

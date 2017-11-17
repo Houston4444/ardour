@@ -181,6 +181,7 @@ namespace NSM
 		lo_server_add_method (_server, "/reply", "ssss", &Client::osc_announce_reply, this);
 		lo_server_add_method (_server, "/nsm/client/open", "sss", &Client::osc_open, this);
 		lo_server_add_method (_server, "/nsm/client/save", "", &Client::osc_save, this);
+		lo_server_add_method (_server, "/nsm/client/switch", "sss", &Client::osc_switch, this);
 		lo_server_add_method (_server, "/nsm/client/session_is_loaded", "", &Client::osc_session_is_loaded, this);
 		lo_server_add_method (_server, NULL, NULL, &Client::osc_broadcast, this);
 
@@ -207,6 +208,7 @@ namespace NSM
 		lo_server_thread_add_method (_st, "/reply", "ssss", &Client::osc_announce_reply, this);
 		lo_server_thread_add_method (_st, "/nsm/client/open", "sss", &Client::osc_open, this);
 		lo_server_thread_add_method (_st, "/nsm/client/save", "", &Client::osc_save, this);
+		lo_server_thread_add_method (_st, "/nsm/client/switch", "sss", &Client::osc_switch, this);
 		lo_server_thread_add_method (_st, "/nsm/client/session_is_loaded", "", &Client::osc_session_is_loaded, this);
 		lo_server_thread_add_method (_st, NULL, NULL, &Client::osc_broadcast, this);
 
@@ -245,6 +247,31 @@ namespace NSM
 
 	int
 	Client::osc_open (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data)
+	{
+		char *out_msg = NULL;
+
+		NSM::Client *nsm = (NSM::Client*)user_data;
+
+		nsm->_nsm_client_id = strdup (&argv[2]->s);
+		nsm->_nsm_client_path = strdup (&argv[0]->s);
+
+		int r = ((NSM::Client*)user_data)->command_open (&argv[0]->s, &argv[1]->s, &argv[2]->s, &out_msg);
+
+		if (r) {
+			OSC_REPLY_ERR (r, (out_msg ? out_msg : ""));
+		} else {
+			OSC_REPLY ("OK");
+		}
+
+		if (out_msg) {
+			free(out_msg);
+		}
+
+		return 0;
+	}
+	
+	int
+	Client::osc_switch (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data)
 	{
 		char *out_msg = NULL;
 

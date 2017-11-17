@@ -101,6 +101,7 @@ private:
 	/* osc handlers */
 	static int osc_open (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data);
 	static int osc_save (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data);
+	static int osc_switch (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data);
 	static int osc_announce_reply (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data);
 	static int osc_error (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data);
 	static int osc_session_is_loaded (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data);
