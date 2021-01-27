@@ -1,22 +1,24 @@
-/* Faderport 8 Control Surface
- * This is the button "View" of the MVC surface inteface,
- * see actions.cc for the "Controller"
- *
+/*
  * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
+/* Faderport 8 Control Surface
+ * This is the button "View" of the MVC surface inteface,
+ * see actions.cc for the "Controller"
  */
 
 #include "ardour/plugin_insert.h"
@@ -30,8 +32,8 @@
 #include "pbd/i18n.h"
 
 using namespace ARDOUR;
-using namespace ArdourSurface;
-using namespace ArdourSurface::FP8Types;
+using namespace ArdourSurface::FP_NAMESPACE;
+using namespace ArdourSurface::FP_NAMESPACE::FP8Types;
 
 void
 FaderPort8::connect_session_signals ()
@@ -63,13 +65,13 @@ FaderPort8::send_session_state ()
 	notify_mute_changed ();
 	notify_parameter_changed ("clicking");
 
-	notify_automation_mode_changed (); // XXX (stip specific, see below)
+	notify_route_state_changed (); // XXX (stip specific, see below)
 }
 
 // TODO: AutomationState display of plugin & send automation
 // TODO: link/lock control AS.
 void
-FaderPort8::notify_automation_mode_changed ()
+FaderPort8::notify_route_state_changed ()
 {
 	boost::shared_ptr<Stripable> s = first_selected_stripable();
 	boost::shared_ptr<AutomationControl> ac;
@@ -92,6 +94,9 @@ FaderPort8::notify_automation_mode_changed ()
 		_ctrls.button (FP8Controls::BtnATouch).set_active (false);
 		_ctrls.button (FP8Controls::BtnARead).set_active (false);
 		_ctrls.button (FP8Controls::BtnAWrite).set_active (false);
+#ifdef FADERPORT2
+		_ctrls.button (FP8Controls::BtnArm).set_active (false);
+#endif
 		return;
 	}
 
@@ -101,6 +106,12 @@ FaderPort8::notify_automation_mode_changed ()
 	_ctrls.button (FP8Controls::BtnARead).set_active (as == Play);
 	_ctrls.button (FP8Controls::BtnAWrite).set_active (as == Write);
 	_ctrls.button (FP8Controls::BtnALatch).set_active (as == Latch);
+
+#ifdef FADERPORT2
+	/* handle the Faderport's track-arm button */
+	ac = s->rec_enable_control ();
+	_ctrls.button (FP8Controls::BtnArm).set_active (ac ? ac->get_value() : false);
+#endif
 }
 
 void
@@ -114,16 +125,11 @@ FaderPort8::notify_parameter_changed (std::string param)
 void
 FaderPort8::notify_transport_state_changed ()
 {
-	if (session->transport_rolling ()) {
-		_ctrls.button (FP8Controls::BtnPlay).set_active (true);
-		_ctrls.button (FP8Controls::BtnStop).set_active (false);
-	} else {
-		_ctrls.button (FP8Controls::BtnPlay).set_active (false);
-		_ctrls.button (FP8Controls::BtnStop).set_active (true);
-	}
+	_ctrls.button (FP8Controls::BtnPlay).set_active (get_transport_speed()==1.0);
+	_ctrls.button (FP8Controls::BtnStop).set_active (get_transport_speed()==0.0);
 
 	/* set rewind/fastforward lights */
-	const float ts = session->transport_speed ();
+	const float ts = get_transport_speed();
 	FP8ButtonInterface& b_rew = _ctrls.button (FP8Controls::BtnRewind);
 	FP8ButtonInterface& b_ffw = _ctrls.button (FP8Controls::BtnFastForward);
 

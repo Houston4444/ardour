@@ -1,20 +1,27 @@
 /*
-    Copyright (C) 2001-2006 Paul Davis
-
-    This program is free software; you can r>edistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2007-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2007 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2014-2015 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2014-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cmath>
 #include <cassert>
@@ -34,7 +41,7 @@
 #include "pbd/memento_command.h"
 #include "pbd/stacktrace.h"
 
-#include "evoral/Curve.hpp"
+#include "evoral/Curve.h"
 
 #include "gtkmm2ext/gtk_ui.h"
 #include "gtkmm2ext/utils.h"
@@ -66,8 +73,6 @@
 #include "ui_config.h"
 
 #include "pbd/i18n.h"
-
-#define MUTED_ALPHA 48
 
 using namespace std;
 using namespace ARDOUR;
@@ -538,6 +543,14 @@ AudioRegionView::setup_fade_handle_positions()
 void
 AudioRegionView::set_height (gdouble height)
 {
+	uint32_t gap = UIConfiguration::instance().get_vertical_region_gap ();
+	float ui_scale = UIConfiguration::instance().get_ui_scale ();
+	if (gap > 0 && ui_scale > 0) {
+		gap = ceil (gap * ui_scale);
+	}
+
+	height = std::max (3.0, height - gap);
+
 	if (height == _height) {
 		return;
 	}
@@ -545,30 +558,40 @@ AudioRegionView::set_height (gdouble height)
 	RegionView::set_height (height);
 	pending_peak_data->set_y1 (height);
 
-	uint32_t wcnt = waves.size();
+	RouteTimeAxisView& atv (*(dynamic_cast<RouteTimeAxisView*>(&trackview))); // ick
+	uint32_t nchans = atv.track()->n_channels().n_audio();
 
-	if (wcnt > 0) {
+	if (!tmp_waves.empty () || !waves.empty ()) {
 
 		gdouble ht;
 
 		if (!UIConfiguration::instance().get_show_name_highlight() || (height < NAME_HIGHLIGHT_THRESH)) {
-			ht = height / (double) wcnt;
+			ht = height / (double) nchans;
 		} else {
-			ht = (height - NAME_HIGHLIGHT_SIZE) / (double) wcnt;
+			ht = (height - NAME_HIGHLIGHT_SIZE) / (double) nchans;
 		}
 
+		uint32_t wcnt = waves.size();
 		for (uint32_t n = 0; n < wcnt; ++n) {
-
 			gdouble yoff = floor (ht * n);
-
 			waves[n]->set_height (ht);
 			waves[n]->set_y_position (yoff);
+		}
+
+		wcnt = tmp_waves.size();
+		for (uint32_t n = 0; n < wcnt; ++n) {
+			if (!tmp_waves[n]) {
+				continue;
+			}
+			gdouble yoff = floor (ht * n);
+			tmp_waves[n]->set_height (ht);
+			tmp_waves[n]->set_y_position (yoff);
 		}
 	}
 
 	if (gain_line) {
 
-		if ((height/wcnt) < NAME_HIGHLIGHT_THRESH) {
+		if ((height / nchans) < NAME_HIGHLIGHT_THRESH) {
 			gain_line->hide ();
 		} else {
 			update_envelope_visibility ();
@@ -682,8 +705,8 @@ AudioRegionView::reset_fade_in_shape_width (boost::shared_ptr<AudioRegion> ar, s
 	redraw_start_xfade_to (ar, width, points, effective_height, handle_left);
 
 	/* ensure trim handle stays on top */
-	if (sample_handle_start) {
-		sample_handle_start->raise_to_top();
+	if (frame_handle_start) {
+		frame_handle_start->raise_to_top();
 	}
 }
 
@@ -708,7 +731,7 @@ AudioRegionView::reset_fade_out_shape_width (boost::shared_ptr<AudioRegion> ar, 
 
 	double const pwidth = floor(trackview.editor().sample_to_pixel (width));
 
-	/* the right edge should be right on the region sample is the pixel
+	/* the right edge should be right on the region frame is the pixel
 	 * width is zero. Hence the additional + 1.0 at the end.
 	 */
 
@@ -768,8 +791,8 @@ AudioRegionView::reset_fade_out_shape_width (boost::shared_ptr<AudioRegion> ar, 
 	redraw_end_xfade_to (ar, width, points, effective_height, handle_right, pwidth);
 
 	/* ensure trim handle stays on top */
-	if (sample_handle_end) {
-		sample_handle_end->raise_to_top();
+	if (frame_handle_end) {
+		frame_handle_end->raise_to_top();
 	}
 }
 
@@ -1143,9 +1166,14 @@ AudioRegionView::delete_waves ()
 
 	for (vector<ArdourWaveView::WaveView*>::iterator w = waves.begin(); w != waves.end(); ++w) {
 		group->remove(*w);
+		delete *w;
 	}
 	waves.clear();
-	tmp_waves.clear();
+
+	while (!tmp_waves.empty ()) {
+		delete tmp_waves.back ();
+		tmp_waves.pop_back ();
+	}
 	pending_peak_data->show ();
 }
 
@@ -1189,17 +1217,17 @@ AudioRegionView::create_waves ()
 
 		if (wait_for_data) {
 			if (audio_region()->audio_source(n)->peaks_ready (boost::bind (&AudioRegionView::peaks_ready_handler, this, n), &_data_ready_connections[n], gui_context())) {
-				// cerr << "\tData is ready\n";
+				// cerr << "\tData is ready for channel " << n << "\n";
 				create_one_wave (n, true);
 			} else {
-				// cerr << "\tdata is not ready\n";
+				// cerr << "\tdata is not ready for channel " << n << "\n";
 				// we'll get a PeaksReady signal from the source in the future
 				// and will call create_one_wave(n) then.
 				pending_peak_data->show ();
 			}
 
 		} else {
-			// cerr << "\tdon't delay, display today!\n";
+			// cerr << "\tdon't delay, display channel " << n << " today!\n";
 			create_one_wave (n, true);
 		}
 
@@ -1233,10 +1261,7 @@ AudioRegionView::create_one_wave (uint32_t which, bool /*direct*/)
 		ht = (_height - NAME_HIGHLIGHT_SIZE) / (double) nchans;
 	}
 
-	/* first waveview starts at 1.0, not 0.0 since that will overlap the
-	 * sample
-	 */
-
+	/* first waveview starts at 1.0, not 0.0 since that will overlap the frame */
 	gdouble yoff = which * ht;
 
 	ArdourWaveView::WaveView *wave = new ArdourWaveView::WaveView (group, audio_region ());
@@ -1290,12 +1315,16 @@ AudioRegionView::create_one_wave (uint32_t which, bool /*direct*/)
 		}
 	}
 
-	if (n == nwaves && waves.empty()) {
+	if (n == nwaves) {
 		/* all waves are ready */
 		tmp_waves.resize(nwaves);
 
-		waves = tmp_waves;
-		tmp_waves.clear ();
+		waves.swap(tmp_waves);
+
+		while (!tmp_waves.empty ()) {
+			delete tmp_waves.back ();
+			tmp_waves.pop_back ();
+		}
 
 		/* indicate peak-completed */
 		pending_peak_data->hide ();
@@ -1303,7 +1332,7 @@ AudioRegionView::create_one_wave (uint32_t which, bool /*direct*/)
 		/* Restore stacked coverage */
 		LayerDisplay layer_display;
 		if (trackview.get_gui_property ("layer-display", layer_display)) {
-			update_coverage_samples (layer_display);
+			update_coverage_frame (layer_display);
 	  }
 	}
 
@@ -1339,7 +1368,7 @@ AudioRegionView::add_gain_point_event (ArdourCanvas::Item *item, GdkEvent *ev, b
 		return;
 	}
 
-	/*y is in item sample */
+	/* y is in item frame */
 	double const bx = gain_line->nth (before_p)->get_x();
 	double const ax = gain_line->nth (after_p)->get_x();
 	double const click_ratio = (ax - mx) / (ax - bx);
@@ -1397,6 +1426,8 @@ AudioRegionView::add_gain_point_event (ArdourCanvas::Item *item, GdkEvent *ev, b
 
 		trackview.editor ().commit_reversible_command ();
 		trackview.session ()->set_dirty ();
+	} else {
+		delete region_memento;
 	}
 }
 
@@ -1550,34 +1581,37 @@ AudioRegionView::set_waveform_colors ()
 void
 AudioRegionView::set_some_waveform_colors (vector<ArdourWaveView::WaveView*>& waves_to_color)
 {
-	Gtkmm2ext::Color fill;
-	Gtkmm2ext::Color outline;
+	Gtkmm2ext::Color fill = fill_color;
+	Gtkmm2ext::Color outline = fill;
+
 	Gtkmm2ext::Color clip = UIConfiguration::instance().color ("clipped waveform");
 	Gtkmm2ext::Color zero = UIConfiguration::instance().color ("zero line");
 
+	/* use track/region color to fill wform */
+	fill = fill_color;
+	fill = UINT_INTERPOLATE (fill, UIConfiguration::instance().color ("waveform fill"), 0.5);
+
+	/* set outline */
+	outline = UIConfiguration::instance().color ("waveform outline");
+
 	if (_selected) {
-		if (_region->muted()) {
-			/* hide outline with zero alpha */
-			outline = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("selected waveform outline"), 0);
-			fill = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("selected waveform fill"), MUTED_ALPHA);
-		} else {
-			outline = UIConfiguration::instance().color ("selected waveform outline");
-			fill = UIConfiguration::instance().color ("selected waveform fill");
-		}
-	} else {
-		if (_recregion) {
-			outline = UIConfiguration::instance().color ("recording waveform outline");
-			fill = UIConfiguration::instance().color ("recording waveform fill");
-		} else {
-			if (_region->muted()) {
-				/* hide outline with zero alpha */
-				outline = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform outline"), 0);
-				fill = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform fill"), MUTED_ALPHA);
-			} else {
-				outline = UIConfiguration::instance().color ("waveform outline");
-				fill = UIConfiguration::instance().color ("waveform fill");
-			}
-		}
+		outline = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("selected waveform outline"), 0xC0);
+		fill = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("selected waveform fill"), 0xC0);
+	} else if (_dragging) {
+		outline = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform outline"), 0xC0);
+		fill = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform fill"), 0xC0);
+	} else if (_region->muted()) {
+		outline = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform outline"), 80);
+		fill = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform fill"), 0);
+	} else if (!_region->opaque()) {
+		outline = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform outline"), 70);
+		fill = UINT_RGBA_CHANGE_A(UIConfiguration::instance().color ("waveform fill"), 70);
+	}
+
+	/* recorded region, override to red */
+	if (_recregion) {
+		outline = UIConfiguration::instance().color ("recording waveform outline");
+		fill = UIConfiguration::instance().color ("recording waveform fill");
 	}
 
 	for (vector<ArdourWaveView::WaveView*>::iterator w = waves_to_color.begin(); w != waves_to_color.end(); ++w) {
@@ -1589,13 +1623,13 @@ AudioRegionView::set_some_waveform_colors (vector<ArdourWaveView::WaveView*>& wa
 }
 
 void
-AudioRegionView::set_sample_color ()
+AudioRegionView::set_frame_color ()
 {
-	if (!sample) {
+	if (!frame) {
 		return;
 	}
 
-	RegionView::set_sample_color ();
+	RegionView::set_frame_color ();
 
 	set_waveform_colors ();
 }
@@ -1623,9 +1657,9 @@ AudioRegionView::set_fade_visibility (bool yn)
 }
 
 void
-AudioRegionView::update_coverage_samples (LayerDisplay d)
+AudioRegionView::update_coverage_frame (LayerDisplay d)
 {
-	RegionView::update_coverage_samples (d);
+	RegionView::update_coverage_frame (d);
 
 	if (d == Stacked) {
 		if (fade_in_handle)       { fade_in_handle->raise_to_top (); }

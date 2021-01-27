@@ -1,23 +1,22 @@
 /*
-    Copyright (C) 2011-2013 Paul Davis
-    Copyright (C) 2017 Tim Mayberry
-    Author: Carl Hetherington <cth@carlh.net>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2011-2013 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2017 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2017-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cmath>
 
@@ -1017,7 +1016,21 @@ WaveView::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context) cons
 	Rect self;
 
 	if (!get_item_and_draw_rect_in_window_coords (area, self, draw)) {
-		assert(true);
+		assert(false);
+		return;
+	}
+
+	if (_props->height < 1) {
+			if (_props->channel % 2) {
+				return;
+			}
+			context->rectangle (draw.x0, draw.y0, draw.width (), draw.height ());
+			if (1 == (_props->channel % 3)) {
+				set_source_rgba (context, _props->zero_color);
+			} else {
+				set_source_rgba (context, _props->fill_color);
+			}
+			context->fill ();
 		return;
 	}
 
@@ -1159,8 +1172,8 @@ WaveView::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context) cons
 	double x  = self.x0 + image_origin_in_self_coordinates;
 	double y  = self.y0;
 	context->user_to_device (x, y);
-	x = round (x);
-	y = round (y);
+	x = floor (x);
+	y = floor (y);
 	context->device_to_user (x, y);
 
 	/* the coordinates specify where in "user coordinates" (i.e. what we
@@ -1323,6 +1336,12 @@ WaveView::set_global_logscaled (bool yn)
 		WaveViewCache::get_instance()->clear_cache ();
 		VisualPropertiesChanged (); /* EMIT SIGNAL */
 	}
+}
+
+void
+WaveView::clear_cache ()
+{
+	WaveViewCache::get_instance()->clear_cache ();
 }
 
 samplecnt_t

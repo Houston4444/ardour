@@ -1,21 +1,24 @@
 /*
-    Copyright (C) 2001 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2001-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2018 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2019 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <glibmm/threads.h>
 
@@ -32,8 +35,8 @@
 #include "ardour/disk_reader.h"
 #include "ardour/midi_playlist.h"
 #include "ardour/midi_region.h"
-#include "ardour/plugin.h"
 #include "ardour/plugin_insert.h"
+#include "ardour/plugin_manager.h"
 #include "ardour/profile.h"
 #include "ardour/region_factory.h"
 #include "ardour/route.h"
@@ -55,8 +58,6 @@ Auditioner::Auditioner (Session& s)
 	, _seek_complete (false)
 	, via_monitor (false)
 	, _midi_audition (false)
-	, _synth_added (false)
-	, _synth_changed (false)
 	, _queue_panic (false)
 	, _import_position (0)
 {
@@ -76,57 +77,75 @@ Auditioner::init ()
 	_output->add_port ("", this, DataType::MIDI);
 	use_new_playlist (DataType::MIDI);
 
-	lookup_synth();
+	if (!audition_synth_info) {
+		lookup_fallback_synth ();
+	} 
 
 	_output->changed.connect_same_thread (*this, boost::bind (&Auditioner::output_changed, this, _1, _2));
-	Config->ParameterChanged.connect_same_thread (*this, boost::bind (&Auditioner::config_changed, this, _1));
 
 	return 0;
 }
 
 Auditioner::~Auditioner ()
 {
+	unload_synth(true);
+}
+
+PluginInfoPtr
+Auditioner::lookup_fallback_synth_plugin_info (std::string const& uri) const
+{
+	PluginManager& mgr (PluginManager::instance());
+	PluginInfoList plugs;
+	plugs = mgr.lv2_plugin_info();
+	for (PluginInfoList::const_iterator i = plugs.begin (); i != plugs.end (); ++i) {
+		if (uri == (*i)->unique_id){
+			return (*i);
+		}
+	}
+	return PluginInfoPtr ();
+}
+
+void
+Auditioner::lookup_fallback_synth ()
+{
+	
+	PluginInfoPtr nfo = lookup_fallback_synth_plugin_info ("http://gareus.org/oss/lv2/gmsynth");
+
+	//GMsynth not found: fallback to Reasonable Synth
+	if (!nfo) {
+		nfo = lookup_fallback_synth_plugin_info ("https://community.ardour.org/node/7596");
+		if (nfo) {
+			warning << _("Falling back to Reasonable Synth for Midi Audition") << endmsg;
+		}
+	}
+
+	if (!nfo) {
+		warning << _("No synth for midi-audition found.") << endmsg;
+		return;
+	}
+
+	set_audition_synth_info(nfo);
+}
+
+void
+Auditioner::load_synth (bool need_lock)
+{
+	unload_synth(need_lock);
+	
+	boost::shared_ptr<Plugin> p = audition_synth_info->load (_session);
+	if (p) {
+		asynth = boost::shared_ptr<Processor> (new PluginInsert (_session, p));
+	}
+}
+
+void
+Auditioner::unload_synth (bool need_lock)
+{
 	if (asynth) {
 		asynth->drop_references ();
+		remove_processor (asynth, NULL, need_lock);
 	}
 	asynth.reset ();
-}
-
-void
-Auditioner::lookup_synth ()
-{
-	string plugin_id = Config->get_midi_audition_synth_uri();
-	asynth.reset ();
-	if (!plugin_id.empty() || plugin_id == X_("@default@")) {
-		boost::shared_ptr<Plugin> p;
-		p = find_plugin (_session, plugin_id, ARDOUR::LV2);
-		if (!p) {
-			p = find_plugin (_session, "http://gareus.org/oss/lv2/gmsynth", ARDOUR::LV2);
-			if (!p) {
-				p = find_plugin (_session, "https://community.ardour.org/node/7596", ARDOUR::LV2);
-			}
-			if (p) {
-				warning << _("Falling back to Reasonable Synth for Midi Audition") << endmsg;
-			} else {
-				warning << _("No synth for midi-audition found.") << endmsg;
-				Config->set_midi_audition_synth_uri(""); // Don't check again for Reasonable Synth (ie --no-lv2)
-			}
-		}
-		if (p) {
-			if (plugin_id == X_("@default@")) {
-				Config->set_midi_audition_synth_uri (p->get_info()->unique_id);
-			}
-			asynth = boost::shared_ptr<Processor> (new PluginInsert (_session, p));
-		}
-	}
-}
-
-void
-Auditioner::config_changed (std::string p)
-{
-	if (p == "midi-audition-synth-uri") {
-		_synth_changed = true;
-	}
 }
 
 int
@@ -209,7 +228,6 @@ Auditioner::connect ()
 	return 0;
 }
 
-
 DataType
 Auditioner::data_type () const {
 	if (_midi_audition) {
@@ -220,7 +238,7 @@ Auditioner::data_type () const {
 }
 
 int
-Auditioner::roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, int declick, bool& need_butler)
+Auditioner::roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, bool& need_butler)
 {
 	Glib::Threads::RWLock::ReaderLock lm (_processor_lock, Glib::Threads::TRY_LOCK);
 	if (!lm.locked()) {
@@ -236,15 +254,15 @@ Auditioner::roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_s
 		_queue_panic = false;
 		for (uint8_t chn = 0; chn < 0xf; ++chn) {
 			uint8_t buf[3] = { ((uint8_t) (MIDI_CMD_CONTROL | chn)), ((uint8_t) MIDI_CTL_SUSTAIN), 0 };
-			mbuf.push_back(0, 3, buf);
+			mbuf.push_back(0, Evoral::MIDI_EVENT, 3, buf);
 			buf[1] = MIDI_CTL_ALL_NOTES_OFF;
-			mbuf.push_back(0, 3, buf);
+			mbuf.push_back(0, Evoral::MIDI_EVENT, 3, buf);
 			buf[1] = MIDI_CTL_RESET_CONTROLLERS;
-			mbuf.push_back(0, 3, buf);
+			mbuf.push_back(0, Evoral::MIDI_EVENT, 3, buf);
 		}
 	}
 
-	process_output_buffers (bufs, start_sample, end_sample, nframes, declick, !_session.transport_stopped(), true);
+	process_output_buffers (bufs, start_sample, end_sample, nframes, !_session.transport_stopped(), true);
 
 	/* note: auditioner never writes to disk, so we don't care about the
 	 * disk writer status (it's buffers will always have no data in them).
@@ -280,10 +298,8 @@ Auditioner::audition_region (boost::shared_ptr<Region> region)
 
 		_midi_audition = false;
 
-		if (_synth_added) {
-			remove_processor(asynth);
-			_synth_added = false;
-		}
+		unload_synth (true);
+
 		midi_region.reset();
 		_import_position = 0;
 
@@ -325,24 +341,13 @@ Auditioner::audition_region (boost::shared_ptr<Region> region)
 
 		ProcessorStreams ps;
 
-		if (_synth_changed && _synth_added) {
-			remove_processor(asynth);
-			_synth_added = false;
-		}
-		if (_synth_changed && !_synth_added) {
-			_synth_added = false;
-			lookup_synth();
-		}
+		load_synth (true);
 
-		if (!_synth_added && asynth) {
+		if (asynth) {
 			int rv = add_processor (asynth, PreFader, &ps, true);
 			if (rv) {
 				error << _("Failed to load synth for MIDI-Audition.") << endmsg;
-			} else {
-				_synth_added = true;
 			}
-		} else {
-			_queue_panic = true;
 		}
 
 		{
@@ -351,6 +356,7 @@ Auditioner::audition_region (boost::shared_ptr<Region> region)
 			if (configure_processors (&ps)) {
 				error << string_compose (_("Cannot setup auditioner processing flow for %1 channels"),
 							 region->n_channels()) << endmsg;
+				unload_synth (true);
 				return;
 			}
 		}
@@ -379,6 +385,7 @@ Auditioner::audition_region (boost::shared_ptr<Region> region)
 
 	if (length == 0) {
 		error << _("Cannot audition empty file.") << endmsg;
+		unload_synth (true);
 		return;
 	}
 
@@ -389,6 +396,18 @@ Auditioner::audition_region (boost::shared_ptr<Region> region)
 	}
 
 	_disk_reader->seek (offset, true);
+
+	if (_midi_audition) {
+		/* Fill MIDI buffers.
+		 * This is safe to call from here. ::::audition_region()
+		 * is called by the butler thread. Also the session is not
+		 * yet auditioning. So Session::non_realtime_overwrite()
+		 * does call the auditioner's DR.
+		 */
+		set_pending_overwrite (PlaylistModified);
+		_disk_reader->overwrite_existing_buffers ();
+	}
+
 	current_sample = offset;
 
 	g_atomic_int_set (&_auditioning, 1);
@@ -403,6 +422,7 @@ Auditioner::play_audition (samplecnt_t nframes)
 
 	if (g_atomic_int_get (&_auditioning) == 0) {
 		silence (nframes);
+		unload_synth (false);
 		return 0;
 	}
 
@@ -418,14 +438,19 @@ Auditioner::play_audition (samplecnt_t nframes)
 		_seek_complete = false;
 		_seeking = false;
 		_seek_sample = -1;
-		_disk_reader->reset_tracker();
+		if (_midi_audition) {
+			/* Force MIDI note tracker to resolve any notes that are
+			 * still playing -> set DR::run_must_resolve */
+			_disk_reader->set_pending_overwrite (PlaylistModified);
+			_disk_reader->overwrite_existing_buffers ();
+		}
 	}
 
 	if(!_seeking) {
 		/* process audio */
 		this_nframes = min (nframes, length - current_sample + _import_position);
 
-		if (this_nframes > 0 && 0 != (ret = roll (this_nframes, current_sample, current_sample + this_nframes, false, need_butler))) {
+		if (this_nframes > 0 && 0 != (ret = roll (this_nframes, current_sample, current_sample + this_nframes, need_butler))) {
 			silence (nframes);
 			return ret;
 		}
@@ -456,6 +481,7 @@ Auditioner::play_audition (samplecnt_t nframes)
 
 	if (current_sample >= length + _import_position) {
 		_session.cancel_audition ();
+		unload_synth (false);
 		return 0;
 	} else {
 		return need_butler ? 1 : 0;
@@ -463,48 +489,91 @@ Auditioner::play_audition (samplecnt_t nframes)
 }
 
 void
+Auditioner::cancel_audition () {
+	g_atomic_int_set (&_auditioning, 0);
+}
+
+bool
+Auditioner::auditioning() const {
+	return g_atomic_int_get (&_auditioning);
+}
+
+void
+Auditioner::seek_to_sample (sampleoffset_t pos) {
+	if (_seek_sample < 0 && !_seeking) {
+		_seek_sample = pos;
+	}
+}
+
+void
+Auditioner::seek_to_percent (float const pos) {
+	if (_seek_sample < 0 && !_seeking) {
+		_seek_sample = floorf(length * pos / 100.0);
+	}
+}
+
+void
+Auditioner::seek_response (sampleoffset_t pos) {
+	/* called from the butler thread */
+	_seek_complete = true;
+	if (_seeking) {
+		current_sample = pos;
+		_seek_complete = true;
+	}
+}
+
+
+void
 Auditioner::output_changed (IOChange change, void* /*src*/)
 {
-	if (change.type & IOChange::ConnectionsChanged) {
-		string phys;
-		vector<string> connections;
-		vector<string> outputs;
-		_session.engine().get_physical_outputs (DataType::AUDIO, outputs);
+	if (0 == (change.type & IOChange::ConnectionsChanged)) {
+		return;
+	}
+	if (_session.inital_connect_or_deletion_in_progress ()) {
+		return;
+	}
+	if (_session.reconnection_in_progress ()) {
+		return;
+	}
 
-		if (_session.monitor_out () && _output->connected_to (_session.monitor_out ()->input ())) {
+	string phys;
+	vector<string> connections;
+	vector<string> outputs;
+	_session.engine().get_physical_outputs (DataType::AUDIO, outputs);
+
+	if (_session.monitor_out () && _output->connected_to (_session.monitor_out ()->input ())) {
+		Config->set_auditioner_output_left ("default");
+		Config->set_auditioner_output_right ("default");
+		via_monitor = true;
+		return;
+	}
+
+	if (_output->nth (0)->get_connections (connections)) {
+		if (outputs.size() > 0) {
+			phys = outputs[0];
+		}
+		if (phys != connections[0]) {
+			Config->set_auditioner_output_left (connections[0]);
+		} else {
 			Config->set_auditioner_output_left ("default");
+		}
+	} else {
+		Config->set_auditioner_output_left ("");
+	}
+
+	connections.clear ();
+
+	if (_output->nth (1)->get_connections (connections)) {
+		if (outputs.size() > 1) {
+			phys = outputs[1];
+		}
+		if (phys != connections[0]) {
+			Config->set_auditioner_output_right (connections[0]);
+		} else {
 			Config->set_auditioner_output_right ("default");
-			via_monitor = true;
-			return;
 		}
-
-		if (_output->nth (0)->get_connections (connections)) {
-			if (outputs.size() > 0) {
-				phys = outputs[0];
-			}
-			if (phys != connections[0]) {
-				Config->set_auditioner_output_left (connections[0]);
-			} else {
-				Config->set_auditioner_output_left ("default");
-			}
-		} else {
-			Config->set_auditioner_output_left ("");
-		}
-
-		connections.clear ();
-
-		if (_output->nth (1)->get_connections (connections)) {
-			if (outputs.size() > 1) {
-				phys = outputs[1];
-			}
-			if (phys != connections[0]) {
-				Config->set_auditioner_output_right (connections[0]);
-			} else {
-				Config->set_auditioner_output_right ("default");
-			}
-		} else {
-			Config->set_auditioner_output_right ("");
-		}
+	} else {
+		Config->set_auditioner_output_right ("");
 	}
 }
 

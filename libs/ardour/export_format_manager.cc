@@ -1,24 +1,27 @@
 /*
-    Copyright (C) 2008 Paul Davis
-    Author: Sakari Bergen
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2008-2012 Sakari Bergen <sakari.bergen@beatwaves.net>
+ * Copyright (C) 2008-2016 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2009-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2013-2014 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2016-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include "ardour/export_format_manager.h"
+#include "ardour/filesystem_paths.h"
 
 #include "ardour/export_format_specification.h"
 #include "ardour/export_format_compatibility.h"
@@ -119,7 +122,7 @@ ExportFormatManager::init_formats ()
 	ExportFormatPtr f_ptr;
 	ExportFormatLinear * fl_ptr;
 
-	f_ptr.reset (fl_ptr = new ExportFormatLinear ("AIFF", ExportFormatBase::F_AIFF));
+	f_ptr.reset (fl_ptr = new ExportFormatTaggedLinear ("AIFF", ExportFormatBase::F_AIFF));
 	fl_ptr->add_sample_format (ExportFormatBase::SF_U8);
 	fl_ptr->add_sample_format (ExportFormatBase::SF_8);
 	fl_ptr->add_sample_format (ExportFormatBase::SF_16);
@@ -155,7 +158,7 @@ ExportFormatManager::init_formats ()
 	fl_ptr->set_extension ("sf");
 	add_format (f_ptr);
 
-	f_ptr.reset (fl_ptr = new ExportFormatLinear ("WAV", ExportFormatBase::F_WAV));
+	f_ptr.reset (fl_ptr = new ExportFormatTaggedLinear ("WAV", ExportFormatBase::F_WAV));
 	fl_ptr->add_sample_format (ExportFormatBase::SF_U8);
 	fl_ptr->add_sample_format (ExportFormatBase::SF_16);
 	fl_ptr->add_sample_format (ExportFormatBase::SF_24);
@@ -167,7 +170,7 @@ ExportFormatManager::init_formats ()
 	fl_ptr->set_extension ("wav");
 	add_format (f_ptr);
 
-	f_ptr.reset (fl_ptr = new ExportFormatLinear ("W64", ExportFormatBase::F_W64));
+	f_ptr.reset (fl_ptr = new ExportFormatTaggedLinear ("W64", ExportFormatBase::F_W64));
 	fl_ptr->add_sample_format (ExportFormatBase::SF_U8);
 	fl_ptr->add_sample_format (ExportFormatBase::SF_16);
 	fl_ptr->add_sample_format (ExportFormatBase::SF_24);
@@ -210,6 +213,12 @@ ExportFormatManager::init_formats ()
 		f_ptr.reset (new ExportFormatFLAC ());
 		add_format (f_ptr);
 	} catch (ExportFormatIncompatible & e) {}
+
+	std::string unused;
+	if (ArdourVideoToolPaths::transcoder_exe (unused, unused)) {
+		f_ptr.reset (new ExportFormatFFMPEG ("MP3", "mp3"));
+		add_format (f_ptr);
+	}
 }
 
 void
@@ -277,6 +286,13 @@ void
 ExportFormatManager::select_src_quality (ExportFormatBase::SRCQuality value)
 {
 	current_selection->set_src_quality (value);
+	check_for_description_change ();
+}
+
+void
+ExportFormatManager::select_codec_quality (int value)
+{
+	current_selection->set_codec_quality (value);
 	check_for_description_change ();
 }
 
@@ -368,6 +384,27 @@ void
 ExportFormatManager::select_normalize_dbtp (float value)
 {
 	current_selection->set_normalize_dbtp (value);
+	check_for_description_change ();
+}
+
+void
+ExportFormatManager::select_demo_noise_level (float value)
+{
+	current_selection->set_demo_noise_level (value);
+	check_for_description_change ();
+}
+
+void
+ExportFormatManager::select_demo_noise_duration (int value)
+{
+	current_selection->set_demo_noise_duration (value);
+	check_for_description_change ();
+}
+
+void
+ExportFormatManager::select_demo_noise_interval (int value)
+{
+	current_selection->set_demo_noise_interval (value);
 	check_for_description_change ();
 }
 

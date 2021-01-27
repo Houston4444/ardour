@@ -1,21 +1,28 @@
 /*
-    Copyright (C) 2001 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2007-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2008-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2016-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2018 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <sigc++/bind.h>
 #include "ardour/tempo.h"
@@ -331,6 +338,9 @@ ArdourMarker::set_selected (bool s)
 {
 	_selected = s;
 	setup_line ();
+
+	mark->set_fill_color (_selected ? UIConfiguration::instance().color ("entered marker") : _color);
+	mark->set_outline_color ( _selected ? UIConfiguration::instance().color ("entered marker") : _color );
 }
 
 void
@@ -348,7 +358,6 @@ ArdourMarker::setup_line ()
 		if (_track_canvas_line == 0) {
 
 			_track_canvas_line = new ArdourCanvas::Line (editor.get_hscroll_group());
-			_track_canvas_line->set_outline_color (UIConfiguration::instance().color ("edit point"));
 			_track_canvas_line->Event.connect (sigc::bind (sigc::mem_fun (editor, &PublicEditor::canvas_marker_event), group, this));
 		}
 
@@ -359,7 +368,7 @@ ArdourMarker::setup_line ()
 		_track_canvas_line->set_x1 (d.x);
 		_track_canvas_line->set_y0 (d.y);
 		_track_canvas_line->set_y1 (ArdourCanvas::COORD_MAX);
-		_track_canvas_line->set_outline_color (_selected ? UIConfiguration::instance().color ("edit point") : _color);
+		_track_canvas_line->set_outline_color ( _selected ? UIConfiguration::instance().color ("entered marker") : _color );
 		_track_canvas_line->raise_to_top ();
 		_track_canvas_line->show ();
 
@@ -387,6 +396,10 @@ void
 ArdourMarker::set_name (const string& new_name)
 {
 	_name = new_name;
+
+	mark->set_tooltip(new_name);
+	_name_background->set_tooltip(new_name);
+	_name_item->set_tooltip(new_name);
 
 	setup_name_display ();
 }
@@ -504,8 +517,9 @@ void
 ArdourMarker::set_color_rgba (uint32_t c)
 {
 	_color = c;
-	mark->set_fill_color (_color);
-	mark->set_outline_color (_color);
+
+	mark->set_fill_color (_selected ? UIConfiguration::instance().color ("entered marker") : _color);
+	mark->set_outline_color ( _selected ? UIConfiguration::instance().color ("entered marker") : _color );
 
 	if (_track_canvas_line && !_selected) {
 		_track_canvas_line->set_outline_color (_color);

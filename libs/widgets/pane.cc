@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2016 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2016 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2018 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <assert.h>
 #include <gdkmm/cursor.h>
@@ -32,7 +33,7 @@ using namespace ArdourWidgets;
 Pane::Pane (bool h)
 	: horizontal (h)
 	, did_move (false)
-	, divider_width (2)
+	, divider_width (5)
 	, check_fract (false)
 {
 	using namespace Gdk;
@@ -641,8 +642,8 @@ Pane::Divider::Divider ()
 bool
 Pane::Divider::on_expose_event (GdkEventExpose* ev)
 {
-	Gdk::Color c = (dragging ? get_style()->get_fg (Gtk::STATE_ACTIVE) :
-			get_style()->get_fg (get_state()));
+	Gdk::Color c = (dragging ? get_style()->get_bg (Gtk::STATE_ACTIVE) :
+			get_style()->get_bg (get_state()));
 
 	Cairo::RefPtr<Cairo::Context> draw_context = get_window()->create_cairo_context ();
 	draw_context->rectangle (ev->area.x, ev->area.y, ev->area.width, ev->area.height);
@@ -657,7 +658,7 @@ bool
 Pane::handle_enter_event (GdkEventCrossing*, Divider* d)
 {
 	d->get_window()->set_cursor (drag_cursor);
-	d->set_state (Gtk::STATE_SELECTED);
+	d->set_state (Gtk::STATE_ACTIVE);
 	return true;
 }
 

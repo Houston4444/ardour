@@ -14,7 +14,7 @@
 
 <http://ardour.org/credits.html>
   a foaf:Person ;
-  foaf:name "Ardour Team" ;
+  foaf:name "Ardour Community" ;
   foaf:homepage <http://ardour.org/> .
 
 <urn:ardour:a-fluidsynth:sf2file>
@@ -25,13 +25,14 @@
 <urn:ardour:a-fluidsynth>
   a doap:Project, lv2:InstrumentPlugin, lv2:Plugin ;
 
-  doap:name "a-Fluid Synth" ;
+  doap:name "ACE Fluid Synth" ;
   rdfs:comment "SF2 Synthesizer using Fluidsynth" ;
 
   doap:maintainer <http://ardour.org/credits.html> ;
   doap:license <http://usefulinc.com/doap/licenses/gpl> ;
 
-  lv2:microVersion 2 ; lv2:minorVersion 0 ;
+  lv2:microVersion 2 ;
+  lv2:minorVersion 2 ;
 
   lv2:requiredFeature urid:map, work:schedule ;
   lv2:extensionData work:interface, state:interface ;
@@ -59,12 +60,12 @@
         a lv2:OutputPort, lv2:AudioPort ;
         lv2:index 2 ;
         lv2:symbol "outL" ;
-        lv2:name "Out Left" ;
+        lv2:name "Left Output" ;
     ] , [
         a lv2:OutputPort, lv2:AudioPort ;
         lv2:index 3 ;
         lv2:symbol "outR" ;
-        lv2:name "Output Right" ;
+        lv2:name "Right Output" ;
     ] , [
         a lv2:InputPort, lv2:ControlPort ;
         lv2:index 4 ;

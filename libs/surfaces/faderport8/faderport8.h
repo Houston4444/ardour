@@ -1,20 +1,19 @@
 /*
  * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
- * Copyright (C) 2015 Paul Davis
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #ifndef ardour_surface_faderport8_h
@@ -53,7 +52,7 @@ namespace ARDOUR {
 	class PluginInsert;
 }
 
-namespace ArdourSurface {
+namespace ArdourSurface { namespace FP_NAMESPACE {
 
 struct FaderPort8Request : public BaseUI::BaseRequestObject
 {
@@ -201,9 +200,10 @@ private:
 	void notify_pi_property_changed (const PBD::PropertyChange&);
 	void notify_stripable_property_changed (boost::weak_ptr<ARDOUR::Stripable>, const PBD::PropertyChange&);
 	void stripable_selection_changed ();
+	void subscribe_to_strip_signals ();
 
 	PBD::ScopedConnection selection_connection;
-	PBD::ScopedConnectionList automation_state_connections;
+	PBD::ScopedConnectionList route_state_connections;
 	PBD::ScopedConnectionList modechange_connections;
 	/* **************************************************************************/
 	struct ProcessorCtrl {
@@ -213,7 +213,10 @@ private:
 		{}
 		std::string name;
 		boost::shared_ptr<ARDOUR::AutomationControl> ac;
+
+		inline bool operator< (const ProcessorCtrl& other) const;
 	};
+
 	std::list <ProcessorCtrl> _proc_params;
 	boost::weak_ptr<ARDOUR::PluginInsert> _plugin_insert;
 	bool _show_presets;
@@ -227,6 +230,8 @@ private:
 	std::string _musical_time;
 	std::string const& timecode () const { return _timecode; }
 	std::string const& musical_time () const { return _musical_time; }
+
+	int _timer_divider;
 
 	bool show_meters () const { return _scribble_mode & 1; }
 	bool show_panner () const { return _scribble_mode & 2; }
@@ -263,7 +268,7 @@ private:
 	void notify_history_changed ();
 	void notify_solo_changed ();
 	void notify_mute_changed ();
-	void notify_automation_mode_changed ();
+	void notify_route_state_changed ();
 	void notify_plugin_active_changed ();
 
 	/* actions */
@@ -287,6 +292,9 @@ private:
 	void button_automation (ARDOUR::AutoState);
 	void button_prev_next (bool);
 	void button_action (const std::string& group, const std::string& item);
+
+	void button_chanlock (); /* FP2 only */
+	void button_flip (); /* FP2 only */
 
 	void button_encoder ();
 	void button_parameter ();
@@ -314,6 +322,8 @@ private:
 	boost::weak_ptr<PBD::Controllable> _link_control;
 	bool _link_enabled;
 	bool _link_locked; // can only be true if _link_enabled
+
+	bool _chan_locked; /* FP2 only */
 
 	/* user prefs */
 	uint32_t _clock_mode;
@@ -399,6 +409,6 @@ private:
 	UserActionMap _user_action_map;
 };
 
-} /* namespace */
+} } /* namespace */
 
 #endif /* ardour_surface_faderport8_h */

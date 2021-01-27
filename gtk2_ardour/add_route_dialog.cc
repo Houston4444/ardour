@@ -1,21 +1,27 @@
 /*
-  Copyright (C) 2003 Paul Davis
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2006 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2017 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2015 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2018 Len Ovens <len@ovenwerks.net>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cstdio>
 #include <cmath>
@@ -43,6 +49,7 @@
 
 #include "LuaBridge/LuaBridge.h"
 
+#include "ardour_message.h"
 #include "add_route_dialog.h"
 #include "ardour_ui.h"
 #include "route_group_dialog.h"
@@ -73,6 +80,8 @@ AddRouteDialog::AddRouteDialog ()
 	, strict_io_label (_("Pin Mode:"))
 	, mode_label (_("Record Mode:"))
 	, instrument_label (_("Instrument:"))
+	, last_route_count (1)
+	, route_count_set_by_template (false)
 	, name_edited_by_user (false)
 {
 	set_name ("AddRouteDialog");
@@ -89,90 +98,77 @@ AddRouteDialog::AddRouteDialog ()
 
 	if (builtin_types.empty()) {
 		builtin_types.push_back (
-			std::pair<string,string>(_("Audio Tracks"),  _( " \
-Use the settings, below, to create 1 or more new Audio tracks.\n \
-\n\n \
-You may select:\n \
-* The number of tracks to add.\n \
-* A Name for the new track(s).\n \
-* Mono, Stereo, or Multichannel operation for the new track(s).\n \
-* A Group which the track will be assigned to.\n \
-* The Pin Connections mode. (see tooltip for details).\n \
-* Normal (non-destructive) or Tape (destructive) recording mode.\n \
-\n \
-The track will be added in the location specified by \"Position\".\n \
-")
-		));
+		   std::pair<string,string> (_("Audio Tracks"), std::string () +
+		     _("Use these settings to create one or more audio tracks.") + "\n\n" +
+		     _("You may select:") + "\n" +
+		     "* " + _("The number of tracks to add") + "\n" +
+		     "* " + _("A name for the track(s)") + "\n" +
+		     "* " + _("Mono, stereo, or multi-channel operation for the track(s)") + "\n" +
+		     "* " + _("A group which the track(s) will be assigned to") + "\n" +
+#ifndef MIXBUS
+		     "* " + _("The pin connections mode (see tooltip for details)") + "\n" +
+#endif
+		     "\n" + _("The track(s) will be added at the location specified by \"Position\"")
+		     ));
+
 		builtin_types.push_back (
-			std::pair<string,string>(_("MIDI Tracks"),  _(" \
-Use the settings, below, to create 1 or more new MIDI tracks.\n \
-\n\n \
-You may select:\n \
-* The number of tracks to add.\n \
-* A Name for the track(s).\n \
-* An Instrument plugin (or select \"None\" to drive an external device)\n \
-* A Group which the track will be assigned to.\n \
-* The Pin Connections mode. (see tooltip for details)\n \
-\n \
-The track will be added in the location specified by \"Position\".\n \
-")
-		));
+		   std::pair<string,string> (_("MIDI Tracks"), std::string () +
+		     _("Use these settings to create one or more MIDI tracks.") + "\n\n" +
+		     _("You may select:") + "\n" +
+		     "* " + _("The number of tracks to add") + "\n" +
+		     "* " + _("A name for the track(s)") + "\n" +
+		     "* " + _("An instrument plugin (or select \"None\" to drive an external device)") + "\n" +
+		     "* " + _("A group which the track(s) will be assigned to") + "\n" +
+#ifndef MIXBUS
+		     "* " + _("The pin connections mode (see tooltip for details)") + "\n" +
+#endif
+		     "\n" + _("The track(s) will be added at the location specified by \"Position\"")
+		     ));
+
 		builtin_types.push_back (
-			std::pair<string,string>(_("Audio+MIDI Tracks"),   _(" \
-Use the settings, below, to create 1 or more new Audio+MIDI tracks.\n \
-\n\n \
-You may select:\n \
-* The number of tracks to add.\n \
-* A Name for the track(s).\n \
-* An Instrument plugin (or select \"None\" to drive an external device)\n \
-* A Group which will be assigned to the track(s).\n \
-* Pin Connections mode. (see tooltip for details).\n \
-* Normal (non-destructive) or Tape (destructive) recording mode.\n \
-\n \
-The track will be added in the location specified by \"Position\".\n \
-")
-		));
+		   std::pair<string,string> (_("Audio Busses"), std::string () +
+		     _("Use these settings to create one or more audio busses.") + "\n\n" +
+		     _("You may select:") + "\n" +
+		     "* " + _("The number of busses to add") + "\n" +
+		     "* " + _("A name for the buss(es)") + "\n" +
+		     "* " + _("A group which the buss(es) will be assigned to") + "\n" +
+#ifndef MIXBUS
+		     "* " + _("The pin connections mode (see tooltip for details)") + "\n" +
+#endif
+		     "\n" + _("The buss(es) will be added at the location specified by \"Position\"")
+		     ));
+
 		builtin_types.push_back (
-			std::pair<string,string>(_("Audio Busses"),  _(" \
-Use the settings, below, to create new Audio Tracks.\n \
-\n\n \
-You may select:\n \
-* The number of buses to add.\n \
-* A Name for the track(s).\n \
-* An Instrument plugin (or select \"None\" to drive an external device)\n \
-* A Group which will be assigned to the track(s).\n \
-* Pin Connections mode. (see tooltip for details).\n \
-* Normal (non-destructive) or Tape (destructive) recording mode.\n \
-\n \
-The track will be added in the location specified by \"Position\".\n \
-")
-		));
+		   std::pair<string,string> (_("MIDI Busses"), std::string () +
+		     _("Use these settings to create one or more MIDI busses.") + "\n\n" +
+		     _("MIDI busses can combine the output of multiple tracks. They are sometimes used\nto host a single \"heavy\" instrument plugin which is fed from multiple MIDI tracks.") + "\n\n" +
+		     _("You may select:") + "\n" +
+		     "* " + _("The number of busses to add") + "\n" +
+		     "* " + _("A name for the buss(es)") + "\n" +
+		     "* " + _("An instrument plugin (or select \"None\" to drive an external device)") + "\n" +
+		     "* " + _("A group which the buss(es) will be assigned to") + "\n" +
+#ifndef MIXBUS
+		     "* " + _("The pin connections mode (see tooltip for details)") + "\n" +
+#endif
+		     "\n" + _("The buss(es) will be added at the location specified by \"Position\"")
+		     ));
+
 		builtin_types.push_back (
-			std::pair<string,string>(_("MIDI Busses"),  _(" \
-Use the settings, below, to create new MIDI Busses.\n \
-\n \
-MIDI Busses can combine the output of multiple tracks. \n \
-MIDI Buses are sometimes used to host a single \"heavy\" instrument plugin which is fed from multiple MIDI tracks.  \
-\n\n \
-You may select:\n \
-* The number of buses to add.\n \
-* A Name for the track(s).\n \
-* An Instrument plugin (or select \"None\" to drive an external device)\n \
-* A Group which will be assigned to the track(s).\n \
-* Pin Connections mode. (see tooltip for details).\n \
-\n \
-The track will be added in the location specified by \"Position\".\n \
-")
-		));
+		   std::pair<string,string> (_("VCA Masters"), std::string () +
+		     _("Use these settings to create one or more VCA masters.") + "\n\n" +
+		     _("You may select:") + "\n" +
+		     "* " + _("The number of VCAs to add") + "\n" +
+		     "* " + _("A name for the VCA(s). \"%n\" will be replaced by an index number for each VCA")
+		     ));
+
 		builtin_types.push_back (
-			std::pair<string,string>(_("VCA Masters"),   _(" \
-Use the settings, below, to create 1 or more VCA Master(s).\n \
-\n\n \
-You may select:\n \
-* The number of buses to add.\n \
-* A name for the new VCAs.  \"%n\" will be replaced by an index number for each VCA.\n \
-")
-		));
+		   std::pair<string,string> (_("Foldback Busses"), std::string () +
+		     _("Use these settings to create one or more foldback busses.") + "\n\n" +
+		     _("Foldback busses are used as master outputs for monitor channels and are fed by\nhidden monitor sends.") + "\n\n" +
+		     _("You may select:") + "\n" +
+		     "* " + _("The number of busses to add") + "\n" +
+		     "* " + _("A name for the buss(es)")
+		     ));
 	}
 
 	insert_at_combo.append_text (_("First"));
@@ -185,17 +181,17 @@ You may select:\n \
 	strict_io_combo.append_text (_("Strict-I/O"));
 	strict_io_combo.set_active (Config->get_strict_io () ? 1 : 0);
 
-	//top-level VBox
+	/* top-level VBox */
 	VBox* vbox = manage (new VBox);
 	get_vbox()->set_spacing (4);
 	vbox->set_spacing (18);
 	vbox->set_border_width (5);
 
-	//this box contains the template chooser, and the template details
+	/* this box contains the template chooser, and the template details */
 	HBox* template_hbox = manage (new HBox);
 	template_hbox->set_spacing (8);
 
-	//scrollbars for the template chooser and template descriptions....
+	/* scrollbars for the template chooser and template descriptions.... */
 	Gtk::ScrolledWindow *template_scroller = manage (new Gtk::ScrolledWindow());
 	template_scroller->set_policy (Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
 	template_scroller->add (trk_template_chooser);
@@ -204,10 +200,10 @@ You may select:\n \
 	desc_scroller->set_policy (Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
 	desc_scroller->add (trk_template_desc);
 
-	//this is the outer sample that surrounds the description and the settings-table
+	/* this is the outer sample that surrounds the description and the settings-table */
 	trk_template_outer_frame.set_name (X_("TextHighlightFrame"));
 
-	//this is the "inner frame" that surrounds the description text
+	/* this is the "inner frame" that surrounds the description text */
 	trk_template_desc_frame.set_name (X_("TextHighlightFrame"));
 	trk_template_desc_frame.add (*desc_scroller);
 
@@ -250,7 +246,7 @@ You may select:\n \
 	vbox->pack_start (*template_hbox, true, true);
 
 
-	//Now pack the "settings table" with manual controls (these controls are sensitized by the left-side selection) 
+	/* Now pack the "settings table" with manual controls (these controls are sensitized by the left-side selection) */
 
 	int n = 0;
 
@@ -262,7 +258,7 @@ You may select:\n \
 
 	++n;
 
-	// Number
+	/* Number */
 	add_label.set_alignment (Gtk::ALIGN_RIGHT, Gtk::ALIGN_CENTER);
 	settings_table->attach (add_label, 0, 1, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 	Gtk::Alignment *align = manage (new Alignment (0, .5, 0, 0));
@@ -271,31 +267,31 @@ You may select:\n \
 
 	++n;
 
-	// Name
+	/* Name */
 	name_label.set_alignment (Gtk::ALIGN_RIGHT, Gtk::ALIGN_CENTER);
 	settings_table->attach (name_label, 0, 1, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 	settings_table->attach (name_template_entry, 1, 3, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 
-	// Route configuration
+	/* Route configuration */
 	configuration_label.set_alignment (Gtk::ALIGN_RIGHT, Gtk::ALIGN_CENTER);
 	settings_table->attach (configuration_label, 4, 5, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 	settings_table->attach (channel_combo, 5, 6, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 
 	++n;
 
-	// instrument choice (for MIDI)
+	/* instrument choice (for MIDI) */
 	instrument_label.set_alignment (Gtk::ALIGN_RIGHT, Gtk::ALIGN_CENTER);
 	settings_table->attach (instrument_label, 0, 1, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 	settings_table->attach (instrument_combo, 1, 3, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 
-	// Group choice
+	/* Group choice */
 	group_label.set_alignment (Gtk::ALIGN_RIGHT, Gtk::ALIGN_CENTER);
 	settings_table->attach (group_label, 4, 5, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 	settings_table->attach (route_group_combo, 5, 6, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 
 	++n;
 
-	// New Route's I/O is.. {strict/flexible}
+	/* New Route's I/O is.. {strict/flexible} */
 	if (Profile->get_mixbus ()) {
 		strict_io_combo.set_active (1);
 	} else {
@@ -306,7 +302,7 @@ You may select:\n \
 		ArdourWidgets::set_tooltip (strict_io_combo,
 				_("With strict-i/o enabled, Effect Processors will not modify the number of channels on a track. The number of output channels will always match the number of input channels."));
 
-		// recording mode
+		/* recording mode */
 		mode_label.set_alignment (Gtk::ALIGN_RIGHT, Gtk::ALIGN_CENTER);
 		settings_table->attach (mode_label, 4, 5, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
 		settings_table->attach (mode_combo, 5, 6, n, n + 1, Gtk::FILL, Gtk::SHRINK, 0, 0);
@@ -317,12 +313,12 @@ You may select:\n \
 	HBox* outer_box = manage (new HBox);
 	outer_box->set_spacing (4);
 
-	// New route will be inserted at..
+	/* New route will be inserted at.. */
 	insert_label.set_alignment (Gtk::ALIGN_RIGHT, Gtk::ALIGN_CENTER);
 	outer_box->pack_start (insert_label, false, false);
 	outer_box->pack_start (insert_at_combo, false, false);
 
-	//quick-add button  (add item but don't close dialog)
+	/* quick-add button (add item but don't close dialog) */
 	Gtk::Button* addnoclose_button = manage (new Gtk::Button(_("Add selected items (and leave dialog open)")));
 	addnoclose_button->set_can_default ();
 	addnoclose_button->signal_clicked ().connect (sigc::bind (sigc::mem_fun (*this, &Gtk::Dialog::response), Add));
@@ -338,6 +334,7 @@ You may select:\n \
 	channel_combo.set_row_separator_func (sigc::mem_fun (*this, &AddRouteDialog::channel_separator));
 	route_group_combo.set_row_separator_func (sigc::mem_fun (*this, &AddRouteDialog::route_separator));
 	route_group_combo.signal_changed ().connect (sigc::mem_fun (*this, &AddRouteDialog::group_changed));
+	instrument_combo.signal_changed ().connect (sigc::mem_fun (*this, &AddRouteDialog::instrument_changed));
 
 	routes_spinner.signal_activate ().connect (sigc::bind (sigc::mem_fun (*this, &Gtk::Dialog::response), AddAndClose));
 	name_template_entry.signal_activate ().connect (sigc::bind (sigc::mem_fun (*this, &Gtk::Dialog::response), AddAndClose));
@@ -386,6 +383,8 @@ AddRouteDialog::trk_template_row_selected ()
 	const string n = (*iter)[track_template_columns.name];
 	const string p = (*iter)[track_template_columns.path];
 
+	bool route_count_now_set_by_template = false;
+
 	if (p.substr (0, 11) == "urn:ardour:") {
 		/* lua script - meta-template */
 		const std::map<std::string, std::string> rs (ARDOUR_UI::instance()->route_setup_info (p.substr (11)));
@@ -425,23 +424,20 @@ AddRouteDialog::trk_template_row_selected ()
 		} else {
 			name_template_entry.set_text ("");
 		}
-	
 
-		if ((it = rs.find ("how_many")) != rs.end()) {
-			if (atoi (it->second.c_str()) > 0) {
-				routes_adjustment.set_value (atoi (it->second.c_str()));
+		if ((it = rs.find ("how_many")) != rs.end() && atoi (it->second.c_str()) > 0) {
+			if (!route_count_set_by_template) {
+				last_route_count = routes_adjustment.get_value();
 			}
+			routes_adjustment.set_value (atoi (it->second.c_str()));
+			route_count_now_set_by_template = true;
+			route_count_set_by_template = true;
 		}
 
 		if ((it = rs.find ("track_mode")) != rs.end()) {
 			switch ((ARDOUR::TrackMode) atoi (it->second.c_str())) {
 				case ARDOUR::Normal:
 					mode_combo.set_active_text (_("Normal"));
-					break;
-				case ARDOUR::Destructive:
-					if (!ARDOUR::Profile->get_mixbus ()) {
-						mode_combo.set_active_text (_("Tape"));
-					}
 					break;
 				default: // "NonLayered" enum is still present for session-format compat
 					break;
@@ -501,8 +497,23 @@ AddRouteDialog::trk_template_row_selected ()
 		name_template_entry.set_sensitive (true);
 		track_type_chosen ();
 	}
+
+	if (!route_count_now_set_by_template && route_count_set_by_template) {
+		routes_adjustment.set_value (last_route_count);
+		route_count_set_by_template = false;
+	}
 }
 
+void
+AddRouteDialog::instrument_changed ()
+{
+	if (name_edited_by_user) {
+		return;
+	}
+	std::string n = instrument_combo.selected_instrument_name ();
+	name_template_entry.set_text (n.empty () ? _("MIDI") : n);
+	reset_name_edited ();
+}
 
 void
 AddRouteDialog::name_template_entry_insertion (Glib::ustring const &,int*)
@@ -534,13 +545,13 @@ std::string
 AddRouteDialog::get_template_path ()
 {
 	string p;
-	
+
 	if (trk_template_chooser.get_selection()->count_selected_rows() > 0) {
 		TreeIter iter = trk_template_chooser.get_selection()->get_selected();
 
 		if (iter) {
 			string n = (*iter)[track_template_columns.name];
-			if ( n != _("Manual Configuration") ) {
+			if (n != _("Manual Configuration")) {
 				p = (*iter)[track_template_columns.path];
 			}
 		}
@@ -566,12 +577,12 @@ AddRouteDialog::type_wanted()
 		return MidiBus;
 	} else if (str == _("MIDI Tracks")){
 		return MidiTrack;
-	} else if (str == _("Audio+MIDI Tracks")) {
-		return MixedTrack;
 	} else if (str == _("Audio Tracks")) {
 		return AudioTrack;
 	} else if (str == _("VCA Masters")) {
 		return VCAMaster;
+	} else if (str == _("Foldback Busses")) {
+		return FoldbackBus;
 	} else {
 		assert (0);
 		return AudioTrack;
@@ -590,14 +601,15 @@ AddRouteDialog::maybe_update_name_template_entry ()
 		name_template_entry.set_text (_("Audio"));
 		break;
 	case MidiTrack:
-		name_template_entry.set_text (_("MIDI"));
-		break;
-	case MixedTrack:
-		name_template_entry.set_text (_("Audio+MIDI"));
+		/* set name of instrument or _("MIDI") */
+		instrument_changed ();
 		break;
 	case AudioBus:
 	case MidiBus:
 		name_template_entry.set_text (_("Bus"));
+		break;
+	case FoldbackBus:
+		name_template_entry.set_text (_("Foldback"));
 		break;
 	case VCAMaster:
 		name_template_entry.set_text (VCA::default_name_template());
@@ -630,7 +642,7 @@ AddRouteDialog::track_type_chosen ()
 
 		insert_label.set_sensitive (true);
 		insert_at_combo.set_sensitive (true);
-		
+
 		break;
 	case MidiTrack:
 
@@ -639,34 +651,6 @@ AddRouteDialog::track_type_chosen ()
 
 		mode_label.set_sensitive (false);
 		mode_combo.set_sensitive (false);
-
-		instrument_label.set_sensitive (true);
-		instrument_combo.set_sensitive (true);
-
-		group_label.set_sensitive (true);
-		route_group_combo.set_sensitive (true);
-
-		strict_io_label.set_sensitive (true);
-		strict_io_combo.set_sensitive (true);
-
-		insert_label.set_sensitive (true);
-		insert_at_combo.set_sensitive (true);
-		
-		break;
-	case MixedTrack:
-		{
-			MessageDialog msg (_("Audio+MIDI tracks are intended for use <b>ONLY</b> with plugins that use both audio and MIDI input data\n\n"
-					     "If you do not plan to use such a plugin, then use a normal audio or MIDI track instead."),
-					   true, MESSAGE_INFO, BUTTONS_OK, true);
-			msg.set_position (WIN_POS_MOUSE);
-			msg.run ();
-		}
-
-		configuration_label.set_sensitive (true);
-		channel_combo.set_sensitive (true);
-
-		mode_label.set_sensitive (true);
-		mode_combo.set_sensitive (true);
 
 		instrument_label.set_sensitive (true);
 		instrument_combo.set_sensitive (true);
@@ -721,7 +705,7 @@ AddRouteDialog::track_type_chosen ()
 
 		insert_label.set_sensitive (false);
 		insert_at_combo.set_sensitive (false);
-		
+
 		break;
 	case MidiBus:
 
@@ -744,6 +728,27 @@ AddRouteDialog::track_type_chosen ()
 		insert_at_combo.set_sensitive (true);
 
 		break;
+	case FoldbackBus:
+
+		configuration_label.set_sensitive (true);
+		channel_combo.set_sensitive (true);
+
+		mode_label.set_sensitive (false);
+		mode_combo.set_sensitive (false);
+
+		instrument_label.set_sensitive (false);
+		instrument_combo.set_sensitive (false);
+
+		group_label.set_sensitive (false);
+		route_group_combo.set_sensitive (false);
+
+		strict_io_label.set_sensitive (false);
+		strict_io_combo.set_sensitive (false);
+
+		insert_label.set_sensitive (false);
+		insert_at_combo.set_sensitive (false);
+
+		break;
 	}
 
 	maybe_update_name_template_entry ();
@@ -762,8 +767,8 @@ AddRouteDialog::name_template_is_default () const
 
 	if (n == _("Audio") ||
 	    n == _("MIDI") ||
-	    n == _("Audio+MIDI") ||
 	    n == _("Bus") ||
+	    n == _("Foldback") ||
 	    n == VCA::default_name_template()) {
 		return true;
 	}
@@ -783,10 +788,6 @@ AddRouteDialog::refill_track_modes ()
 	vector<string> s;
 
 	s.push_back (_("Normal"));
-	if (!ARDOUR::Profile->get_mixbus ()) {
-		s.push_back (_("Tape"));
-	}
-
 	set_popdown_strings (mode_combo, s);
 	mode_combo.set_active_text (s.front());
 }
@@ -799,8 +800,6 @@ AddRouteDialog::mode ()
 		return ARDOUR::Normal;
 	} else if (str == _("Non Layered")){
 		return ARDOUR::NonLayered;
-	} else if (str == _("Tape")) {
-		return ARDOUR::Destructive;
 	} else {
 		fatal << string_compose (X_("programming error: unknown track mode in add route dialog combo = %1"), str)
 		      << endmsg;
@@ -839,10 +838,11 @@ AddRouteDialog::channels ()
 		ret.set (DataType::MIDI, 1);
 		break;
 
-	case MixedTrack:
+	case FoldbackBus:
 		ret.set (DataType::AUDIO, channel_count ());
-		ret.set (DataType::MIDI, 1);
+		ret.set (DataType::MIDI, 0);
 		break;
+
 	default:
 		break;
 	}
@@ -857,6 +857,7 @@ AddRouteDialog::on_show ()
 	reset_name_edited ();
 
 	refill_route_groups ();
+	refill_channel_setups ();
 
 	Dialog::on_show ();
 }
@@ -940,8 +941,8 @@ AddRouteDialog::refill_channel_setups ()
 			continue;
 		}
 		TreeModel::Row row;
-		if ( (*s)->name == "Create Audio Tracks Interactively" && Profile->get_mixbus ()) {
-			// somewhat-special, Ben says: "most-used template"
+		if ((*s)->name == "Create Audio Tracks Interactively" && Profile->get_mixbus ()) {
+			/* somewhat-special, Ben says: "most-used template" */
 			row = *(trk_template_model->prepend ());
 		} else {
 			row = *(trk_template_model->append ());
@@ -949,12 +950,17 @@ AddRouteDialog::refill_channel_setups ()
 		row[track_template_columns.name] = (*s)->name;
 		row[track_template_columns.path] = "urn:ardour:" + (*s)->path;
 		row[track_template_columns.description] = (*s)->description;
-		row[track_template_columns.modified_with] = _("{Factory Template}");
+		row[track_template_columns.modified_with] = string_compose ("{%1}", _("Factory Template"));
 
 		if ((*s)->name == "Create Audio Tracks Interactively" && Profile->get_mixbus ()) {
 			trk_template_chooser.get_selection()->select(row);
 			selected_default = true;
 		}
+	}
+
+	if (!selected_default && !trk_template_model->children().empty()) {
+		TreeModel::Children rows = trk_template_model->children();
+		trk_template_chooser.get_selection()->select(rows[0]);
 	}
 
 	std::vector<ARDOUR::TemplateInfo> route_templates;

@@ -1,24 +1,29 @@
 /*
-    Copyright (C) 2000-2010 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2009-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2012-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2012 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include "ardour/session.h"
+#include "ardour/transport_master_manager.h"
 
+#include "actions.h"
 #include "gui_thread.h"
 #include "session_option_editor.h"
 #include "search_path_option.h"
@@ -42,7 +47,7 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 
 	ComboOption<TimecodeFormat>* smf = new ComboOption<TimecodeFormat> (
 		"timecode-format",
-		_("Timecode samples-per-second"),
+		_("Timecode frames-per-second"),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::get_timecode_format),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::set_timecode_format)
 		);
@@ -137,14 +142,6 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 	/* FADES */
 
 	add_option (_("Fades"), new OptionEditorHeading (_("Audio Fades")));
-	add_option (_("Fades"), new SpinOption<float> (
-		_("destructive-xfade-seconds"),
-		_("Destructive crossfade length"),
-		sigc::mem_fun (*_session_config, &SessionConfiguration::get_destructive_xfade_msecs),
-		sigc::mem_fun (*_session_config, &SessionConfiguration::set_destructive_xfade_msecs),
-		0, 1000, 1, 10,
-		_("ms")
-			    ));
 
 	add_option (_("Fades"), new BoolOption (
 			    "use-transport-fades",
@@ -178,18 +175,15 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 
 	add_option (_("Media"), new OptionEditorHeading (_("Audio File Format")));
 
-	ComboOption<SampleFormat>* sf = new ComboOption<SampleFormat> (
+	_sf = new ComboOption<SampleFormat> (
 		"native-file-data-format",
 		_("Sample format"),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::get_native_file_data_format),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::set_native_file_data_format)
 		);
-
-	sf->add (FormatFloat, _("32-bit floating point"));
-	sf->add (FormatInt24, _("24-bit integer"));
-	sf->add (FormatInt16, _("16-bit integer"));
-
-	add_option (_("Media"), sf);
+	add_option (_("Media"), _sf);
+	/* refill available sample-formats, depening on file-format */
+	parameter_changed ("native-file-header-format");
 
 	ComboOption<HeaderFormat>* hf = new ComboOption<HeaderFormat> (
 		"native-file-header-format",
@@ -209,6 +203,7 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 #ifdef HAVE_RF64_RIFF
 	hf->add (RF64_WAV, _("RF64 (WAV compatible)"));
 #endif
+	hf->add (FLAC, _("FLAC"));
 
 	add_option (_("Media"), hf);
 
@@ -274,17 +269,16 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 				sigc::mem_fun (*_session_config, &SessionConfiguration::set_auto_input)
 				));
 
-	add_option (_("Monitoring"), new BoolOption (
-				"have-monitor-section",
+	add_option (_("Monitoring"), new CheckOption (
+				"unused",
 				_("Use monitor section in this session"),
-				sigc::mem_fun (*this, &SessionOptionEditor::get_use_monitor_section),
-				sigc::mem_fun (*this, &SessionOptionEditor::set_use_monitor_section)
+				ActionManager::get_action(X_("Monitor"), "UseMonitorSection")
 				));
 
 	add_option (_("Monitoring"), new OptionEditorBlank ());
 
 	/* Meterbridge */
-	add_option (_("Meterbridge"), new OptionEditorHeading (_("Route Display")));
+	add_option (_("Meterbridge"), new OptionEditorHeading (_("Display Options")));
 
 	add_option (_("Meterbridge"), new BoolOption (
 			    "show-midi-on-meterbridge",
@@ -414,7 +408,7 @@ SessionOptionEditor::parameter_changed (std::string const & p)
 {
 	OptionEditor::parameter_changed (p);
 	if (p == "external-sync") {
-		if (Config->get_sync_source() == Engine) {
+		if (TransportMasterManager::instance().current()->type() == Engine) {
 			_vpu->set_sensitive(!_session_config->get_external_sync());
 		} else {
 			_vpu->set_sensitive(true);
@@ -428,34 +422,25 @@ SessionOptionEditor::parameter_changed (std::string const & p)
 	else if (p == "track-name-take") {
 		_take_name->set_sensitive(_session_config->get_track_name_take());
 	}
-}
-
-/* the presence of absence of a monitor section is not really a regular session
- * property so we provide these two functions to act as setter/getter slots
- */
-
-bool
-SessionOptionEditor::set_use_monitor_section (bool yn)
-{
-	bool had_monitor_section = _session->monitor_out() != 0;
-
-	if (yn) {
-		_session->add_monitor_section ();
-	} else {
-		_session->remove_monitor_section ();
+	else if (p == "native-file-header-format") {
+		bool need_refill = true;
+		_sf->clear ();
+		if (_session_config->get_native_file_header_format() == FLAC) {
+			_sf->add (FormatInt24, _("24-bit integer"));
+			_sf->add (FormatInt16, _("16-bit integer"));
+			if (_session_config->get_native_file_data_format() == FormatFloat) {
+				_session_config->set_native_file_data_format (FormatInt24);
+				need_refill = false;
+			}
+		} else {
+			_sf->add (FormatFloat, _("32-bit floating point"));
+			_sf->add (FormatInt24, _("24-bit integer"));
+			_sf->add (FormatInt16, _("16-bit integer"));
+		}
+		if (need_refill) {
+			parameter_changed ("native-file-data-format");
+		}
 	}
-
-	/* store this choice for any new sessions */
-
-	Config->set_use_monitor_bus (yn);
-
-	return had_monitor_section != (_session->monitor_out() != 0);
-}
-
-bool
-SessionOptionEditor::get_use_monitor_section ()
-{
-	return _session->monitor_out() != 0;
 }
 
 void

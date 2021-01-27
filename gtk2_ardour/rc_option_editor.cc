@@ -1,28 +1,32 @@
 /*
-    Copyright (C) 2001-2011 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2009-2015 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2019 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2012-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013-2016 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2013-2018 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2013 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2014-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2014-2019 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2018 Len Ovens <len@ovenwerks.net>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "gtk2ardour-config.h"
-#endif
-
-#if !defined USE_CAIRO_IMAGE_SURFACE && !defined NDEBUG
-#define OPTIONAL_CAIRO_IMAGE_SURFACE
 #endif
 
 #include <cairo/cairo.h>
@@ -39,16 +43,19 @@
 
 #include "pbd/fpu.h"
 #include "pbd/cpus.h"
+#include "pbd/unwind.h"
 #include "pbd/i18n.h"
 
 #include "ardour/audio_backend.h"
 #include "ardour/audioengine.h"
-#include "ardour/profile.h"
-#include "ardour/dB.h"
-#include "ardour/rc_configuration.h"
 #include "ardour/control_protocol_manager.h"
+#include "ardour/dB.h"
 #include "ardour/port_manager.h"
 #include "ardour/plugin_manager.h"
+#include "ardour/profile.h"
+#include "ardour/rc_configuration.h"
+#include "ardour/transport_master_manager.h"
+
 #include "control_protocol/control_protocol.h"
 
 #include "waveview/wave_view.h"
@@ -64,8 +71,10 @@
 #include "keyboard.h"
 #include "meter_patterns.h"
 #include "midi_tracer.h"
+#include "plugin_scan_dialog.h"
 #include "rc_option_editor.h"
 #include "sfdb_ui.h"
+#include "transport_masters_dialog.h"
 #include "ui_config.h"
 #include "utils.h"
 
@@ -136,7 +145,7 @@ public:
 		if (_rc_config->get_click_sound ().empty() &&
 		    _rc_config->get_click_emphasis_sound().empty()) {
 			_use_default_click_check_button.set_active (true);
-			_use_emphasis_on_click_check_button.set_active (true);
+			_use_emphasis_on_click_check_button.set_active (_rc_config->get_use_click_emphasis ());
 
 		} else {
 			_use_default_click_check_button.set_active (false);
@@ -1115,7 +1124,7 @@ class FontScalingOptions : public HSliderOption
 		_hscale.add_mark(200, Gtk::POS_TOP, empty);
 		_hscale.add_mark(250, Gtk::POS_TOP, empty);
 
-		set_note (_("Adjusting the scale requires an application restart to re-layout."));
+		set_note (_("Adjusting the scale requires an application restart for fully accurate re-layout."));
 	}
 
 	void changed ()
@@ -1151,30 +1160,27 @@ public:
 	}
 };
 
-class ClipLevelOptions : public OptionEditorComponent
+class ClipLevelOptions : public HSliderOption
 {
 public:
 	ClipLevelOptions ()
-		: _clip_level_adjustment (-.5, -50.0, 0.0, 0.1, 1.0) /* units of dB */
-		, _clip_level_slider (_clip_level_adjustment)
-		, _label (_("Waveform Clip Level (dBFS):"))
+		: HSliderOption (X_("waveform-clip-level"),
+		                 _("Waveform Clip Level (dBFS):"),
+		                 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_waveform_clip_level),
+		                 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_waveform_clip_level),
+		                 -50.0, -0.5, 0.1, 1.0, /* units of dB */
+		                 1.0,
+		                 false)
 	{
-		_label.set_name ("OptionsLabel");
-
-		_clip_level_adjustment.set_value (UIConfiguration::instance().get_waveform_clip_level ());
-
-		_clip_level_slider.set_update_policy (UPDATE_DISCONTINUOUS);
-
-		_clip_level_adjustment.signal_value_changed().connect (sigc::mem_fun (*this, &ClipLevelOptions::clip_level_changed));
 	}
 
 	void parameter_changed (string const & p)
 	{
 		if (p == "waveform-clip-level") {
-			_clip_level_adjustment.set_value (UIConfiguration::instance().get_waveform_clip_level());
+			ArdourWaveView::WaveView::set_clip_level (UIConfiguration::instance().get_waveform_clip_level());
 		}
 		if (p == "show-waveform-clipping") {
-			_clip_level_slider.set_sensitive (UIConfiguration::instance().get_show_waveform_clipping ());
+			_hscale.set_sensitive (UIConfiguration::instance().get_show_waveform_clipping ());
 		}
 	}
 
@@ -1183,27 +1189,6 @@ public:
 		parameter_changed ("waveform-clip-level");
 		parameter_changed ("show-waveform-clipping");
 	}
-
-	void add_to_page (OptionEditorPage* p) {
-		add_widgets_to_page (p, &_label, &_clip_level_slider);
-	}
-
-	Gtk::Widget& tip_widget() {
-		return _clip_level_slider;
-	}
-
-private:
-
-	void clip_level_changed ()
-	{
-		UIConfiguration::instance().set_waveform_clip_level (_clip_level_adjustment.get_value());
-		/* XXX: should be triggered from the parameter changed signal */
-		ArdourWaveView::WaveView::set_clip_level (_clip_level_adjustment.get_value());
-	}
-
-	Adjustment _clip_level_adjustment;
-	HScale _clip_level_slider;
-	Label _label;
 };
 
 class BufferingOptions : public OptionEditorComponent
@@ -1318,6 +1303,193 @@ class BufferingOptions : public OptionEditorComponent
 		ComboBoxText  _buffering_presets_combo;
 };
 
+class LTCPortSelectOption : public OptionEditorComponent, public sigc::trackable
+{
+public:
+	LTCPortSelectOption (RCConfiguration* c, SessionHandlePtr* shp)
+			: _rc_config (c)
+			, _shp (shp)
+			, _label (_("LTC Output Port:"))
+			, _ignore_change (false)
+	{
+		_store = ListStore::create (_port_columns);
+		_combo.set_model (_store);
+		_combo.pack_start (_port_columns.short_name);
+
+		set_tooltip (_combo, _("The LTC generator output will be auto-connected to this port when a session is loaded."));
+
+		update_port_combo ();
+
+		_combo.signal_map ().connect (sigc::mem_fun (*this, &LTCPortSelectOption::on_map));
+		_combo.signal_unmap ().connect (sigc::mem_fun (*this, &LTCPortSelectOption::on_unmap));
+		_combo.signal_changed ().connect (sigc::mem_fun (*this, &LTCPortSelectOption::port_changed));
+	}
+
+	void add_to_page (OptionEditorPage* p)
+	{
+		add_widgets_to_page (p, &_label, &_combo);
+	}
+
+	Gtk::Widget& tip_widget()
+	{
+		return _combo;
+	}
+
+	void parameter_changed (string const & p)
+	{
+		if (p == "ltc-output-port") {
+			update_selection ();
+		}
+	}
+
+	void set_state_from_config ()
+	{
+		parameter_changed ("ltc-output-port");
+	}
+
+private:
+	struct PortColumns : public Gtk::TreeModel::ColumnRecord {
+		PortColumns() {
+			add (short_name);
+			add (full_name);
+		}
+		Gtk::TreeModelColumn<std::string> short_name;
+		Gtk::TreeModelColumn<std::string> full_name;
+	};
+
+	RCConfiguration*  _rc_config;
+	SessionHandlePtr* _shp;
+	Label             _label;
+	Gtk::ComboBox     _combo;
+	bool              _ignore_change;
+	PortColumns       _port_columns;
+
+	Glib::RefPtr<Gtk::ListStore> _store;
+	PBD::ScopedConnectionList    _engine_connection;
+
+	void on_map ()
+	{
+		AudioEngine::instance()->PortRegisteredOrUnregistered.connect (
+				_engine_connection,
+				invalidator (*this),
+				boost::bind (&LTCPortSelectOption::update_port_combo, this),
+				gui_context());
+
+		AudioEngine::instance()->PortPrettyNameChanged.connect (
+				_engine_connection,
+				invalidator (*this),
+				boost::bind (&LTCPortSelectOption::update_port_combo, this),
+				gui_context());
+	}
+
+	void on_unmap ()
+	{
+		_engine_connection.drop_connections ();
+	}
+
+	void port_changed ()
+	{
+		if (_ignore_change) {
+			return;
+		}
+		TreeModel::iterator active = _combo.get_active ();
+		string new_port = (*active)[_port_columns.full_name];
+		_rc_config->set_ltc_output_port (new_port);
+
+		if (!_shp->session()) {
+			return;
+		}
+		boost::shared_ptr<Port> ltc_port = _shp->session()->ltc_output_port ();
+		if (!ltc_port) {
+			return;
+		}
+		if (ltc_port->connected_to (new_port)) {
+			return;
+		}
+
+		ltc_port->disconnect_all ();
+		if (!new_port.empty()) {
+			ltc_port->connect (new_port);
+		}
+	}
+
+	void update_port_combo ()
+	{
+		vector<string> ports;
+		ARDOUR::AudioEngine::instance()->get_ports ("", ARDOUR::DataType::AUDIO, ARDOUR::PortFlags (ARDOUR::IsInput|ARDOUR::IsTerminal), ports);
+
+		PBD::Unwinder<bool> uw (_ignore_change, true);
+		_store->clear ();
+
+		TreeModel::Row row;
+		row = *_store->append ();
+		row[_port_columns.full_name] = string();
+		row[_port_columns.short_name] = _("Disconnected");
+
+		for (vector<string>::const_iterator p = ports.begin(); p != ports.end(); ++p) {
+			row = *_store->append ();
+			row[_port_columns.full_name] = *p;
+			std::string pn = ARDOUR::AudioEngine::instance()->get_pretty_name_by_name (*p);
+			if (pn.empty ()) {
+				pn = (*p).substr ((*p).find (':') + 1);
+			}
+			row[_port_columns.short_name] = pn;
+		}
+
+		update_selection ();
+	}
+
+	void update_selection ()
+	{
+		int n;
+		Gtk::TreeModel::Children children = _store->children();
+		Gtk::TreeModel::Children::iterator i = children.begin();
+		++i; /* skip "Disconnected" */
+
+		std::string const& pn = _rc_config->get_ltc_output_port ();
+		boost::shared_ptr<Port> ltc_port;
+		if (_shp->session()) {
+			ltc_port = _shp->session()->ltc_output_port ();
+		}
+
+		PBD::Unwinder<bool> uw (_ignore_change, true);
+
+		/* try match preference with available port-names */
+		for (n = 1;  i != children.end(); ++i, ++n) {
+			string port_name = (*i)[_port_columns.full_name];
+			if (port_name == pn) {
+				_combo.set_active (n);
+				return;
+			}
+		}
+
+		/* Set preference to current port connection
+		 * (LTC is auto-connected at session load).
+		 */
+		if (ltc_port) {
+			i = children.begin();
+			++i; /* skip "Disconnected" */
+			for (n = 1;  i != children.end(); ++i, ++n) {
+				string port_name = (*i)[_port_columns.full_name];
+				if (ltc_port->connected_to (port_name)) {
+					_combo.set_active (n);
+					return;
+				}
+			}
+		}
+
+		if (pn.empty ()) {
+			_combo.set_active (0); /* disconnected */
+		} else {
+			/* The port is currently not available, retain preference */
+			TreeModel::Row row = *_store->append ();
+			row[_port_columns.full_name] = pn;
+			row[_port_columns.short_name] = (pn).substr ((pn).find (':') + 1);
+			_combo.set_active (n);
+		}
+	}
+};
+
 class ControlSurfacesOptions : public OptionEditorMiniPage
 {
 	public:
@@ -1326,10 +1498,10 @@ class ControlSurfacesOptions : public OptionEditorMiniPage
 		{
 			_store = ListStore::create (_model);
 			_view.set_model (_store);
-			_view.append_column (_("Control Surface Protocol"), _model.name);
-			_view.get_column(0)->set_resizable (true);
-			_view.get_column(0)->set_expand (true);
 			_view.append_column_editable (_("Enable"), _model.enabled);
+			_view.append_column (_("Control Surface Protocol"), _model.name);
+			_view.get_column(1)->set_resizable (true);
+			_view.get_column(1)->set_expand (true);
 
 			Gtk::HBox* edit_box = manage (new Gtk::HBox);
 			edit_box->set_spacing(3);
@@ -1404,10 +1576,12 @@ class ControlSurfacesOptions : public OptionEditorMiniPage
 		{
 			//enable the Edit button when a row is selected for editing
 			TreeModel::Row row = *(_view.get_selection()->get_selected());
-			if (row && row[_model.enabled])
-				edit_button->set_sensitive (true);
-			else
+			if (row && row[_model.enabled]) {
+				ControlProtocolInfo* cpi = row[_model.protocol_info];
+				edit_button->set_sensitive (cpi && cpi->protocol && cpi->protocol->has_editor ());
+			} else {
 				edit_button->set_sensitive (false);
+			}
 		}
 
 		void view_changed (TreeModel::Path const &, TreeModel::iterator const & i)
@@ -1589,9 +1763,6 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 			_video_server_docroot_entry.signal_activate().connect (sigc::mem_fun(*this, &VideoTimelineOptions::server_docroot_changed));
 			_custom_xjadeo_path.signal_changed().connect (sigc::mem_fun (*this, &VideoTimelineOptions::custom_xjadeo_path_changed));
 			_xjadeo_browse_button.signal_clicked ().connect (sigc::mem_fun (*this, &VideoTimelineOptions::xjadeo_browse_clicked));
-
-			// xjadeo-path is a UIConfig parameter
-			UIConfiguration::instance().ParameterChanged.connect (sigc::mem_fun (*this, &VideoTimelineOptions::parameter_changed));
 		}
 
 		void server_url_changed ()
@@ -1624,13 +1795,13 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 
 		void custom_xjadeo_path_changed ()
 		{
-			UIConfiguration::instance().set_xjadeo_binary (_custom_xjadeo_path.get_text());
+			_rc_config->set_xjadeo_binary (_custom_xjadeo_path.get_text());
 		}
 
 		void xjadeo_browse_clicked ()
 		{
 			Gtk::FileChooserDialog dialog(_("Set Video Monitor Executable"), Gtk::FILE_CHOOSER_ACTION_OPEN);
-			dialog.set_filename (UIConfiguration::instance().get_xjadeo_binary());
+			dialog.set_filename (_rc_config->get_xjadeo_binary());
 			dialog.add_button(Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
 			dialog.add_button(Gtk::Stock::OK, Gtk::RESPONSE_OK);
 			if (dialog.run () == Gtk::RESPONSE_OK) {
@@ -1641,7 +1812,7 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 #endif
 							Glib::file_test (filename, Glib::FILE_TEST_EXISTS|Glib::FILE_TEST_IS_EXECUTABLE)
 							)) {
-					UIConfiguration::instance().set_xjadeo_binary (filename);
+					_rc_config->set_xjadeo_binary (filename);
 				}
 			}
 		}
@@ -1664,7 +1835,7 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 				_video_server_docroot_entry.set_sensitive(x);
 				_video_server_url_entry.set_sensitive(x);
 			} else if (p == "xjadeo-binary") {
-				_custom_xjadeo_path.set_text (UIConfiguration::instance().get_xjadeo_binary());
+				_custom_xjadeo_path.set_text (_rc_config->get_xjadeo_binary());
 			}
 		}
 
@@ -1702,9 +1873,9 @@ class ColumVisibilityOption : public Option
 	{
 		cb = (CheckButton**) malloc (sizeof (CheckButton*) * n_col);
 		for (uint32_t i = 0; i < n_col; ++i) {
-			CheckButton* col = manage (new CheckButton (string_compose (_("Column %1"), i + 1)));
+			CheckButton* col = manage (new CheckButton (string_compose (_("Column %1 (Actions %2 + %3)"), i + 1, i * 2 + 1, i * 2 + 2)));
 			col->signal_toggled().connect (sigc::bind (sigc::mem_fun (*this, &ColumVisibilityOption::column_toggled), i));
-			_hbox.pack_start (*col);
+			_vbox.pack_start (*col);
 			cb[i] = col;
 		}
 		parameter_changed (id);
@@ -1714,7 +1885,7 @@ class ColumVisibilityOption : public Option
 		free (cb);
 	}
 
-	Gtk::Widget& tip_widget() { return _hbox; }
+	Gtk::Widget& tip_widget() { return _vbox; }
 
 	void set_state_from_config ()
 	{
@@ -1730,7 +1901,7 @@ class ColumVisibilityOption : public Option
 	void add_to_page (OptionEditorPage* p)
 	{
 		_heading.add_to_page (p);
-		add_widget_to_page (p, &_hbox);
+		add_widget_to_page (p, &_vbox);
 	}
 	private:
 
@@ -1747,7 +1918,7 @@ class ColumVisibilityOption : public Option
 		}
 	}
 
-	HBox _hbox;
+	VBox _vbox;
 	OptionEditorHeading _heading;
 
 	CheckButton** cb;
@@ -1821,43 +1992,44 @@ private:
 class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 {
 	public:
-		MidiPortOptions() {
-
+		MidiPortOptions()
+			: input_heading (_("MIDI Inputs"))
+			, output_heading (_("MIDI Outputs"))
+		{
 			setup_midi_port_view (midi_output_view, false);
 			setup_midi_port_view (midi_input_view, true);
 
-			OptionEditorHeading* h = new OptionEditorHeading (_("MIDI Inputs"));
-			h->add_to_page (this);
+			input_heading.add_to_page (this);
 
-			Gtk::ScrolledWindow* scroller = manage (new Gtk::ScrolledWindow);
-			scroller->add (midi_input_view);
-			scroller->set_policy (POLICY_NEVER, POLICY_AUTOMATIC);
-			scroller->set_size_request (-1, 180);
+			input_scroller.add (midi_input_view);
+			input_scroller.set_policy (POLICY_NEVER, POLICY_AUTOMATIC);
+			input_scroller.set_size_request (-1, 180);
+			input_scroller.show ();
 
 			int n = table.property_n_rows();
-			table.attach (*scroller, 0, 3, n, n + 1, FILL | EXPAND);
+			table.attach (input_scroller, 0, 3, n, n + 1, FILL | EXPAND);
 
-			h = new OptionEditorHeading (_("MIDI Outputs"));
-			h->add_to_page (this);
+			output_heading.add_to_page (this);
 
-			scroller = manage (new Gtk::ScrolledWindow);
-			scroller->add (midi_output_view);
-			scroller->set_policy (POLICY_NEVER, POLICY_AUTOMATIC);
-			scroller->set_size_request (-1, 180);
+			output_scroller.add (midi_output_view);
+			output_scroller.set_policy (POLICY_NEVER, POLICY_AUTOMATIC);
+			output_scroller.set_size_request (-1, 180);
+			output_scroller.show ();
 
 			n = table.property_n_rows();
-			table.attach (*scroller, 0, 3, n, n + 1, FILL | EXPAND);
+			table.attach (output_scroller, 0, 3, n, n + 1, FILL | EXPAND);
 
 			midi_output_view.show ();
 			midi_input_view.show ();
 
-			table.signal_show().connect (sigc::mem_fun (*this, &MidiPortOptions::on_show));
+			table.signal_map().connect (sigc::mem_fun (*this, &MidiPortOptions::on_map));
+			table.signal_unmap().connect (sigc::mem_fun (*this, &MidiPortOptions::on_unmap));
 		}
 
 		void parameter_changed (string const&) {}
 		void set_state_from_config() {}
 
-		void on_show () {
+		void on_map () {
 			refill ();
 
 			AudioEngine::instance()->PortRegisteredOrUnregistered.connect (connections,
@@ -1874,17 +2046,24 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 					gui_context());
 		}
 
-		void refill () {
+		void on_unmap () {
+			connections.drop_connections ();
+		}
 
+		void refill () {
 			if (refill_midi_ports (true, midi_input_view)) {
-				input_label.show ();
+				input_heading.tip_widget ().show ();
+				input_scroller.show ();
 			} else {
-				input_label.hide ();
+				input_heading.tip_widget ().hide ();
+				input_scroller.hide ();
 			}
 			if (refill_midi_ports (false, midi_output_view)) {
-				output_label.show ();
+				output_heading.tip_widget ().show ();
+				output_scroller.show ();
 			} else {
-				output_label.hide ();
+				output_heading.tip_widget ().hide ();
+				output_scroller.hide ();
 			}
 		}
 
@@ -1899,7 +2078,8 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 				add (music_data);
 				add (control_data);
 				add (selection);
-				add (name);
+				add (fullname);
+				add (shortname);
 				add (filler);
 			}
 
@@ -1907,15 +2087,19 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 			Gtk::TreeModelColumn<bool> music_data;
 			Gtk::TreeModelColumn<bool> control_data;
 			Gtk::TreeModelColumn<bool> selection;
-			Gtk::TreeModelColumn<std::string> name;
+			Gtk::TreeModelColumn<std::string> fullname;
+			Gtk::TreeModelColumn<std::string> shortname;
 			Gtk::TreeModelColumn<std::string> filler;
 		};
 
 		MidiPortColumns midi_port_columns;
 		Gtk::TreeView midi_input_view;
 		Gtk::TreeView midi_output_view;
-		Gtk::Label input_label;
-		Gtk::Label output_label;
+
+		Gtk::ScrolledWindow input_scroller;
+		Gtk::ScrolledWindow output_scroller;
+		OptionEditorHeading input_heading;
+		OptionEditorHeading output_heading;
 
 		void setup_midi_port_view (Gtk::TreeView&, bool with_selection);
 		bool refill_midi_ports (bool for_input, Gtk::TreeView&);
@@ -1935,7 +2119,7 @@ MidiPortOptions::setup_midi_port_view (Gtk::TreeView& view, bool with_selection)
 	TreeViewColumn* col;
 	Gtk::Label* l;
 
-	pretty_name_column = view.append_column_editable (_("Name (click to edit)"), midi_port_columns.pretty_name) - 1;
+	pretty_name_column = view.append_column_editable (_("Name (click twice to edit)"), midi_port_columns.pretty_name) - 1;
 
 	col = manage (new TreeViewColumn ("", midi_port_columns.music_data));
 	col->set_alignment (ALIGN_CENTER);
@@ -1985,8 +2169,8 @@ MidiPortOptions::setup_midi_port_view (Gtk::TreeView& view, bool with_selection)
 		toggle_cell->signal_toggled().connect (sigc::bind (sigc::mem_fun (*this, &MidiPortOptions::midi_selection_column_toggled), &view));
 	}
 
-	view.get_selection()->set_mode (SELECTION_NONE);
-	view.set_tooltip_column (4); /* port "real" name */
+	view.get_selection()->set_mode (SELECTION_SINGLE);
+	view.set_tooltip_column (5); /* port short name */
 	view.get_column(0)->set_resizable (true);
 	view.get_column(0)->set_expand (true);
 }
@@ -1997,43 +2181,33 @@ MidiPortOptions::refill_midi_ports (bool for_input, Gtk::TreeView& view)
 	using namespace ARDOUR;
 
 	std::vector<string> ports;
-
-	AudioEngine::instance()->get_known_midi_ports (ports);
+	AudioEngine::instance()->get_configurable_midi_ports (ports, for_input);
 
 	if (ports.empty()) {
 		view.hide ();
 		return false;
 	}
 
+	view.unset_model ();
+
 	Glib::RefPtr<ListStore> model = Gtk::ListStore::create (midi_port_columns);
 
 	for (vector<string>::const_iterator s = ports.begin(); s != ports.end(); ++s) {
 
-		if (AudioEngine::instance()->port_is_mine (*s)) {
-			continue;
-		}
+		TreeModel::Row row  = *(model->append());
+		MidiPortFlags flags = AudioEngine::instance()->midi_port_metadata (*s);
+		std::string   pn    = AudioEngine::instance()->get_pretty_name_by_name (*s);
 
-		PortManager::MidiPortInformation mpi (AudioEngine::instance()->midi_port_information (*s));
-
-		if (mpi.pretty_name.empty()) {
-			/* vanished since get_known_midi_ports() */
-			continue;
-		}
-
-		if (for_input != mpi.input) {
-			continue;
-		}
-
-		TreeModel::Row row = *(model->append());
-
-		row[midi_port_columns.pretty_name] = mpi.pretty_name;
-		row[midi_port_columns.music_data] = mpi.properties & MidiPortMusic;
-		row[midi_port_columns.control_data] = mpi.properties & MidiPortControl;
-		row[midi_port_columns.selection] = mpi.properties & MidiPortSelection;
-		row[midi_port_columns.name] = *s;
+		row[midi_port_columns.music_data]   = flags & MidiPortMusic;
+		row[midi_port_columns.control_data] = flags & MidiPortControl;
+		row[midi_port_columns.selection]    = flags & MidiPortSelection;
+		row[midi_port_columns.fullname]     = *s;
+		row[midi_port_columns.shortname]    = AudioEngine::instance()->short_port_name_from_port_name (*s);
+		row[midi_port_columns.pretty_name]  = pn.empty () ? row[midi_port_columns.shortname] : pn;
 	}
 
 	view.set_model (model);
+	view.show ();
 
 	return true;
 }
@@ -2052,9 +2226,9 @@ MidiPortOptions::midi_music_column_toggled (string const & path, TreeView* view)
 	/* don't reset model - wait for MidiPortInfoChanged signal */
 
 	if (new_value) {
-		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortMusic);
+		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortMusic);
 	} else {
-		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortMusic);
+		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortMusic);
 	}
 }
 
@@ -2072,9 +2246,9 @@ MidiPortOptions::midi_control_column_toggled (string const & path, TreeView* vie
 	/* don't reset model - wait for MidiPortInfoChanged signal */
 
 	if (new_value) {
-		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortControl);
+		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortControl);
 	} else {
-		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortControl);
+		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortControl);
 	}
 }
 
@@ -2092,9 +2266,9 @@ MidiPortOptions::midi_selection_column_toggled (string const & path, TreeView* v
 	/* don't reset model - wait for MidiSelectionPortsChanged signal */
 
 	if (new_value) {
-		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortSelection);
+		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortSelection);
 	} else {
-		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortSelection);
+		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortSelection);
 	}
 }
 
@@ -2107,26 +2281,15 @@ MidiPortOptions::pretty_name_edit (std::string const & path, string const & new_
 		return;
 	}
 
-	boost::shared_ptr<ARDOUR::AudioBackend> backend = ARDOUR::AudioEngine::instance()->current_backend();
-	if (backend) {
-		ARDOUR::PortEngine::PortHandle ph = backend->get_port_by_name ((*iter)[midi_port_columns.name]);
-		if (ph) {
-			backend->set_port_property (ph, "http://jackaudio.org/metadata/pretty-name", new_text, "");
-			(*iter)[midi_port_columns.pretty_name] = new_text;
-		}
-	}
+	AudioEngine::instance()->set_port_pretty_name ((*iter)[midi_port_columns.fullname], new_text);
 }
 
-/*============*/
 
 
 RCOptionEditor::RCOptionEditor ()
 	: OptionEditorContainer (Config, string_compose (_("%1 Preferences"), PROGRAM_NAME))
-	, Tabbable (*this, _("Preferences")
-#ifdef MIXBUS
-			, false // detached by default (first start, no instant.xml)
-#endif
-			) /* pack self-as-vbox into tabbable */
+	  /* pack self-as-vbox into tabbable */
+	, Tabbable (*this, _("Preferences"), X_("preferences"), /* detached by default */ false)
 	, _rc_config (Config)
 	, _mixer_strip_visibility ("mixer-element-visibility")
 {
@@ -2136,7 +2299,6 @@ RCOptionEditor::RCOptionEditor ()
 
 	uint32_t hwcpus = hardware_concurrency ();
 	BoolOption* bo;
-	BoolComboOption* bco;
 
 	if (hwcpus > 1) {
 		add_option (_("General"), new OptionEditorHeading (_("DSP CPU Utilization")));
@@ -2234,6 +2396,21 @@ RCOptionEditor::RCOptionEditor ()
 				slts->tip_widget(),
 				_("Lock GUI after this many idle seconds (zero to never lock)"));
 		add_option (_("General"), slts);
+
+		ComboOption<ScreenSaverMode>* scsvr = new ComboOption<ScreenSaverMode> (
+				"screen-saver-mode",
+				_("System Screensaver Mode"),
+				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_screen_saver_mode),
+				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_screen_saver_mode)
+				);
+
+		scsvr->add (InhibitNever, _("Never Inhibit"));
+		scsvr->add (InhibitWhileRecording, _("Inhibit while Recording"));
+		scsvr->add (InhibitAlways, string_compose (_("Inhibit while %1 is running"), PROGRAM_NAME));
+
+		add_option (_("General"), scsvr);
+
+
 	} // !mixbus
 
 	add_option (_("General/Session"), new OptionEditorHeading (S_("Options|Undo")));
@@ -2261,7 +2438,7 @@ RCOptionEditor::RCOptionEditor ()
 	add_option (_("General/Session"),
 	     new BoolOption (
 		     "only-copy-imported-files",
-		     _("Always copy imported files"),
+		     _("Drag and drop import always copies files to session"),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_only_copy_imported_files),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_only_copy_imported_files)
 		     ));
@@ -2283,7 +2460,7 @@ RCOptionEditor::RCOptionEditor ()
 		     ));
 
 
-#ifdef ENABLE_NLS
+#if ENABLE_NLS
 
 	add_option (_("General/Translation"), new OptionEditorHeading (_("Internationalization")));
 
@@ -2306,14 +2483,6 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Editor"), new OptionEditorHeading (_("General")));
 
-	add_option (_("Editor"),
-	     new BoolOption (
-		     "rubberbanding-snaps-to-grid",
-		     _("Snap rubberband to grid"),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_rubberbanding_snaps_to_grid),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_rubberbanding_snaps_to_grid)
-		     ));
-
 	bo = new BoolOption (
 		     "name-new-markers",
 		     _("Prompt for new marker names"),
@@ -2324,17 +2493,9 @@ RCOptionEditor::RCOptionEditor ()
 	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(), _("If enabled, popup a dialog when a new marker is created to allow its name to be set as it is created."
 								"\n\nYou can always rename markers by right-clicking on them"));
 
-	add_option (_("Editor"),
-	     new BoolOption (
-		     "draggable-playhead",
-		     _("Allow dragging of playhead"),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_draggable_playhead),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_draggable_playhead)
-		     ));
-
 	ComboOption<float>* dps = new ComboOption<float> (
 		     "draggable-playhead-speed",
-		     _("Playhead dragging speed (%)"),
+		     _("Auto-scroll speed when dragging playhead"),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_draggable_playhead_speed),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_draggable_playhead_speed)
 		     );
@@ -2430,7 +2591,7 @@ RCOptionEditor::RCOptionEditor ()
 		     );
 	add_option (_("Editor"), bo);
 	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
-			_("<b>When enabled</b> The new points drawn in any automation lane will be placed on the existing line, regardless of mouse y-axis position."));
+			_("<b>When enabled</b> the new points drawn in any automation lane will be placed on the existing line, regardless of mouse y-axis position."));
 
 	ComboOption<FadeShape>* fadeshape = new ComboOption<FadeShape> (
 			"default-fade-shape",
@@ -2450,16 +2611,19 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Editor"), fadeshape);
 
-	bco = new BoolComboOption (
-		     "use-overlap-equivalency",
-		     _("Regions in edit groups are edited together"),
-		     _("whenever they overlap in time"),
-		     _("only if they have identical length and position"),
-		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_use_overlap_equivalency),
-		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_use_overlap_equivalency)
+	ComboOption<RegionEquivalence> *eqv = new ComboOption<RegionEquivalence> (
+		     "region-equivalency",
+		     _("Regions in active edit groups are edited together"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_region_equivalence),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_region_equivalence)
 		     );
 
-	add_option (_("Editor"), bco);
+	eqv->add (Overlap, _("whenever they overlap in time"));
+	eqv->add (Enclosed, _("if either encloses the other"));
+	eqv->add (Exact, _("only if they have identical length, position and origin"));
+	eqv->add (LayerTime, _("only if they have identical length, position and layer"));
+
+	add_option (_("Editor"), eqv);
 
 	ComboOption<LayerModel>* lm = new ComboOption<LayerModel> (
 		"layer-model",
@@ -2472,27 +2636,128 @@ RCOptionEditor::RCOptionEditor ()
 	lm->add (Manual, _("manual layering"));
 	add_option (_("Editor"), lm);
 
+	add_option (_("Editor"), new OptionEditorHeading (_("Split/Separate")));
+
+	ComboOption<RangeSelectionAfterSplit> *rras = new ComboOption<RangeSelectionAfterSplit> (
+		    "range-selection-after-separate",
+		    _("After a Separate operation, in Range mode"),
+		    sigc::mem_fun (*_rc_config, &RCConfiguration::get_range_selection_after_split),
+		    sigc::mem_fun (*_rc_config, &RCConfiguration::set_range_selection_after_split));
+
+	rras->add(ClearSel, _("Clear the Range Selection"));
+	rras->add(PreserveSel, _("Preserve the Range Selection"));
+	rras->add(ForceSel, _("Force-Select the regions under the range. (this might cause a tool change)"));
+	add_option (_("Editor"), rras);
+
 	ComboOption<RegionSelectionAfterSplit> *rsas = new ComboOption<RegionSelectionAfterSplit> (
 		    "region-selection-after-split",
-		    _("After splitting selected regions, select"),
+		    _("After a Split operation, in Object mode"),
 		    sigc::mem_fun (*_rc_config, &RCConfiguration::get_region_selection_after_split),
 		    sigc::mem_fun (*_rc_config, &RCConfiguration::set_region_selection_after_split));
 
 	// TODO: decide which of these modes are really useful
-	rsas->add(None, _("no regions"));
-	// rsas->add(NewlyCreatedLeft, _("newly-created regions before the split"));
-	// rsas->add(NewlyCreatedRight, _("newly-created regions after the split"));
-	rsas->add(NewlyCreatedBoth, _("newly-created regions"));
+	rsas->add(None, _("Clear the Region Selection"));
+	rsas->add(NewlyCreatedLeft, _("Select only the newly-created regions BEFORE the split point"));
+	rsas->add(NewlyCreatedRight, _("Select only the newly-created regions AFTER the split point"));
+	rsas->add(NewlyCreatedBoth, _("Select the newly-created regions"));
 	// rsas->add(Existing, _("unmodified regions in the existing selection"));
 	// rsas->add(ExistingNewlyCreatedLeft, _("existing selection and newly-created regions before the split"));
 	// rsas->add(ExistingNewlyCreatedRight, _("existing selection and newly-created regions after the split"));
-	rsas->add(ExistingNewlyCreatedBoth, _("existing selection and newly-created regions"));
+	rsas->add(ExistingNewlyCreatedBoth, _("Preserve the existing selection, AND select all newly-created regions"));
 
 	add_option (_("Editor"), rsas);
+
+	add_option (_("Editor/Snap"), new OptionEditorHeading (_("General Snap options:")));
+
+	add_option (_("Editor/Snap"),
+		    new SpinOption<uint32_t> (
+			    "snap-threshold",
+			    _("Snap Threshold (pixels)"),
+			    sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_threshold),
+			    sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_threshold),
+			    10, 200,
+			    1, 10
+			    ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "show-snapped-cursor",
+		     _("Show \"snapped cursor\""),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_snapped_cursor),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_snapped_cursor)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "rubberbanding-snaps-to-grid",
+		     _("Snap rubberband selection to grid"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_rubberbanding_snaps_to_grid),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_rubberbanding_snaps_to_grid)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "grid-follows-internal",
+		     _("Grid switches to alternate selection for Internal Edit tools"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_grid_follows_internal),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_grid_follows_internal)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "rulers-follow-grid",
+		     _("Rulers automatically change to follow the Grid mode selection"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_rulers_follow_grid),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_rulers_follow_grid)
+		     ));
+
+	add_option (_("Editor/Snap"), new OptionEditorHeading (_("When \"Snap\" is enabled, snap to:")));
+
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-marks",
+		     _("Markers"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_marks),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_marks)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-region-sync",
+		     _("Region Sync Points"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_region_sync),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_region_sync)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-region-start",
+		     _("Region Starts"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_region_start),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_region_start)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-region-end",
+		     _("Region Ends"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_region_end),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_region_end)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-grid",
+		     _("Grid"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_grid),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_grid)
+		     ));
 
 	add_option (_("Editor/Modifiers"), new OptionEditorHeading (_("Keyboard Modifiers")));
 	add_option (_("Editor/Modifiers"), new KeyboardOptions);
 	add_option (_("Editor/Modifiers"), new OptionEditorBlank ());
+
 
 	/* MIXER -- SOLO AND MUTE */
 
@@ -2575,6 +2840,15 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Mixer"), pa);
 
+	add_option (_("Mixer"), new OptionEditorHeading (_("Master")));
+	add_option (_("Mixer"),
+			new BoolOption (
+				"use-master-volume",
+				_("Enable master-bus output gain control"),
+				sigc::mem_fun (*_rc_config, &RCConfiguration::get_use_master_volume),
+				sigc::mem_fun (*_rc_config, &RCConfiguration::set_use_master_volume)
+				));
+
 	add_option (_("Mixer"), new OptionEditorHeading (_("Default Track / Bus Muting Options")));
 
 	add_option (_("Mixer"),
@@ -2610,16 +2884,14 @@ RCOptionEditor::RCOptionEditor ()
 		     ));
 
 
-	if (!ARDOUR::Profile->get_mixbus()) {
-		add_option (_("Mixer"), new OptionEditorHeading (_("Send Routing")));
-		add_option (_("Mixer"),
-				new BoolOption (
-					"link-send-and-route-panner",
-					_("Link panners of Aux and External Sends with main panner by default"),
-					sigc::mem_fun (*_rc_config, &RCConfiguration::get_link_send_and_route_panner),
-					sigc::mem_fun (*_rc_config, &RCConfiguration::set_link_send_and_route_panner)
-					));
-	}
+	add_option (_("Mixer"), new OptionEditorHeading (_("Send Routing")));
+	add_option (_("Mixer"),
+			new BoolOption (
+				"link-send-and-route-panner",
+				_("Link panners of Aux and External Sends with main panner by default"),
+				sigc::mem_fun (*_rc_config, &RCConfiguration::get_link_send_and_route_panner),
+				sigc::mem_fun (*_rc_config, &RCConfiguration::set_link_send_and_route_panner)
+				));
 
 	/* Signal Flow */
 
@@ -2644,27 +2916,31 @@ RCOptionEditor::RCOptionEditor ()
 	add_option (_("Signal Flow"), mm);
 
 	bo = new BoolOption (
-		     "tape-machine-mode",
-		     _("Tape machine mode"),
-		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_tape_machine_mode),
-		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_tape_machine_mode)
+		     "auto-input-does-talkback",
+		     _("Auto Input does 'talkback'"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_auto_input_does_talkback),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_auto_input_does_talkback)
 		     );
 	add_option (_("Signal Flow"), bo);
 	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
-			string_compose (_("<b>When enabled</b> %1 will not monitor a track's input if the transport is stopped."),
+			string_compose (_("<b>When enabled</b>, and Transport->Auto-Input is enabled, %1 will always monitor audio inputs when transport is stopped, even if tracks aren't armed."),
 					PROGRAM_NAME));
 
 	if (!Profile->get_mixbus()) {
 
 		add_option (_("Signal Flow"), new OptionEditorHeading (_("Track and Bus Connections")));
 
-		add_option (_("Signal Flow"),
-				new BoolOption (
+		bo = new BoolOption (
 					"auto-connect-standard-busses",
-					_("Auto-connect master/monitor busses"),
+					_("Auto-connect main output (master or monitor) bus to physical ports"),
 					sigc::mem_fun (*_rc_config, &RCConfiguration::get_auto_connect_standard_busses),
 					sigc::mem_fun (*_rc_config, &RCConfiguration::set_auto_connect_standard_busses)
-					));
+					);
+		add_option (_("Signal Flow"), bo);
+		Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
+			_("<b>When enabled</b> the main output bus is auto-connected to the first N physical ports. "
+				"If the session has a monitor-section, the monitor-bus output is connected to the hardware playback ports, "
+				"otherwise the master-bus output is directly used for playback."));
 
 		ComboOption<AutoConnectOption>* iac = new ComboOption<AutoConnectOption> (
 				"input-auto-connect",
@@ -2758,6 +3034,8 @@ RCOptionEditor::RCOptionEditor ()
 		dm->set_sensitive(false);
 	}
 
+	dm->set_note (_("Changes may not be effective until audio-engine restart."));
+
 	add_option (_("Audio"), dm);
 
 	add_option (_("Audio"), new OptionEditorHeading (_("Regions")));
@@ -2780,18 +3058,6 @@ RCOptionEditor::RCOptionEditor ()
 
 	/* MIDI */
 
-	add_option (_("MIDI"), new OptionEditorHeading (_("Buffering")));
-
-	add_option (_("MIDI"),
-		    new SpinOption<float> (
-			    "midi-readahead",
-			    _("MIDI read-ahead time (seconds)"),
-			    sigc::mem_fun (*_rc_config, &RCConfiguration::get_midi_readahead),
-			    sigc::mem_fun (*_rc_config, &RCConfiguration::set_midi_readahead),
-			    0.1, 10, 0.05, 1,
-			    "", 1.0, 2
-			    ));
-
 	add_option (_("MIDI"), new OptionEditorHeading (_("Session")));
 
 	add_option (_("MIDI"),
@@ -2813,32 +3079,38 @@ RCOptionEditor::RCOptionEditor ()
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_sound_midi_notes)
 		     ));
 
-	ComboOption<std::string>* audition_synth = new ComboOption<std::string> (
-		"midi-audition-synth-uri",
-		_("MIDI Audition Synth (LV2)"),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::get_midi_audition_synth_uri),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::set_midi_audition_synth_uri)
+	add_option (_("MIDI"), new OptionEditorHeading (_("Virtual Keyboard")));
+
+	ComboOption<std::string>* vkeybdlayout = new ComboOption<std::string> (
+		"vkeybd-layout",
+		_("Virtual Keyboard Layout"),
+		sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_vkeybd_layout),
+		sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_vkeybd_layout)
 		);
 
-	audition_synth->add(X_(""), _("None"));
-	PluginInfoList all_plugs;
-	PluginManager& manager (PluginManager::instance());
-#ifdef LV2_SUPPORT
-	all_plugs.insert (all_plugs.end(), manager.lv2_plugin_info().begin(), manager.lv2_plugin_info().end());
+	vkeybdlayout->add ("None",   _("Mouse-only (no keyboard)"));
+	vkeybdlayout->add ("QWERTY", _("QWERTY"));
+	vkeybdlayout->add ("QWERTZ", _("QWERTZ"));
+	vkeybdlayout->add ("AZERTY", _("AZERTY"));
+	vkeybdlayout->add ("DVORAK", _("DVORAK"));
+	vkeybdlayout->add ("QWERTY Single", _("QWERTY Single"));
+	vkeybdlayout->add ("QWERTZ Single", _("QWERTZ Single"));
 
-	for (PluginInfoList::const_iterator i = all_plugs.begin(); i != all_plugs.end(); ++i) {
-		if (manager.get_status (*i) == PluginManager::Hidden) continue;
-		if (!(*i)->is_instrument()) continue;
-		if ((*i)->type != ARDOUR::LV2) continue;
-		if ((*i)->name.length() > 46) {
-			audition_synth->add((*i)->unique_id, (*i)->name.substr (0, 44) + "...");
-		} else {
-			audition_synth->add((*i)->unique_id, (*i)->name);
-		}
-	}
-#endif
+	add_option (_("MIDI"), vkeybdlayout);
 
-	add_option (_("MIDI"), audition_synth);
+	/* MIDI PORTs */
+	add_option (_("MIDI"), new OptionEditorHeading (_("MIDI Port Options")));
+
+	add_option (_("MIDI"),
+		    new BoolOption (
+			    "midi-input-follows-selection",
+			    _("MIDI input follows MIDI track selection"),
+			    sigc::mem_fun (*_rc_config, &RCConfiguration::get_midi_input_follows_selection),
+			    sigc::mem_fun (*_rc_config, &RCConfiguration::set_midi_input_follows_selection)
+			    ));
+
+	add_option (_("MIDI"), new MidiPortOptions ());
+	add_option (_("MIDI"), new OptionEditorBlank ());
 
 	/* Click */
 
@@ -3009,9 +3281,17 @@ RCOptionEditor::RCOptionEditor ()
 	add_option (S_("Preferences|Metering"),
 	     new BoolOption (
 		     "save-export-analysis-image",
-		     _("Save loudness analysis as image file"),
+		     _("Save loudness analysis as image file after export"),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_save_export_analysis_image),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_save_export_analysis_image)
+		     ));
+
+	add_option (S_("Preferences|Metering"),
+	     new BoolOption (
+		     "save-export-mixer-screenshot",
+		     _("Save Mixer screenshot after export"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_save_export_mixer_screenshot),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_save_export_mixer_screenshot)
 		     ));
 
 	/* TRANSPORT & Sync */
@@ -3093,20 +3373,23 @@ RCOptionEditor::RCOptionEditor ()
 	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
 					    (_("<b>When enabled</b> the loop button does not start playback but forces playback to always play the loop\n\n"
 					       "<b>When disabled</b> the loop button starts playing the loop, but stop then cancels loop playback")));
+
+
 	add_option (_("Transport"), bo);
 
-	bo = new BoolOption (
-		     "seamless-loop",
-		     _("Do seamless looping (not possible when slaved to MTC, LTC etc)"),
-		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_seamless_loop),
-		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_seamless_loop)
+
+	ComboOption<LoopFadeChoice>* lca = new ComboOption<LoopFadeChoice> (
+		     "loop-fade-choice",
+		     _("Loop Fades"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_loop_fade_choice),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_loop_fade_choice)
 		     );
-	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
-					    string_compose (_("<b>When enabled</b> this will loop by reading ahead and wrapping around at the loop point, "
-							      "preventing any need to do a transport locate at the end of the loop\n\n"
-							      "<b>When disabled</b> looping is done by locating back to the start of the loop when %1 reaches the end "
-							      "which will often cause a small click or delay"), PROGRAM_NAME));
-	add_option (_("Transport"), bo);
+	lca->add (NoLoopFade, _("No fades at loop boundaries"));
+	lca->add (EndLoopFade, _("Fade out at loop end"));
+	lca->add (BothLoopFade, _("Fade in at loop start & Fade out at loop end"));
+	lca->add (XFadeLoop, _("Cross-fade loop end and start"));
+	add_option (_("Transport"), lca);
+	Gtkmm2ext::UI::instance()->set_tip (lca->tip_widget(), _("Options for fades/crossfades at loop boundaries"));
 
 	add_option (_("Transport"), new OptionEditorHeading (_("Dropout (xrun) Handling")));
 	bo = new BoolOption (
@@ -3128,19 +3411,18 @@ RCOptionEditor::RCOptionEditor ()
 		     );
 	add_option (_("Transport"), bo);
 
+	bo = new BoolOption (
+		     "recording-resets-xrun-count",
+		     _("Reset x-run counter when starting to record"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_recording_resets_xrun_count),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_recording_resets_xrun_count)
+		     );
+	add_option (_("Transport"), bo);
 
-	/* SYNC */
 
-	add_option (_("Sync"), new OptionEditorHeading (_("External Synchronization")));
+	add_option (_("Transport"), new OptionEditorHeading (_("Transport Masters")));
 
-	_sync_source = new ComboOption<SyncSource> (
-		"sync-source",
-		_("External timecode source"),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::get_sync_source),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::set_sync_source)
-		);
-
-	add_option (_("Sync"), _sync_source);
+	add_option (_("Transport"), new WidgetOption (X_("foo"), X_("Transport Masters"), _transport_masters_widget));
 
 	_sync_framerate = new BoolOption (
 		     "timecode-sync-frame-rate",
@@ -3156,69 +3438,11 @@ RCOptionEditor::RCOptionEditor ()
 				   "Instead the frame rate indication in the main clock will flash red and %1 will convert between the external "
 				   "timecode standard and the session standard."), PROGRAM_NAME));
 
-	add_option (_("Sync"), _sync_framerate);
+	add_option (_("Transport"), _sync_framerate);
 
-	_sync_genlock = new BoolOption (
-		"timecode-source-is-synced",
-		_("Sync-lock timecode to clock (disable drift compensation)"),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::get_timecode_source_is_synced),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::set_timecode_source_is_synced)
-		);
-	Gtkmm2ext::UI::instance()->set_tip
-		(_sync_genlock->tip_widget(),
-		 string_compose (_("<b>When enabled</b> %1 will never varispeed when slaved to external timecode. "
-				   "Sync Lock indicates that the selected external timecode source shares clock-sync "
-				   "(Black &amp; Burst, Wordclock, etc) with the audio interface. "
-				   "This option disables drift compensation. The transport speed is fixed at 1.0. "
-				   "Vari-speed LTC will be ignored and cause drift."
-				   "\n\n"
-				   "<b>When disabled</b> %1 will compensate for potential drift, regardless if the "
-				   "timecode sources shares clock sync."
-				  ), PROGRAM_NAME));
+	add_option (_("Transport/LTC"), new OptionEditorHeading (_("Linear Timecode (LTC) Generator")));
 
-
-	add_option (_("Sync"), _sync_genlock);
-
-	_sync_source_2997 = new BoolOption (
-		"timecode-source-2997",
-		_("Lock to 29.9700 fps instead of 30000/1001"),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::get_timecode_source_2997),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::set_timecode_source_2997)
-		);
-	Gtkmm2ext::UI::instance()->set_tip
-		(_sync_source_2997->tip_widget(),
-		 _("<b>When enabled</b> the external timecode source is assumed to use 29.97 fps instead of 30000/1001.\n"
-			 "SMPTE 12M-1999 specifies 29.97df as 30000/1001. The spec further mentions that "
-			 "drop-sample timecode has an accumulated error of -86ms over a 24-hour period.\n"
-			 "Drop-sample timecode would compensate exactly for a NTSC color frame rate of 30 * 0.9990 (ie 29.970000). "
-			 "That is not the actual rate. However, some vendors use that rate - despite it being against the specs - "
-			 "because the variant of using exactly 29.97 fps has zero timecode drift.\n"
-			 ));
-
-	add_option (_("Sync"), _sync_source_2997);
-
-	add_option (_("Sync/LTC"), new OptionEditorHeading (_("Linear Timecode (LTC) Reader")));
-
-	_ltc_port = new ComboStringOption (
-		"ltc-source-port",
-		_("LTC incoming port"),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::get_ltc_source_port),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::set_ltc_source_port)
-		);
-
-	vector<string> physical_inputs;
-	physical_inputs.push_back (_("None"));
-	AudioEngine::instance()->get_physical_inputs (DataType::AUDIO, physical_inputs);
-	_ltc_port->set_popdown_strings (physical_inputs);
-
-	populate_sync_options ();
-	AudioEngine::instance()->Running.connect (engine_started_connection, MISSING_INVALIDATOR, boost::bind (&RCOptionEditor::populate_sync_options, this), gui_context());
-
-	add_option (_("Sync/LTC"), _ltc_port);
-
-	add_option (_("Sync/LTC"), new OptionEditorHeading (_("Linear Timecode (LTC) Generator")));
-
-	add_option (_("Sync/LTC"),
+	add_option (_("Transport/LTC"),
 		    new BoolOption (
 			    "send-ltc",
 			    _("Enable LTC generator"),
@@ -3235,7 +3459,7 @@ RCOptionEditor::RCOptionEditor ()
 	Gtkmm2ext::UI::instance()->set_tip
 		(_ltc_send_continuously->tip_widget(),
 		 string_compose (_("<b>When enabled</b> %1 will continue to send LTC information even when the transport (playhead) is not moving"), PROGRAM_NAME));
-	add_option (_("Sync/LTC"), _ltc_send_continuously);
+	add_option (_("Transport/LTC"), _ltc_send_continuously);
 
 	_ltc_volume_slider = new HSliderOption("ltcvol", _("LTC generator level [dBFS]"),
 			    sigc::mem_fun (*_rc_config, &RCConfiguration::get_ltc_output_volume),
@@ -3247,12 +3471,13 @@ RCOptionEditor::RCOptionEditor ()
 		(_ltc_volume_slider->tip_widget(),
 		 _("Specify the Peak Volume of the generated LTC signal in dBFS. A good value is  0dBu ^= -18dBFS in an EBU calibrated system"));
 
-	add_option (_("Sync/LTC"), _ltc_volume_slider);
+	add_option (_("Transport/LTC"), _ltc_volume_slider);
 
+	add_option (_("Transport/LTC"), new LTCPortSelectOption (_rc_config, this));
 
-	add_option (_("Sync/MIDI"), new OptionEditorHeading (_("MIDI Beat Clock (Mclk) Generator")));
+	add_option (_("Transport/MIDI"), new OptionEditorHeading (_("MIDI Beat Clock (Mclk) Generator")));
 
-	add_option (_("Sync/MIDI"),
+	add_option (_("Transport/MIDI"),
 		    new BoolOption (
 			    "send-midi-clock",
 			    _("Enable Mclk generator"),
@@ -3260,9 +3485,9 @@ RCOptionEditor::RCOptionEditor ()
 			    sigc::mem_fun (*_rc_config, &RCConfiguration::set_send_midi_clock)
 			    ));
 
-	add_option (_("Sync/MIDI"), new OptionEditorHeading (_("MIDI Time Code (MTC) Generator")));
+	add_option (_("Transport/MIDI"), new OptionEditorHeading (_("MIDI Time Code (MTC) Generator")));
 
-	add_option (_("Sync/MIDI"),
+	add_option (_("Transport/MIDI"),
 		    new BoolOption (
 			    "send-mtc",
 			    _("Enable MTC Generator"),
@@ -3270,7 +3495,7 @@ RCOptionEditor::RCOptionEditor ()
 			    sigc::mem_fun (*_rc_config, &RCConfiguration::set_send_mtc)
 			    ));
 
-	add_option (_("Sync/MIDI"),
+	add_option (_("Transport/MIDI"),
 		    new SpinOption<int> (
 			    "mtc-qf-speed-tolerance",
 			    _("Percentage either side of normal transport speed to transmit MTC"),
@@ -3279,9 +3504,9 @@ RCOptionEditor::RCOptionEditor ()
 			    0, 20, 1, 5
 			    ));
 
-	add_option (_("Sync/MIDI"), new OptionEditorHeading (_("MIDI Machine Control (MMC)")));
+	add_option (_("Transport/MIDI"), new OptionEditorHeading (_("MIDI Machine Control (MMC)")));
 
-	add_option (_("Sync/MIDI"),
+	add_option (_("Transport/MIDI"),
 		    new BoolOption (
 			    "mmc-control",
 			    _("Respond to MMC commands"),
@@ -3289,7 +3514,7 @@ RCOptionEditor::RCOptionEditor ()
 			    sigc::mem_fun (*_rc_config, &RCConfiguration::set_mmc_control)
 			    ));
 
-	add_option (_("Sync/MIDI"),
+	add_option (_("Transport/MIDI"),
 		    new BoolOption (
 			    "send-mmc",
 			    _("Send MMC commands"),
@@ -3297,22 +3522,22 @@ RCOptionEditor::RCOptionEditor ()
 			    sigc::mem_fun (*_rc_config, &RCConfiguration::set_send_mmc)
 			    ));
 
-	add_option (_("Sync/MIDI"),
+	add_option (_("Transport/MIDI"),
 	     new SpinOption<uint8_t> (
 		     "mmc-receive-device-id",
 		     _("Inbound MMC device ID"),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_mmc_receive_device_id),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_mmc_receive_device_id),
-		     0, 128, 1, 10
+		     0, 127, 1, 10
 		     ));
 
-	add_option (_("Sync/MIDI"),
+	add_option (_("Transport/MIDI"),
 	     new SpinOption<uint8_t> (
 		     "mmc-send-device-id",
 		     _("Outbound MMC device ID"),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_mmc_send_device_id),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_mmc_send_device_id),
-		     0, 128, 1, 10
+		     0, 127, 1, 10
 		     ));
 
 
@@ -3321,23 +3546,10 @@ RCOptionEditor::RCOptionEditor ()
 	add_option (_("Control Surfaces"), new OptionEditorHeading (_("Control Surfaces")));
 	add_option (_("Control Surfaces"), new ControlSurfacesOptions ());
 
-	/* MIDI PORTs */
-	add_option (_("MIDI Ports"), new OptionEditorHeading (_("MIDI Port Options")));
-
-	add_option (_("MIDI Ports"),
-		    new BoolOption (
-			    "get-midi-input-follows-selection",
-			    _("MIDI input follows MIDI track selection"),
-			    sigc::mem_fun (*_rc_config, &RCConfiguration::get_midi_input_follows_selection),
-			    sigc::mem_fun (*_rc_config, &RCConfiguration::set_midi_input_follows_selection)
-			    ));
-
-	add_option (_("MIDI Ports"), new MidiPortOptions ());
-	add_option (_("MIDI Ports"), new OptionEditorBlank ());
 
 	/* PLUGINS */
 
-#if (defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT || defined AUDIOUNIT_SUPPORT)
+#if (defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT || defined AUDIOUNIT_SUPPORT || defined VST3_SUPPORT)
 	add_option (_("Plugins"), new OptionEditorHeading (_("Scan/Discover")));
 	add_option (_("Plugins"),
 			new RcActionButton (_("Scan for Plugins"),
@@ -3347,7 +3559,7 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Plugins"), new OptionEditorHeading (_("General")));
 
-#if (defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT || defined AUDIOUNIT_SUPPORT)
+#if (defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT || defined AUDIOUNIT_SUPPORT || defined VST3_SUPPORT)
 	bo = new BoolOption (
 			"show-plugin-scan-window",
 			_("Always Display Plugin Scan Progress"),
@@ -3379,7 +3591,23 @@ RCOptionEditor::RCOptionEditor ()
 	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
 					    _("<b>When enabled</b> plugins will be activated when they are added to tracks/busses. When disabled plugins will be left inactive when they are added to tracks/busses"));
 
-#if (defined WINDOWS_VST_SUPPORT || defined MACVST_SUPPORT || defined LXVST_SUPPORT)
+	ComboOption<uint32_t>* lna = new ComboOption<uint32_t> (
+		     "limit-n-automatables",
+		     _("Limit automatable parameters per plugin"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_limit_n_automatables),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_limit_n_automatables)
+		     );
+	lna->add (0, _("Unlimited"));
+	lna->add (64,  _("64 parameters"));
+	lna->add (128, _("128 parameters"));
+	lna->add (256, _("256 parameters"));
+	lna->add (512, _("512 parameters"));
+	lna->add (999, _("999 parameters"));
+	add_option (_("Plugins"), lna);
+	Gtkmm2ext::UI::instance()->set_tip (lna->tip_widget(),
+					    _("Some Plugins expose an unreasonable amount of control-inputs. This option limits the number of parameters that can are listed as automatable without restricting the number of total controls.\n\nThis reduces lag in the GUI and shortens excessively long drop-down lists for plugins with a large number of control ports.\n\nNote: This only affects newly added plugins and is applied to plugin on session-reload. Already automated parameters are retained."));
+
+#if (defined WINDOWS_VST_SUPPORT || defined MACVST_SUPPORT || defined LXVST_SUPPORT || defined VST3_SUPPORT)
 	add_option (_("Plugins/VST"), new OptionEditorHeading (_("VST")));
 #if 0
 	add_option (_("Plugins/VST"),
@@ -3422,22 +3650,31 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Plugins/VST"), new VstTimeOutSliderOption (_rc_config));
 
-	add_option (_("Plugins/VST"),
-			new RcActionButton (_("Clear"),
-				sigc::mem_fun (*this, &RCOptionEditor::clear_vst_cache),
-				_("VST Cache:")));
+#if (defined WINDOWS_VST_SUPPORT || defined MACVST_SUPPORT || defined LXVST_SUPPORT)
+	add_option (_("Plugins/VST"), new OptionEditorHeading (_("VST 2.x")));
 
 	add_option (_("Plugins/VST"),
 			new RcActionButton (_("Clear"),
-				sigc::mem_fun (*this, &RCOptionEditor::clear_vst_blacklist),
-				_("VST Blacklist:")));
+				sigc::mem_fun (*this, &RCOptionEditor::clear_vst2_cache),
+				_("VST 2 Cache:")));
+
+	add_option (_("Plugins/VST"),
+			new RcActionButton (_("Clear"),
+				sigc::mem_fun (*this, &RCOptionEditor::clear_vst2_blacklist),
+				_("VST 2 Blacklist:")));
+#endif
 #endif
 
 #ifdef LXVST_SUPPORT
 	add_option (_("Plugins/VST"),
 			new RcActionButton (_("Edit"),
-				sigc::mem_fun (*this, &RCOptionEditor::edit_lxvst_path),
-			_("Linux VST Path:")));
+				sigc::bind (sigc::mem_fun (*this, &RCOptionEditor::edit_vst_path),
+					_("Set Linux VST2 Search Path"),
+					PluginManager::instance().get_default_lxvst_path (),
+					sigc::mem_fun (*_rc_config, &RCConfiguration::get_plugin_path_lxvst),
+					sigc::mem_fun (*_rc_config, &RCConfiguration::set_plugin_path_lxvst)
+					),
+				_("Linux VST2 Path:")));
 
 	add_option (_("Plugins/VST"),
 			new RcConfigDisplay (
@@ -3450,14 +3687,59 @@ RCOptionEditor::RCOptionEditor ()
 #ifdef WINDOWS_VST_SUPPORT
 	add_option (_("Plugins/VST"),
 			new RcActionButton (_("Edit"),
-				sigc::mem_fun (*this, &RCOptionEditor::edit_vst_path),
-			_("Windows VST Path:")));
+				sigc::bind (sigc::mem_fun (*this, &RCOptionEditor::edit_vst_path),
+					_("Set Windows VST2 Search Path"),
+					PluginManager::instance().get_default_windows_vst_path (),
+					sigc::mem_fun (*_rc_config, &RCConfiguration::get_plugin_path_vst),
+					sigc::mem_fun (*_rc_config, &RCConfiguration::set_plugin_path_vst)
+					),
+				_("Windows VST2 Path:")));
+
 	add_option (_("Plugins/VST"),
 			new RcConfigDisplay (
 				"plugin-path-vst",
 				_("Path:"),
 				sigc::mem_fun (*_rc_config, &RCConfiguration::get_plugin_path_vst),
 				';'));
+#endif
+
+#ifdef VST3_SUPPORT
+	add_option (_("Plugins/VST"), new OptionEditorHeading (_("VST 3")));
+	add_option (_("Plugins/VST"),
+			new RcActionButton (_("Clear"),
+				sigc::mem_fun (*this, &RCOptionEditor::clear_vst3_cache),
+				_("VST 3 Cache:")));
+
+	add_option (_("Plugins/VST"),
+			new RcActionButton (_("Clear"),
+				sigc::mem_fun (*this, &RCOptionEditor::clear_vst3_blacklist),
+				_("VST 3 Blacklist:")));
+
+	RcActionButton* vst3_path =
+			new RcActionButton (_("Edit"),
+				sigc::bind (sigc::mem_fun (*this, &RCOptionEditor::edit_vst_path),
+					_("Set Additional VST3 Search Path"),
+					"", /* default is blank */
+					sigc::mem_fun (*_rc_config, &RCConfiguration::get_plugin_path_vst3),
+					sigc::mem_fun (*_rc_config, &RCConfiguration::set_plugin_path_vst3)
+					),
+				_("Additional VST3 Path:"));
+
+	vst3_path->set_note (_("Customizing VST3 paths is discouraged. Note that default VST3 paths as per <a href=\"https://steinbergmedia.github.io/vst3_doc/vstinterfaces/vst3loc.html#pluginloc\">specification</a> are always searched, and need not be explicitly set."));
+	add_option (_("Plugins/VST"), vst3_path);
+
+
+
+#if (defined WINDOWS_VST_SUPPORT || defined MACVST_SUPPORT || defined LXVST_SUPPORT)
+	add_option (_("Plugins/VST"), new OptionEditorHeading (_("VST2/VST3")));
+	add_option (_("Plugins/VST"),
+	     new BoolOption (
+		     "conceal-vst2-if-vst3-exists",
+		     _("Conceal VST2 Plugin if matching VST3 exists"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_conceal_vst2_if_vst3_exists),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_conceal_vst2_if_vst3_exists)
+		     ));
+#endif
 #endif
 
 #ifdef AUDIOUNIT_SUPPORT
@@ -3490,7 +3772,15 @@ RCOptionEditor::RCOptionEditor ()
 				_("AU Blacklist:")));
 #endif
 
-#if (defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT || defined AUDIOUNIT_SUPPORT || defined HAVE_LV2)
+	add_option (_("Plugins"), new OptionEditorHeading (_("LV1/LV2")));
+	add_option (_("Plugins"),
+	     new BoolOption (
+		     "conceal-lv1-if-lv2-exists",
+		     _("Conceal LADSPA (LV1) Plugins if matching LV2 exists"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_conceal_lv1_if_lv2_exists),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_conceal_lv1_if_lv2_exists)
+		     ));
+
 	add_option (_("Plugins"), new OptionEditorHeading (_("Plugin GUI")));
 	add_option (_("Plugins"),
 	     new BoolOption (
@@ -3500,7 +3790,7 @@ RCOptionEditor::RCOptionEditor ()
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_open_gui_after_adding_plugin)
 		     ));
 
-#if (defined LV2_SUPPORT && defined LV2_EXTENDED)
+#ifdef LV2_EXTENDED
 	add_option (_("Plugins"),
 	     new BoolOption (
 		     "show-inline-display-by-default",
@@ -3538,15 +3828,38 @@ RCOptionEditor::RCOptionEditor ()
 	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
 			_("<b>When enabled</b> show a dialog to select instrument channel configuration before adding a multichannel plugin."));
 
-#endif
+	add_option (_("Plugins"), new OptionEditorHeading (_("Statistics")));
+
+	add_option (_("Plugins"),
+			new RcActionButton (_("Reset Statistics"),
+				sigc::mem_fun (*this, &RCOptionEditor::plugin_reset_stats)));
+
+	add_option (_("Plugins"),
+	     new SpinOption<int32_t> (
+		     "max-plugin-chart",
+		     _("Plugin chart (use-count) length"),
+				 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_max_plugin_chart),
+				 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_max_plugin_chart),
+		     10, 25, 1, 5
+		     ));
+
+	add_option (_("Plugins"),
+	     new SpinOption<int32_t> (
+		     "max-plugin-recent",
+		     _("Plugin recent list length"),
+				 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_max_plugin_recent),
+				 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_max_plugin_recent),
+		     10, 50, 1, 5
+		     ));
+
 	add_option (_("Plugins"), new OptionEditorBlank ());
 
 	/* INTERFACE */
-#if (defined OPTIONAL_CAIRO_IMAGE_SURFACE || defined CAIRO_SUPPORTS_FORCE_BUGGY_GRADIENTS_ENVIRONMENT_VARIABLE)
+#if (!defined USE_CAIRO_IMAGE_SURFACE || defined CAIRO_SUPPORTS_FORCE_BUGGY_GRADIENTS_ENVIRONMENT_VARIABLE)
 	add_option (_("Appearance"), new OptionEditorHeading (_("Graphics Acceleration")));
 #endif
 
-#ifdef OPTIONAL_CAIRO_IMAGE_SURFACE
+#ifndef USE_CAIRO_IMAGE_SURFACE
 	BoolOption* bgc = new BoolOption (
 		"cairo-image-surface",
 		_("Disable Graphics Hardware Acceleration (requires restart)"),
@@ -3638,6 +3951,39 @@ RCOptionEditor::RCOptionEditor ()
 			sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_color_regions_using_track_color)
 			));
 
+	add_option (_("Appearance/Editor"),
+			new BoolOption (
+			"show-region-names",
+			_("Show Region Names"),
+			sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_region_name),
+			sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_region_name)
+			));
+
+
+	ComboOption<int>* emode = new ComboOption<int> (
+			"time-axis-name-ellipsize-mode",
+			_("Track name ellipsize mode"),
+			sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_time_axis_name_ellipsize_mode),
+			sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_time_axis_name_ellipsize_mode)
+		);
+	emode->add (-1, _("Ellipsize start of name"));
+	emode->add (0, _("Ellipsize middle of name"));
+	emode->add (1, _("Ellipsize end of name"));
+
+	Gtkmm2ext::UI::instance()->set_tip (emode->tip_widget(), _("Choose which part of long track names are hidden in the editor's track headers"));
+	add_option (_("Appearance/Editor"), emode);
+
+	ComboOption<uint32_t>* gap = new ComboOption<uint32_t> (
+		     "vertical-region-gap",
+		     _("Add a visual gap below Audio Regions"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_vertical_region_gap),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_vertical_region_gap)
+		     );
+	gap->add (0, _("None"));
+	gap->add (2, _("Small"));
+	gap->add (4, _("Large"));
+	add_option (_("Appearance/Editor"), gap);
+
 	add_option (_("Appearance/Editor"), new OptionEditorHeading (_("Waveforms")));
 
 	if (!Profile->get_mixbus()) {
@@ -3728,6 +4074,23 @@ RCOptionEditor::RCOptionEditor ()
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_never_display_periodic_midi)
 		     ));
 
+
+	add_option (_("Appearance/Editor"),
+	            new BoolOption (
+		            "use-note-bars-for-velocity",
+		            _("Show velocity horizontally inside notes"),
+		            sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_use_note_bars_for_velocity),
+		            sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_use_note_bars_for_velocity)
+		            ));
+
+	add_option (_("Appearance/Editor"),
+	            new BoolOption (
+		            "use-note-color-for-velocity",
+		            _("Use colors to show note velocity"),
+		            sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_use_note_color_for_velocity),
+		            sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_use_note_color_for_velocity)
+		            ));
+
 	add_option (_("Appearance/Editor"), new OptionEditorBlank ());
 
 	/* The names of these controls must be the same as those given in MixerStrip
@@ -3758,6 +4121,19 @@ RCOptionEditor::RCOptionEditor ()
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_default_narrow_ms)
 		     ));
 
+	ComboOption<uint32_t>* mic = new ComboOption<uint32_t> (
+		     "max-inline-controls",
+		     _("Limit inline-mixer-strip controls per plugin"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_max_inline_controls),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_max_inline_controls)
+		     );
+	mic->add (0, _("Unlimited"));
+	mic->add (16,  _("16 parameters"));
+	mic->add (32,  _("32 parameters"));
+	mic->add (64,  _("64 parameters"));
+	mic->add (128, _("128 parameters"));
+	add_option (_("Appearance/Mixer"), mic);
+
 	add_option (_("Appearance/Mixer"), new OptionEditorBlank ());
 
 	add_option (_("Appearance/Toolbar"), new OptionEditorHeading (_("Main Transport Toolbar Items")));
@@ -3773,17 +4149,17 @@ RCOptionEditor::RCOptionEditor ()
 	add_option (_("Appearance/Toolbar"),
 	     new BoolOption (
 		     "show-toolbar-monitoring",
-		     _("Display Monitor Options"),
+		     _("Display Monitoring Options"),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_toolbar_monitoring),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_toolbar_monitoring)
 		     ));
 
 	add_option (_("Appearance/Toolbar"),
 	     new BoolOption (
-		     "show-toolbar-selclock",
-		     _("Display Selection Clock"),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_toolbar_selclock),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_toolbar_selclock)
+		     "show-toolbar-latency",
+		     _("Display Latency Compensation Info"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_toolbar_latency),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_toolbar_latency)
 		     ));
 
 	if (!ARDOUR::Profile->get_small_screen()) {
@@ -3795,6 +4171,22 @@ RCOptionEditor::RCOptionEditor ()
 					sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_secondary_clock)
 					));
 	}
+
+	add_option (_("Appearance/Toolbar"),
+	     new BoolOption (
+		     "show-toolbar-selclock",
+		     _("Display Selection Clock"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_toolbar_selclock),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_toolbar_selclock)
+		     ));
+
+	add_option (_("Appearance/Toolbar"),
+	     new BoolOption (
+		     "show-toolbar-monitor-info",
+		     _("Display Monitor Section Info"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_toolbar_monitor_info),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_toolbar_monitor_info)
+		     ));
 
 	add_option (_("Appearance/Toolbar"),
 	     new BoolOption (
@@ -3814,7 +4206,7 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Appearance/Toolbar"),
 			new ColumVisibilityOption (
-				"action-table-columns", _("Lua Action Script Button Visibility"), 4,
+				"action-table-columns", _("Display Action-Buttons"), MAX_LUA_ACTION_BUTTONS / 2,
 				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_action_table_columns),
 				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_action_table_columns)
 				)
@@ -3831,6 +4223,13 @@ RCOptionEditor::RCOptionEditor ()
 				_("Draw \"flat\" buttons"),
 				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_flat_buttons),
 				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_flat_buttons)
+				));
+
+	add_option (_("Appearance/Theme"), new BoolOption (
+				"boxy-buttons",
+				_("Draw \"boxy\" buttons"),
+				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_boxy_buttons),
+				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_boxy_buttons)
 				));
 
 	add_option (_("Appearance/Theme"), new BoolOption (
@@ -3884,7 +4283,7 @@ RCOptionEditor::RCOptionEditor ()
 
 	quirks_head->set_note (string_compose (_("Rules for closing, minimizing, maximizing, and stay-on-top can vary \
 with each version of your OS, and the preferences that you've set in your OS.\n\n\
-You can adjust the options, below, to change how %1's windows and dialogs behave.\n\n\
+You can adjust the options, below, to change how application windows and dialogs behave.\n\n\
 These settings will only take effect after %1 is restarted.\n\
 	"), PROGRAM_NAME));
 
@@ -3945,7 +4344,6 @@ These settings will only take effect after %1 is restarted.\n\
 	//trigger some parameter-changed messages which affect widget-visibility or -sensitivity
 	parameter_changed ("send-ltc");
 	parameter_changed ("sync-source");
-	parameter_changed ("use-monitor-bus");
 	parameter_changed ("open-gui-after-adding-plugin");
 
 	XMLNode* node = ARDOUR_UI::instance()->preferences_settings();
@@ -3960,6 +4358,13 @@ These settings will only take effect after %1 is restarted.\n\
 }
 
 void
+RCOptionEditor::set_session (Session *s)
+{
+	SessionHandlePtr::set_session (s);
+	_transport_masters_widget.set_session (s);
+}
+
+void
 RCOptionEditor::parameter_changed (string const & p)
 {
 	OptionEditor::parameter_changed (p);
@@ -3968,49 +4373,56 @@ RCOptionEditor::parameter_changed (string const & p)
 		bool const s = Config->get_use_monitor_bus ();
 		if (!s) {
 			/* we can't use this if we don't have a monitor bus */
-			Config->set_solo_control_is_listen_control (false);
+			Config->set_solo_control_is_listen_control (false); // XXX
 		}
 		_solo_control_is_listen_control->set_sensitive (s);
 		_listen_position->set_sensitive (s);
 	} else if (p == "sync-source") {
-		_sync_source->set_sensitive (true);
-		if (_session) {
-			_sync_source->set_sensitive (!_session->config.get_external_sync());
-		}
-		switch(Config->get_sync_source()) {
-		case ARDOUR::MTC:
-		case ARDOUR::LTC:
-			_sync_genlock->set_sensitive (true);
+		boost::shared_ptr<TransportMaster> tm (TransportMasterManager::instance().current());
+		if (boost::dynamic_pointer_cast<TimecodeTransportMaster> (tm)) {
 			_sync_framerate->set_sensitive (true);
-			_sync_source_2997->set_sensitive (true);
-			break;
-		default:
-			_sync_genlock->set_sensitive (false);
+		} else {
 			_sync_framerate->set_sensitive (false);
-			_sync_source_2997->set_sensitive (false);
-			break;
 		}
 	} else if (p == "send-ltc") {
 		bool const s = Config->get_send_ltc ();
 		_ltc_send_continuously->set_sensitive (s);
 		_ltc_volume_slider->set_sensitive (s);
 	} else if (p == "open-gui-after-adding-plugin" || p == "show-inline-display-by-default") {
-#if (defined LV2_SUPPORT && defined LV2_EXTENDED)
+#ifdef LV2_EXTENDED
 		_plugin_prefer_inline->set_sensitive (UIConfiguration::instance().get_open_gui_after_adding_plugin() && UIConfiguration::instance().get_show_inline_display_by_default());
 #endif
+	} else if (p == "conceal-lv1-if-lv2-exists") {
+		plugin_scan_refresh ();
+	} else if (p == "conceal-vst2-if-vst3-exists") {
+		plugin_scan_refresh ();
 	}
 }
 
 void RCOptionEditor::plugin_scan_refresh () {
-	PluginManager::instance().refresh();
+	/* first argument says discover new plugins, second means be verbose */
+	PluginScanDialog psd (false, true);
+	psd.start ();
 }
 
-void RCOptionEditor::clear_vst_cache () {
+void RCOptionEditor::plugin_reset_stats () {
+	PluginManager::instance().reset_stats();
+}
+
+void RCOptionEditor::clear_vst2_cache () {
 	PluginManager::instance().clear_vst_cache();
 }
 
-void RCOptionEditor::clear_vst_blacklist () {
+void RCOptionEditor::clear_vst2_blacklist () {
 	PluginManager::instance().clear_vst_blacklist();
+}
+
+void RCOptionEditor::clear_vst3_cache () {
+	PluginManager::instance().clear_vst3_cache();
+}
+
+void RCOptionEditor::clear_vst3_blacklist () {
+	PluginManager::instance().clear_vst3_blacklist();
 }
 
 void RCOptionEditor::clear_au_cache () {
@@ -4021,18 +4433,12 @@ void RCOptionEditor::clear_au_blacklist () {
 	PluginManager::instance().clear_au_blacklist();
 }
 
-void RCOptionEditor::edit_lxvst_path () {
-	Glib::RefPtr<Gdk::Window> win = get_parent_window ();
-	PathsDialog *pd = new PathsDialog (
-		*current_toplevel(), _("Set Linux VST Search Path"),
-		_rc_config->get_plugin_path_lxvst(),
-		PluginManager::instance().get_default_lxvst_path()
-		);
+void RCOptionEditor::edit_vst_path (std::string const& title, std::string const& dflt, sigc::slot<string> get, sigc::slot<bool, string> set) {
+	PathsDialog *pd = new PathsDialog (*current_toplevel(), title, get (), dflt);
 	ResponseType r = (ResponseType) pd->run ();
 	pd->hide();
 	if (r == RESPONSE_ACCEPT) {
-		_rc_config->set_plugin_path_lxvst(pd->get_serialized_paths());
-
+		set (pd->get_serialized_paths());
 		MessageDialog msg (_("Re-scan Plugins now?"),
 				false /*no markup*/, Gtk::MESSAGE_QUESTION, Gtk::BUTTONS_YES_NO, true /*modal*/);
 		msg.set_default_response (Gtk::RESPONSE_YES);
@@ -4044,49 +4450,6 @@ void RCOptionEditor::edit_lxvst_path () {
 	delete pd;
 }
 
-void RCOptionEditor::edit_vst_path () {
-	PathsDialog *pd = new PathsDialog (
-		*current_toplevel(), _("Set Windows VST Search Path"),
-		_rc_config->get_plugin_path_vst(),
-		PluginManager::instance().get_default_windows_vst_path()
-		);
-	ResponseType r = (ResponseType) pd->run ();
-	pd->hide();
-	if (r == RESPONSE_ACCEPT) {
-		_rc_config->set_plugin_path_vst(pd->get_serialized_paths());
-		MessageDialog msg (_("Re-scan Plugins now?"),
-				false /*no markup*/, Gtk::MESSAGE_QUESTION, Gtk::BUTTONS_YES_NO, true /*modal*/);
-		msg.set_default_response (Gtk::RESPONSE_YES);
-		if (msg.run() == Gtk::RESPONSE_YES) {
-			msg.hide ();
-			plugin_scan_refresh ();
-		}
-	}
-	delete pd;
-}
-
-
-void
-RCOptionEditor::populate_sync_options ()
-{
-	vector<SyncSource> sync_opts = ARDOUR::get_available_sync_options ();
-
-	_sync_source->clear ();
-
-	for (vector<SyncSource>::iterator i = sync_opts.begin(); i != sync_opts.end(); ++i) {
-		_sync_source->add (*i, sync_source_to_string (*i));
-	}
-
-	if (sync_opts.empty()) {
-		_sync_source->set_sensitive(false);
-	} else {
-		if (std::find(sync_opts.begin(), sync_opts.end(), _rc_config->get_sync_source()) == sync_opts.end()) {
-			_rc_config->set_sync_source(sync_opts.front());
-		}
-	}
-
-	parameter_changed ("sync-source");
-}
 
 Gtk::Window*
 RCOptionEditor::use_own_window (bool and_fill_it)

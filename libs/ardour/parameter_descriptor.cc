@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2014 Paul Davis
-    Author: David Robillard
-
-    This program is free software; you can redistribute it and/or modify it
-    under the terms of the GNU General Public License as published by the Free
-    Software Foundation; either version 2 of the License, or (at your option)
-    any later version.
-
-    This program is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-    for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2015-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
@@ -25,6 +26,7 @@
 #include "ardour/amp.h"
 #include "ardour/dB.h"
 #include "ardour/parameter_descriptor.h"
+#include "ardour/parameter_types.h"
 #include "ardour/rc_configuration.h"
 #include "ardour/types.h"
 #include "ardour/utils.h"
@@ -42,28 +44,38 @@ ParameterDescriptor::ParameterDescriptor(const Evoral::Parameter& parameter)
 	, step(0)
 	, smallstep(0)
 	, largestep(0)
-	, integer_step(parameter.type() >= MidiCCAutomation &&
-	               parameter.type() <= MidiChannelPressureAutomation)
+	, integer_step(parameter_is_midi (parameter.type ()))
 	, sr_dependent(false)
 	, enumeration(false)
+	, inline_ctrl(false)
+	, display_priority(0)
 {
 	ScalePoints sp;
 
 	/* Note: defaults in Evoral::ParameterDescriptor */
 
 	switch((AutomationType)parameter.type()) {
-	case GainAutomation:
 	case BusSendLevel:
+		inline_ctrl = true;
+		/* fallthrough */
+	case GainAutomation:
 		upper  = Config->get_max_gain();
 		normal = 1.0f;
 		break;
 	case BusSendEnable:
-		normal = 1.0f;
+		upper  = 1.f;
+		normal = 1.f;
 		toggled = true;
 		break;
 	case TrimAutomation:
 		upper  = 10; // +20dB
 		lower  = .1; // -20dB
+		normal = 1.0f;
+		logarithmic = true;
+		break;
+	case MainOutVolume:
+		upper  = 100; // +40dB
+		lower  = .01; // -40dB
 		normal = 1.0f;
 		logarithmic = true;
 		break;
@@ -148,6 +160,8 @@ ParameterDescriptor::ParameterDescriptor()
 	, integer_step(false)
 	, sr_dependent(false)
 	, enumeration(false)
+	, inline_ctrl(false)
+	, display_priority(0)
 {}
 
 void
@@ -193,32 +207,41 @@ ParameterDescriptor::update_steps()
 	if (unit == ParameterDescriptor::MIDI_NOTE) {
 		step      = smallstep = 1;  // semitone
 		largestep = 12;             // octave
-	} else if (type == GainAutomation || type == TrimAutomation) {
+	} else if (type == GainAutomation || type == TrimAutomation || type == BusSendLevel || type == MainOutVolume) {
 		/* dB_coeff_step gives a step normalized for [0, max_gain].  This is
 		   like "slider position", so we convert from "slider position" to gain
 		   to have the correct unit here. */
 		largestep = position_to_gain (dB_coeff_step(upper));
 		step      = position_to_gain (largestep / 10.0);
 		smallstep = step;
+	} else if (logarithmic) {
+		/* ignore logscale rangesteps. {small|large}steps are used with the spinbox.
+		 * gtk-spinbox shows the internal (not interface) value and up/down
+		 * arrows linearly increase.
+		 * The AutomationController uses internal_to_interface():
+		 *   ui-step [0..1] -> log (1 + largestep / lower) / log (upper / lower)
+		 * so we use a step that's a multiple of "lower" for the interface step:
+		 *   log (1 + x) / log (upper / lower)
+		 */
+		smallstep = step = lower / 11;
+		largestep = lower / 3;
+		/* NOTE: the actual value does use rangesteps via
+		 * logscale_to_position_with_steps(), position_to_logscale_with_steps()
+		 * when it is converted.
+		 */
 	} else if (rangesteps > 1) {
 		const float delta = upper - lower;
-		if (logarithmic) {
-			smallstep = step = (powf (delta, 1.f  / (float)rangesteps) - 1.f) * lower;
-			largestep = (powf (delta, std::max (0.5f, 10.f / (float)rangesteps)) - 1.f) * lower;
-		} else if (integer_step) {
+		if (integer_step) {
 			smallstep = step = 1.0;
-			largestep = std::max(1.f, rintf (delta / (rangesteps - 1)));
+			largestep = std::max(1.f, rintf (delta / (rangesteps - 1.f)));
 		} else {
-			step = smallstep = delta / (rangesteps - 1);
-			largestep = std::min ((delta / 4.0f), 10.f * smallstep); // XXX
+			step = smallstep = delta / (rangesteps - 1.f);
+			largestep = std::min ((delta / 4.0f), 10.f * smallstep);
 		}
 	} else {
 		const float delta = upper - lower;
 		/* 30 steps between min/max (300 for fine-grained) */
-		if (logarithmic) {
-			smallstep = step = (powf (delta, 1.f / 300.f) - 1.f) * lower;
-			largestep = (powf (delta, 1.f / 30.f) - 1.f) * lower;
-		} else if (integer_step) {
+		if (integer_step) {
 			smallstep = step = 1.0;
 			largestep = std::max(1.f, rintf (delta / 30.f));
 		} else {
@@ -285,7 +308,7 @@ ParameterDescriptor::midi_note_num (const std::string& name)
 {
 	static NameNumMap name2num = build_midi_name2num();
 
-	uint8_t num = -1;			// -1 (or 255) is returned in case of failure
+	uint8_t num = -1; // -1 (or 255) is returned in case of failure
 
 	NameNumMap::const_iterator it = name2num.find(normalize_note_name(name));
 	if (it != name2num.end())
@@ -295,16 +318,20 @@ ParameterDescriptor::midi_note_num (const std::string& name)
 }
 
 float
-ParameterDescriptor::to_interface (float val) const
+ParameterDescriptor::to_interface (float val, bool rotary) const
 {
 	val = std::min (upper, std::max (lower, val));
 	switch(type) {
 		case GainAutomation:
+			/* fallthrough */
 		case BusSendLevel:
+			/* fallthrough */
 		case EnvelopeAutomation:
 			val = gain_to_slider_position_with_max (val, upper);
 			break;
 		case TrimAutomation:
+			/* fallthrough */
+		case MainOutVolume:
 			{
 				const float lower_db = accurate_coefficient_to_dB (lower);
 				const float range_db = accurate_coefficient_to_dB (upper) - lower_db;
@@ -312,6 +339,12 @@ ParameterDescriptor::to_interface (float val) const
 			}
 			break;
 		case PanAzimuthAutomation:
+			if (rotary) {
+				val = val;
+			} else {
+				val = 1.0 - val;
+			}
+			break;
 		case PanElevationAutomation:
 			val = val;
 			break;
@@ -345,7 +378,7 @@ ParameterDescriptor::to_interface (float val) const
 }
 
 float
-ParameterDescriptor::from_interface (float val) const
+ParameterDescriptor::from_interface (float val, bool rotary) const
 {
 	val = std::max (0.f, std::min (1.f, val));
 
@@ -363,6 +396,12 @@ ParameterDescriptor::from_interface (float val) const
 			}
 			break;
 		case PanAzimuthAutomation:
+			if (rotary) {
+				val = val;
+			} else {
+				val = 1.0 - val;
+			}
+			break;
 		case PanElevationAutomation:
 			 val = val;
 			break;
@@ -378,7 +417,7 @@ ParameterDescriptor::from_interface (float val) const
 					val = position_to_logscale (val, lower, upper);
 				}
 			} else if (toggled) {
-				val = val > 0 ? upper : lower;
+				val = val >= 0.5 ? upper : lower;
 			} else if (integer_step) {
 				/* upper and lower are inclusive. use evenly-divided steps
 				 * e.g. 5 integers 0,1,2,3,4 are mapped to a fader
@@ -387,7 +426,7 @@ ParameterDescriptor::from_interface (float val) const
 				val = floor (lower + val * (1.f + upper - lower));
 			} else if (rangesteps > 1) {
 				/* similar to above, but for float controls */
-				val = floor (val * (rangesteps - 1.f)) / (rangesteps - 1.f); // XXX
+				val = round (val * (rangesteps - 1.f)) / (rangesteps - 1.f); // XXX
 				val = val * (upper - lower) + lower;
 			} else {
 				val = val * (upper - lower) + lower;

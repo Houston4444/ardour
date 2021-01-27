@@ -1,21 +1,27 @@
 /*
-    Copyright (C) 2000-2006 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2007 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2012-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013-2014 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2015-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -46,6 +52,7 @@
 #include "ardour/utils.h"
 #include "pbd/memento_command.h"
 
+#include "ardour_message.h"
 #include "ardour_ui.h"
 #include "cursor_context.h"
 #include "editor.h"
@@ -75,7 +82,7 @@ void
 Editor::add_external_audio_action (ImportMode mode_hint)
 {
 	if (_session == 0) {
-		MessageDialog msg (_("You can't import or embed an audiofile until you have a session loaded."));
+		ArdourMessageDialog msg (_("You can't import or embed an audiofile until you have a session loaded."));
 		msg.run ();
 		return;
 	}
@@ -97,7 +104,7 @@ Editor::external_audio_dialog ()
 	uint32_t midi_track_cnt;
 
 	if (_session == 0) {
-		MessageDialog msg (_("You can't import or embed an audiofile until you have a session loaded."));
+		ArdourMessageDialog msg (_("You can't import or embed an audiofile until you have a session loaded."));
 		msg.run ();
 		return;
 	}
@@ -178,7 +185,7 @@ Editor::check_whether_and_how_to_import(string path, bool all_or_nothing)
 			message = string_compose (_("The session already contains a source file named %1.  Do you want to import %2 as a new source, or skip it?"), wave_name, wave_name);
 
 		}
-		MessageDialog dialog(message, false, Gtk::MESSAGE_QUESTION, Gtk::BUTTONS_NONE, true);
+		ArdourMessageDialog dialog(message, false, Gtk::MESSAGE_QUESTION, Gtk::BUTTONS_NONE, true);
 
 		if (all_or_nothing) {
 			// disabled
@@ -192,10 +199,7 @@ Editor::check_whether_and_how_to_import(string path, bool all_or_nothing)
 
 		//dialog.add_button("Skip all", 4); // All or rest?
 
-		dialog.show();
-
 		function = dialog.run ();
-
 		dialog.hide();
 	}
 
@@ -304,26 +308,20 @@ Editor::import_smf_tempo_map (Evoral::SMF const & smf, samplepos_t pos)
 		}
 
 		last_meter = meter;
-
-		cerr << "@ " << t->time_pulses/(double)smf.ppqn() << " ("
-		     << t->time_seconds << ") Add T " << tempo << " M " << meter << endl;
 	}
-
-	cerr << "NEW MAP:\n";
-	new_map.dump (cerr);
 
 	_session->tempo_map() = new_map;
 }
 
 void
-Editor::do_import (vector<string>        paths,
-                   ImportDisposition     disposition,
-                   ImportMode            mode,
-                   SrcQuality            quality,
-                   MidiTrackNameSource   midi_track_name_source,
+Editor::do_import (vector<string>          paths,
+                   ImportDisposition       disposition,
+                   ImportMode              mode,
+                   SrcQuality              quality,
+                   MidiTrackNameSource     midi_track_name_source,
                    MidiTempoMapDisposition smf_tempo_disposition,
-                   samplepos_t&           pos,
-                   ARDOUR::PluginInfoPtr instrument)
+                   samplepos_t&            pos,
+                   ARDOUR::PluginInfoPtr   instrument)
 {
 	boost::shared_ptr<Track> track;
 	vector<string> to_import;
@@ -357,8 +355,6 @@ Editor::do_import (vector<string>        paths,
 
 	ImportProgressWindow ipw (&import_status, _("Import"), _("Cancel Import"));
 
-	bool ok = true;
-
 	if (disposition == Editing::ImportMergeFiles) {
 
 		/* create 1 region from all paths, add to 1 track,
@@ -374,19 +370,17 @@ Editor::do_import (vector<string>        paths,
 			}
 		}
 
-		if (cancel) {
-			ok = false;
-		} else {
+		if (!cancel) {
 			ipw.show ();
-			ok = (import_sndfiles (paths, disposition, mode, quality, pos, 1, 1, track, false, instrument) == 0);
-			import_status.sources.clear();
+			import_sndfiles (paths, disposition, mode, quality, pos, 1, 1, track, false, instrument);
+			import_status.clear();
 		}
 
 	} else {
 
 		bool replace = false;
 
-		for (vector<string>::iterator a = paths.begin(); a != paths.end(); ++a) {
+		for (vector<string>::iterator a = paths.begin(); a != paths.end() && !import_status.cancel; ++a) {
 
 			const int check = check_whether_and_how_to_import (*a, true);
 
@@ -424,8 +418,8 @@ Editor::do_import (vector<string>        paths,
 					track = get_nth_selected_audio_track (nth++);
 				}
 
-				ok = (import_sndfiles (to_import, disposition, mode, quality, pos, 1, -1, track, replace, instrument) == 0);
-				import_status.sources.clear();
+				import_sndfiles (to_import, disposition, mode, quality, pos, 1, -1, track, replace, instrument);
+				import_status.clear();
 				break;
 
 			case Editing::ImportDistinctChannels:
@@ -433,8 +427,8 @@ Editor::do_import (vector<string>        paths,
 				to_import.clear ();
 				to_import.push_back (*a);
 
-				ok = (import_sndfiles (to_import, disposition, mode, quality, pos, -1, -1, track, replace, instrument) == 0);
-				import_status.sources.clear();
+				import_sndfiles (to_import, disposition, mode, quality, pos, -1, -1, track, replace, instrument);
+				import_status.clear();
 				break;
 
 			case Editing::ImportSerializeFiles:
@@ -442,8 +436,8 @@ Editor::do_import (vector<string>        paths,
 				to_import.clear ();
 				to_import.push_back (*a);
 
-				ok = (import_sndfiles (to_import, disposition, mode, quality, pos, 1, 1, track, replace, instrument) == 0);
-				import_status.sources.clear();
+				import_sndfiles (to_import, disposition, mode, quality, pos, 1, 1, track, replace, instrument);
+				import_status.clear();
 				break;
 
 			case Editing::ImportMergeFiles:
@@ -451,10 +445,6 @@ Editor::do_import (vector<string>        paths,
 				break;
 			}
 		}
-	}
-
-	if (ok) {
-		_session->save_state ("");
 	}
 
 	import_status.all_done = true;
@@ -465,7 +455,6 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 {
 	boost::shared_ptr<Track> track;
 	bool check_sample_rate = true;
-	bool ok = false;
 	vector<string> to_embed;
 	bool multi = paths.size() > 1;
 	int nth = 0;
@@ -488,7 +477,8 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 			}
 
 			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, -1, track, instrument) < -1) {
-				goto out;
+				/* error, bail out */
+				return;
 			}
 		}
 		break;
@@ -505,14 +495,16 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 			to_embed.push_back (*a);
 
 			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, -1, -1, track, instrument) < -1) {
-				goto out;
+				/* error, bail out */
+				return;
 			}
 		}
 		break;
 
 	case Editing::ImportMergeFiles:
 		if (embed_sndfiles (paths, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, instrument) < -1) {
-			goto out;
+			/* error, bail out */
+			return;
 		}
 		break;
 
@@ -528,17 +520,11 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 			to_embed.push_back (*a);
 
 			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, instrument) < -1) {
-				goto out;
+				/* error, bail out */
+				return;
 			}
 		}
 		break;
-	}
-
-	ok = true;
-
-  out:
-	if (ok) {
-		_session->save_state ("");
 	}
 }
 
@@ -547,16 +533,18 @@ Editor::import_sndfiles (vector<string>            paths,
                          ImportDisposition         disposition,
                          ImportMode                mode,
                          SrcQuality                quality,
-                         samplepos_t&               pos,
+                         samplepos_t&              pos,
                          int                       target_regions,
                          int                       target_tracks,
                          boost::shared_ptr<Track>& track,
                          bool                      replace,
                          ARDOUR::PluginInfoPtr     instrument)
 {
+	/* skip periodic saves while importing */
+	Session::StateProtector sp (_session);
+
 	import_status.paths = paths;
 	import_status.done = false;
-	import_status.cancel = false;
 	import_status.freeze = false;
 	import_status.quality = quality;
 	import_status.replace_existing_source = replace;
@@ -617,7 +605,7 @@ Editor::embed_sndfiles (vector<string>            paths,
                         bool&                     check_sample_rate,
                         ImportDisposition         disposition,
                         ImportMode                mode,
-                        samplepos_t&               pos,
+                        samplepos_t&              pos,
                         int                       target_regions,
                         int                       target_tracks,
                         boost::shared_ptr<Track>& track,
@@ -627,6 +615,9 @@ Editor::embed_sndfiles (vector<string>            paths,
 	SourceList sources;
 	string linked_path;
 	SoundFileInfo finfo;
+
+	/* skip periodic saves while importing */
+	Session::StateProtector sp (_session);
 
 	CursorContext::Handle cursor_ctx = CursorContext::create(*this, _cursors->wait);
 	gdk_flush ();
@@ -641,6 +632,12 @@ Editor::embed_sndfiles (vector<string>            paths,
 		if (!AudioFileSource::get_soundfile_info (path, finfo, error_msg)) {
 			error << string_compose(_("Editor: cannot open file \"%1\", (%2)"), path, error_msg ) << endmsg;
 			return -3;
+		}
+
+		if (!finfo.seekable) {
+			ArdourMessageDialog msg (string_compose (_("%1\nThis audiofile cannot be embedded. It must be imported!"), short_path (path, 40)), false, Gtk::MESSAGE_ERROR);
+			msg.run ();
+			return -2;
 		}
 
 		if (check_sample_rate  && (finfo.samplerate != (int) _session->sample_rate())) {
@@ -709,9 +706,7 @@ Editor::embed_sndfiles (vector<string>            paths,
 					source = boost::dynamic_pointer_cast<AudioFileSource> (
 						SourceFactory::createExternal (DataType::AUDIO, *_session,
 									       path, n,
-									       (mode == ImportAsTapeTrack
-										? Source::Destructive
-										: Source::Flag (0)),
+						                               Source::Flag (0),
 									true, true));
 				} else {
 					source = boost::dynamic_pointer_cast<AudioFileSource> (s);
@@ -739,7 +734,7 @@ Editor::embed_sndfiles (vector<string>            paths,
 int
 Editor::add_sources (vector<string>            paths,
                      SourceList&               sources,
-                     samplepos_t&               pos,
+                     samplepos_t&              pos,
                      ImportDisposition         disposition,
                      ImportMode                mode,
                      int                       target_regions,
@@ -785,7 +780,7 @@ Editor::add_sources (vector<string>            paths,
 
 		boost::shared_ptr<Region> r = RegionFactory::create (sources, plist);
 
-		if (use_timestamp && boost::dynamic_pointer_cast<AudioRegion>(r)) {
+		if (boost::dynamic_pointer_cast<AudioRegion>(r)) {
 			boost::dynamic_pointer_cast<AudioRegion>(r)->special_set_position(sources[0]->natural_position());
 		}
 
@@ -874,7 +869,7 @@ Editor::add_sources (vector<string>            paths,
 
 			boost::shared_ptr<Region> r = RegionFactory::create (just_one, plist);
 
-			if (use_timestamp && boost::dynamic_pointer_cast<AudioRegion>(r)) {
+			if (boost::dynamic_pointer_cast<AudioRegion>(r)) {
 				boost::dynamic_pointer_cast<AudioRegion>(r)->special_set_position((*x)->natural_position());
 			}
 
@@ -1060,27 +1055,6 @@ Editor::finish_bringing_in_material (boost::shared_ptr<Region> region,
 		break;
 	}
 
-	case ImportAsTapeTrack:
-	{
-		if (!ar) {
-			return -1;
-		}
-
-		list<boost::shared_ptr<AudioTrack> > at (_session->new_audio_track (in_chans, out_chans, 0, 1, string(), PresentationInfo::max_order, Destructive));
-		if (!at.empty()) {
-			boost::shared_ptr<Playlist> playlist = at.front()->playlist();
-			boost::shared_ptr<Region> copy (RegionFactory::create (region, true));
-			playlist->clear_changes ();
-			playlist->add_region (copy, pos);
-			_session->add_command (new StatefulDiffCommand (playlist));
-		}
-		if (Config->get_strict_io ()) {
-			for (list<boost::shared_ptr<AudioTrack> >::iterator i = at.begin(); i != at.end(); ++i) {
-				(*i)->set_strict_io (true);
-			}
-		}
-		break;
-	}
 	}
 
 	return 0;

@@ -1,21 +1,24 @@
 /*
-    Copyright (C) 1999-2002 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2008-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2015-2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __ardour_location_ui_h__
 #define __ardour_location_ui_h__
@@ -79,6 +82,7 @@ protected:
 	Gtk::Entry    name_entry;
 	Gtk::Label    name_label;
 	Gtk::Label    number_label;
+	Gtk::Label    date_label;
 
 	Gtk::HBox     start_hbox;
 	AudioClock    start_clock;
@@ -157,7 +161,6 @@ public:
 	~LocationUI ();
 
 	void set_session (ARDOUR::Session *);
-	void set_clock_mode (AudioClock::Mode);
 
 	void add_new_location();
 	void add_new_range();
@@ -182,12 +185,12 @@ private:
 
 	ArdourWidgets::VPane loc_range_panes;
 
-	Gtk::VBox  loc_sample_box;
+	Gtk::VBox  loc_frame_box;
 	Gtk::Button add_location_button;
 	Gtk::ScrolledWindow  location_rows_scroller;
 	Gtk::VBox            location_rows;
 
-	Gtk::VBox  range_sample_box;
+	Gtk::VBox  range_frame_box;
 	Gtk::Button add_range_button;
 	Gtk::ScrolledWindow  range_rows_scroller;
 	Gtk::VBox            range_rows;

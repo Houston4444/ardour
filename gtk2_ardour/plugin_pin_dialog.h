@@ -1,19 +1,19 @@
 /*
- * Copyright (C) 2016 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2018 Robin Gareus <robin@gareus.org>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #ifndef __gtkardour_plugin_pin_dialog_h__
@@ -171,16 +171,19 @@ private:
 	uint32_t add_port_to_table (boost::shared_ptr<ARDOUR::Port>, uint32_t, bool);
 	uint32_t maybe_add_route_to_input_menu (boost::shared_ptr<ARDOUR::Route>, ARDOUR::DataType, boost::weak_ptr<ARDOUR::Port>);
 	void port_connected_or_disconnected (boost::weak_ptr<ARDOUR::Port>, boost::weak_ptr<ARDOUR::Port>);
+	void port_pretty_name_changed (std::string);
 
 	bool sc_input_press (GdkEventButton *, boost::weak_ptr<ARDOUR::Port>);
 	bool sc_input_release (GdkEventButton *);
 
 	PBD::ScopedConnectionList _plugin_connections;
-	PBD::ScopedConnection _io_connection;
+	PBD::ScopedConnectionList _io_connection;
 	boost::shared_ptr<ARDOUR::PluginInsert> _pi;
 
 	void queue_idle_update ();
 	bool idle_update ();
+
+	void error_message_dialog (std::string const&) const;
 
 	uint32_t _n_plugins;
 	ARDOUR::ChanCount _in, _ins, _out;

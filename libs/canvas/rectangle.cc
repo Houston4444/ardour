@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2011-2013 Paul Davis
-    Author: Carl Hetherington <cth@carlh.net>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2014-2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <iostream>
 #include <cairomm/context.h>
@@ -55,8 +56,8 @@ Rectangle::Rectangle (Item* parent, Rect const & rect)
 {
 }
 
-Rect
-Rectangle::get_self_for_render () const
+void
+Rectangle::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context) const
 {
 	/* In general, a Rectangle will have a _position of (0,0) within its
 	   parent, and its extent is actually defined by _rect. But in the
@@ -64,19 +65,12 @@ Rectangle::get_self_for_render () const
 	   we should take that into account when rendering.
 	*/
 
-	return item_to_window (_rect.translate (_position), false);
-}
+	Rect self (item_to_window (_rect.translate (_position), false));
+	const Rect draw = self.intersection (area);
 
-void
-Rectangle::render_self (Rect const & area, Cairo::RefPtr<Cairo::Context> context, Rect self) const
-{
-	Rect r = self.intersection (area);
-
-	if (!r) {
+	if (!draw) {
 		return;
 	}
-
-	Rect draw = r;
 
 	if (_fill && !_transparent) {
 		if (_stops.empty()) {
@@ -140,12 +134,6 @@ Rectangle::render_self (Rect const & area, Cairo::RefPtr<Cairo::Context> context
 
 		context->stroke ();
 	}
-}
-
-void
-Rectangle::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context) const
-{
-	render_self (area, context, get_self_for_render ());
 }
 
 void

@@ -1,27 +1,30 @@
 /*
-    Copyright (C) 2004 Paul Davis
+ * Copyright (C) 2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2015-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
 
 #include "gtkmm2ext/gui_thread.h"
 #include "ardour/lxvst_plugin.h"
 #include "ardour/linux_vst_support.h"
 #include "lxvst_plugin_ui.h"
-#include <gdk/gdkx.h>
+
+#include <gdk/gdkx.h> /* must come later than glibmm/object.h */
 
 #define LXVST_H_FIDDLE 40
 
@@ -93,9 +96,57 @@ LXVSTPluginUI::package (Gtk::Window& win)
 }
 
 void
-LXVSTPluginUI::forward_key_event (GdkEventKey*)
+LXVSTPluginUI::forward_key_event (GdkEventKey* gdk_key)
 {
-	std::cerr << "LXVSTPluginUI : keypress forwarding to linuxVSTs unsupported" << std::endl;
+	if (!_vst->state()->gtk_window_parent) {
+		return;
+	}
+
+	Glib::RefPtr<Gdk::Window> gdk_window = ((Gtk::Window*) _vst->state()->gtk_window_parent)->get_window();
+
+	if (!gdk_window) {
+		return;
+	}
+
+	XEvent xev;
+	int mask;
+
+	switch (gdk_key->type) {
+	case GDK_KEY_PRESS:
+		xev.xany.type = KeyPress;
+		mask = KeyPressMask;
+		break;
+	case GDK_KEY_RELEASE:
+		xev.xany.type = KeyRelease;
+		mask = KeyReleaseMask;
+		break;
+	default:
+		return;
+	}
+
+	/* XXX relies on GDK using X11 definitions for these fields */
+
+	xev.xkey.state = gdk_key->state;
+	xev.xkey.keycode = gdk_key->hardware_keycode; /* see gdk/x11/gdkevents-x11.c:translate_key_event() */
+
+	xev.xkey.x = 0;
+	xev.xkey.y = 0;
+	xev.xkey.x_root = 0;
+	xev.xkey.y_root = 0;
+	xev.xkey.root = gdk_x11_get_default_root_xwindow();
+	xev.xkey.window = _vst->state()->linux_plugin_ui_window ? _vst->state()->linux_plugin_ui_window : _vst->state()->xid;
+	xev.xkey.subwindow = None;
+	xev.xkey.time = gdk_key->time;
+
+	xev.xany.serial = 0; /* we don't have one */
+	xev.xany.send_event = true; /* pretend we are using XSendEvent */
+	xev.xany.display = GDK_WINDOW_XDISPLAY (gdk_window->gobj());
+
+	if (_vst->state()->eventProc) {
+		_vst->state()->eventProc (&xev);
+	} else if (!dispatch_effeditkey (gdk_key)) {
+		XSendEvent (xev.xany.display, xev.xany.window, TRUE, mask, &xev);
+	}
 }
 
 int

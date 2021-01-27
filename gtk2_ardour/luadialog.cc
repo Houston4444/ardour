@@ -1,20 +1,23 @@
 /*
- * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2017-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2018 Nikolaus Gullotta <nikolaus.gullotta@gmail.com>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+
+#include <algorithm>
 
 #include <gtkmm.h>
 
@@ -26,6 +29,7 @@
 #include "widgets/ardour_dropdown.h"
 #include "widgets/slider_controller.h"
 
+#include "stripable_colorpicker.h"
 #include "ardour_dialog.h"
 #include "luadialog.h"
 #include "splash.h"
@@ -33,11 +37,11 @@
 
 using namespace LuaDialog;
 
-/*******************************************************************************
+/* *****************************************************************************
  * Simple Message Dialog
  */
 Message::Message (std::string const& title, std::string const& msg, Message::MessageType mt, Message::ButtonType bt)
-	: _message_dialog (msg, false, to_gtk_mt (mt), to_gtk_bt (bt), true)
+	: _message_dialog (msg, true, to_gtk_mt (mt), to_gtk_bt (bt), true)
 {
 	_message_dialog.set_title (title);
 }
@@ -165,6 +169,25 @@ public:
 	void assign (luabridge::LuaRef* rv) const { }
 protected:
 	Gtk::HSeparator _sep;
+};
+
+class LuaColorPicker : public LuaDialogWidget
+{
+public:
+	LuaColorPicker (std::string const& key)
+		: LuaDialogWidget (key, "", 0, 1)
+	{}
+
+	Gtk::Widget* widget ()
+	{
+		return &_cs;
+	}
+	void assign (luabridge::LuaRef* rv) const {
+		uint32_t rgba = ARDOUR_UI_UTILS::gdk_color_to_rgba(_cs.get_color());
+		(*rv)[_key] = rgba;
+	}
+protected:
+	Gtk::ColorButton _cs;
 };
 
 class LuaDialogCheckbox : public LuaDialogWidget
@@ -451,18 +474,27 @@ protected:
 	void populate (Gtk::Menu_Helpers::MenuList& items, luabridge::LuaRef values, std::string const& dflt)
 	{
 		using namespace Gtk::Menu_Helpers;
+		std::vector<std::string> keys;
+
 		for (luabridge::Iterator i (values); !i.isNil (); ++i) {
 			if (!i.key ().isString ())  { continue; }
-			std::string key = i.key ().cast<std::string> ();
-			if (i.value ().isTable ())  {
+			keys.push_back (i.key ().cast<std::string> ());
+		}
+
+		std::sort (keys.begin(), keys.end());
+
+		for (std::vector<std::string>::const_iterator i = keys.begin (); i != keys.end(); ++i) {
+			std::string key = *i;
+
+			if (values[key].isTable ())  {
 				Gtk::Menu* menu  = Gtk::manage (new Gtk::Menu);
 				items.push_back (MenuElem (key, *menu));
-				populate (menu->items (), i.value (), dflt);
+				populate (menu->items (), values[key], dflt);
 				continue;
 			}
-			luabridge::LuaRef* ref = new luabridge::LuaRef (i.value ());
+			luabridge::LuaRef* ref = new luabridge::LuaRef (values[key]);
 			_refs.push_back (ref);
-			items.push_back (MenuElem (i.key ().cast<std::string> (),
+			items.push_back (MenuElem (key,
 						sigc::bind (sigc::mem_fun (*this, &LuaDialogDropDown::dd_select), key, ref)));
 
 			if (!_rv || key == dflt) {
@@ -489,20 +521,16 @@ public:
 		: LuaDialogWidget (key, title)
 		, _fc (a)
 	{
+		Gtkmm2ext::add_volume_shortcuts (_fc);
 		if (!path.empty ()) {
 			switch (a) {
 				case Gtk::FILE_CHOOSER_ACTION_OPEN:
-				case Gtk::FILE_CHOOSER_ACTION_SAVE:
-					if (Glib::file_test (path, Glib::FILE_TEST_IS_REGULAR|Glib::FILE_TEST_EXISTS)) {
-						_fc.set_filename (path);
-					}
-					break;
 				case Gtk::FILE_CHOOSER_ACTION_SELECT_FOLDER:
-					if (Glib::file_test (path, Glib::FILE_TEST_IS_DIR|Glib::FILE_TEST_EXISTS)) {
-						_fc.set_filename (path);
-					}
+					_fc.set_filename (path);
 					break;
+				case Gtk::FILE_CHOOSER_ACTION_SAVE:
 				case Gtk::FILE_CHOOSER_ACTION_CREATE_FOLDER:
+					/* not supported by Gtk::FileChooserButton */
 					break;
 			}
 		}
@@ -523,10 +551,48 @@ protected:
 };
 
 
+class LuaFileChooserWidget : public LuaDialogWidget
+{
+public:
+	LuaFileChooserWidget (std::string const& key, std::string const& title, Gtk::FileChooserAction a, const std::string& path)
+		: LuaDialogWidget (key, title)
+		, _fc (a)
+	{
+		Gtkmm2ext::add_volume_shortcuts (_fc);
+		if (!path.empty ()) {
+			switch (a) {
+				case Gtk::FILE_CHOOSER_ACTION_OPEN:
+				case Gtk::FILE_CHOOSER_ACTION_SELECT_FOLDER:
+					_fc.set_filename (path);
+					break;
+				case Gtk::FILE_CHOOSER_ACTION_SAVE:
+				case Gtk::FILE_CHOOSER_ACTION_CREATE_FOLDER:
+					_fc.set_filename (path);
+					_fc.set_current_name (Glib::path_get_basename (path));
+					break;
+					break;
+			}
+		}
+	}
 
-/*******************************************************************************
+	Gtk::Widget* widget ()
+	{
+		return &_fc;
+	}
+
+	void assign (luabridge::LuaRef* rv) const
+	{
+		(*rv)[_key] = std::string (_fc.get_filename ());
+	}
+
+protected:
+	Gtk::FileChooserWidget _fc;
+};
+
+/* *****************************************************************************
  * Lua Parameter Dialog
  */
+
 Dialog::Dialog (std::string const& title, luabridge::LuaRef lr)
 	:_ad (title, true, false)
 	, _title (title)
@@ -664,6 +730,20 @@ Dialog::Dialog (std::string const& title, luabridge::LuaRef lr)
 				path = i.value ()["path"].cast<std::string> ();
 			}
 			w = new LuaFileChooser (key, title, Gtk::FILE_CHOOSER_ACTION_SELECT_FOLDER, path);
+		} else if (type == "createfile") {
+			std::string path;
+			if (i.value ()["path"].isString ()) {
+				path = i.value ()["path"].cast<std::string> ();
+			}
+			w = new LuaFileChooserWidget (key, title, Gtk::FILE_CHOOSER_ACTION_SAVE, path);
+		} else if (type == "createdir") {
+			std::string path;
+			if (i.value ()["path"].isString ()) {
+				path = i.value ()["path"].cast<std::string> ();
+			}
+			w = new LuaFileChooserWidget (key, title, Gtk::FILE_CHOOSER_ACTION_CREATE_FOLDER, path);
+		} else if (type == "color") {
+			w = new LuaColorPicker (key);
 		}
 
 		if (w) {
@@ -683,7 +763,14 @@ Dialog::Dialog (std::string const& title, luabridge::LuaRef lr)
 	Gtk::Table* table = Gtk::manage (new Gtk::Table ());
 	table->set_col_spacings (20);
 	table->set_row_spacings (8);
-	_ad.get_vbox ()->pack_start (*table);
+	table->signal_size_allocate ().connect (sigc::mem_fun (this, &Dialog::table_size_alloc));
+
+	_scroller.set_shadow_type(Gtk::SHADOW_NONE);
+	_scroller.set_border_width(0);
+	_scroller.add (*table);
+	_scroller.set_policy (Gtk::POLICY_NEVER, Gtk::POLICY_NEVER);
+
+	_ad.get_vbox ()->pack_start (_scroller);
 
 	int row = 0;
 	int last_end = -1;
@@ -712,7 +799,7 @@ Dialog::Dialog (std::string const& title, luabridge::LuaRef lr)
 				table->attach (*hb, col, cend, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
 			}
 		} else {
-			table->attach (*((*i)->widget ()), col, cend, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+			table->attach (*((*i)->widget ()), col, cend, row, row + 1, Gtk::FILL | Gtk::EXPAND, (_widgets.size() == 1) ? (Gtk::FILL | Gtk::EXPAND) : Gtk::SHRINK);
 		}
 	}
 }
@@ -743,4 +830,59 @@ Dialog::run (lua_State *L)
 	}
 	luabridge::push (L, rv);
 	return 1;
+}
+
+void
+Dialog::table_size_alloc (Gtk::Allocation& allocation)
+{
+	/* XXX: consider using 0.75 * screen-height instead of 512 */
+	if (allocation.get_height () > 512) {
+		_scroller.set_policy (Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
+		_ad.set_size_request (-1, 512);
+	}
+}
+
+/* *****************************************************************************
+ * Lua Progress Dialog
+ */
+
+ProgressWindow::ProgressWindow (std::string const& title, bool allow_cancel)
+	: ArdourDialog (title, true)
+	, _canceled (false)
+{
+	_bar.set_orientation (Gtk::PROGRESS_LEFT_TO_RIGHT);
+
+	set_border_width (12);
+	get_vbox()->set_spacing (6);
+	get_vbox()->pack_start (_bar, false, false);
+
+	if (allow_cancel) {
+		using namespace Gtk;
+		Button* b = add_button (Stock::CANCEL, RESPONSE_CANCEL);
+		b->signal_clicked().connect (sigc::mem_fun (*this, &ProgressWindow::cancel_clicked));
+	}
+
+	set_default_size (200, -1);
+	show_all ();
+}
+
+bool
+ProgressWindow::progress (float prog, std::string const& text)
+{
+	if (!text.empty ()) {
+		_bar.set_text (text);
+	}
+	if (prog < 0 || prog > 1) {
+		_bar.set_pulse_step(.1);
+		_bar.pulse();
+	} else {
+		_bar.set_fraction (prog);
+	}
+	ARDOUR::GUIIdle ();
+	return _canceled;
+}
+
+void
+ProgressWindow::done () {
+	Gtk::Dialog::response(_canceled ? Gtk::RESPONSE_CANCEL : Gtk::RESPONSE_OK);
 }

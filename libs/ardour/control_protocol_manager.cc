@@ -1,21 +1,25 @@
 /*
-    Copyright (C) 2000-2007 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2006-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2007-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2009-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2015-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <glibmm/module.h>
 
@@ -125,6 +129,11 @@ ControlProtocolManager::activate (ControlProtocolInfo& cpi)
 
 	cpi.requested = true;
 
+	if (cpi.protocol && cpi.protocol->active()) {
+		warning << string_compose (_("Control protocol %1 was already active."), cpi.name) << endmsg;
+		return 0;
+	}
+
 	if ((cp = instantiate (cpi)) == 0) {
 		return -1;
 	}
@@ -181,12 +190,6 @@ ControlProtocolManager::drop_protocols ()
 
 	Glib::Threads::RWLock::WriterLock lm (protocols_lock);
 
-	for (list<ControlProtocol*>::iterator p = control_protocols.begin(); p != control_protocols.end(); ++p) {
-		delete *p;
-	}
-
-	control_protocols.clear ();
-
 	for (list<ControlProtocolInfo*>::iterator p = control_protocol_info.begin(); p != control_protocol_info.end(); ++p) {
 		// mark existing protocols as requested
 		// otherwise the ControlProtocol instances are not recreated in set_session
@@ -196,6 +199,12 @@ ControlProtocolManager::drop_protocols ()
 			ProtocolStatusChange (*p); /* EMIT SIGNAL */
 		}
 	}
+
+	for (list<ControlProtocol*>::iterator p = control_protocols.begin(); p != control_protocols.end(); ++p) {
+		delete *p;
+	}
+
+	control_protocols.clear ();
 }
 
 ControlProtocol*
@@ -266,6 +275,7 @@ ControlProtocolManager::teardown (ControlProtocolInfo& cpi, bool lock_required)
 	cpi.descriptor->destroy (cpi.descriptor, cpi.protocol);
 
 	if (lock_required) {
+		/* the lock is required when the protocol is torn down by a user from the GUI. */
 		Glib::Threads::RWLock::WriterLock lm (protocols_lock);
 		list<ControlProtocol*>::iterator p = find (control_protocols.begin(), control_protocols.end(), cpi.protocol);
 		if (p != control_protocols.end()) {
@@ -284,14 +294,6 @@ ControlProtocolManager::teardown (ControlProtocolInfo& cpi, bool lock_required)
 
 	cpi.protocol = 0;
 
-	if (lock_required) {
-		/* the lock is only required when the protocol is torn down from the GUI.
-		 * If a user disables a protocol, we take this as indicator to forget the
-		 * state.
-		 */
-		delete cpi.state;
-		cpi.state = 0;
-	}
 	delete (Glib::Module*) cpi.descriptor->module;
 	/* cpi->descriptor is now inaccessible since dlclose() or equivalent
 	 * has been performed, and the descriptor is (or could be) a static
@@ -321,6 +323,13 @@ ControlProtocolManager::load_mandatory_protocols ()
 		}
 	}
 }
+
+struct ControlProtocolOrderByName
+{
+	bool operator() (ControlProtocolInfo* const & a, ControlProtocolInfo* const & b) const {
+		return a->name < b->name;
+	}
+};
 
 void
 ControlProtocolManager::discover_control_protocols ()
@@ -365,6 +374,9 @@ ControlProtocolManager::discover_control_protocols ()
 	for (vector<std::string>::iterator i = cp_modules.begin(); i != cp_modules.end(); ++i) {
 		control_protocol_discover (*i);
 	}
+
+	ControlProtocolOrderByName cpn;
+	control_protocol_info.sort (cpn);
 }
 
 int
@@ -459,7 +471,7 @@ ControlProtocolManager::cpi_by_name (string name)
 }
 
 int
-ControlProtocolManager::set_state (const XMLNode& node, int /*version*/)
+ControlProtocolManager::set_state (const XMLNode& node, int session_specific_state /* here: not version */)
 {
 	XMLNodeList clist;
 	XMLNodeConstIterator citer;
@@ -483,13 +495,12 @@ ControlProtocolManager::set_state (const XMLNode& node, int /*version*/)
 			ControlProtocolInfo* cpi = cpi_by_name (name);
 
 			if (cpi) {
-#ifndef NDEBUG
-				std::cerr << "protocol " << name << " active ? " << active << std::endl;
-#endif
+				DEBUG_TRACE (DEBUG::ControlProtocols, string_compose ("Protocolstate %1 %2\n", name, active ? "active" : "inactive"));
 
 				if (active) {
 					delete cpi->state;
 					cpi->state = new XMLNode (**citer);
+					cpi->state->set_property (X_("session-state"), session_specific_state ? true : false);
 					if (_session) {
 						instantiate (*cpi);
 					} else {
@@ -499,6 +510,7 @@ ControlProtocolManager::set_state (const XMLNode& node, int /*version*/)
 					if (!cpi->state) {
 						cpi->state = new XMLNode (**citer);
 						cpi->state->set_property (X_("active"), false);
+						cpi->state->set_property (X_("session-state"), session_specific_state ? true : false);
 					}
 					cpi->requested = false;
 					if (_session) {
@@ -525,6 +537,8 @@ ControlProtocolManager::get_state ()
 		if ((*i)->protocol) {
 			XMLNode& child_state ((*i)->protocol->get_state());
 			child_state.set_property (X_("active"), true);
+			delete ((*i)->state);
+			(*i)->state = new XMLNode (child_state);
 			root->add_child_nocopy (child_state);
 		} else if ((*i)->state) {
 			XMLNode* child_state = new XMLNode (*(*i)->state);

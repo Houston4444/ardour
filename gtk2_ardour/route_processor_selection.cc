@@ -1,27 +1,27 @@
 /*
-    Copyright (C) 2002 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2007-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2015-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <algorithm>
 #include <sigc++/bind.h>
 
 #include "pbd/error.h"
-#include "pbd/i18n.h"
 
 #include "ardour/selection.h"
 #include "ardour/session.h"
@@ -34,6 +34,8 @@
 #include "route_processor_selection.h"
 #include "route_ui.h"
 
+#include "pbd/i18n.h"
+
 using namespace std;
 using namespace ARDOUR;
 using namespace PBD;
@@ -41,16 +43,6 @@ using namespace PBD;
 RouteProcessorSelection::RouteProcessorSelection (SessionHandlePtr& s, AxisViewProvider& ap)
 	: shp (s), avp (ap)
 {
-}
-
-RouteProcessorSelection&
-RouteProcessorSelection::operator= (const RouteProcessorSelection& other)
-{
-	if (&other != this) {
-		(*((ProcessorSelection*) this)) = (*((ProcessorSelection const *) &other));
-		axes = other.axes;
-	}
-	return *this;
 }
 
 bool
@@ -180,6 +172,7 @@ RouteProcessorSelection::set (AxisView* r)
 	if (!shp.session()) {
 		return;
 	}
+	PresentationInfo::ChangeSuspender cs;
 	shp.session()->selection().clear_stripables ();
 	add (r, true);
 }

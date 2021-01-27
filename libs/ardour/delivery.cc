@@ -1,20 +1,24 @@
 /*
-    Copyright (C) 2009 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify it
-    under the terms of the GNU General Public License as published by the Free
-    Software Foundation; either version 2 of the License, or (at your option)
-    any later version.
-
-    This program is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-    for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2009-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2018 Len Ovens <len@ovenwerks.net>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cmath>
 #include <algorithm>
@@ -53,17 +57,17 @@ bool                          Delivery::panners_legal = false;
 
 Delivery::Delivery (Session& s, boost::shared_ptr<IO> io, boost::shared_ptr<Pannable> pannable,
                     boost::shared_ptr<MuteMaster> mm, const string& name, Role r)
-	: IOProcessor(s, boost::shared_ptr<IO>(), (role_requires_output_ports (r) ? io : boost::shared_ptr<IO>()), name)
+	: IOProcessor(s, boost::shared_ptr<IO>(), (role_requires_output_ports (r) ? io : boost::shared_ptr<IO>()), name, (r == Send || r == Aux || r == Foldback))
 	, _role (r)
 	, _output_buffers (new BufferSet())
-	, _current_gain (GAIN_COEFF_UNITY)
+	, _current_gain (GAIN_COEFF_ZERO)
 	, _no_outs_cuz_we_no_monitor (false)
 	, _mute_master (mm)
 	, _no_panner_reset (false)
 {
 	if (pannable) {
 		bool is_send = false;
-		if (r & (Delivery::Send|Delivery::Aux)) is_send = true;
+		if (r & (Delivery::Send|Delivery::Aux|Delivery::Foldback)) is_send = true;
 		_panshell = boost::shared_ptr<PannerShell>(new PannerShell (_name, _session, pannable, is_send));
 	}
 
@@ -77,17 +81,17 @@ Delivery::Delivery (Session& s, boost::shared_ptr<IO> io, boost::shared_ptr<Pann
 /* deliver to a new IO object */
 
 Delivery::Delivery (Session& s, boost::shared_ptr<Pannable> pannable, boost::shared_ptr<MuteMaster> mm, const string& name, Role r)
-	: IOProcessor(s, false, (role_requires_output_ports (r) ? true : false), name, "", DataType::AUDIO, (r == Send))
+	: IOProcessor(s, false, (role_requires_output_ports (r) ? true : false), name, "", DataType::AUDIO, (r == Send || r == Aux || r == Foldback))
 	, _role (r)
 	, _output_buffers (new BufferSet())
-	, _current_gain (GAIN_COEFF_UNITY)
+	, _current_gain (GAIN_COEFF_ZERO)
 	, _no_outs_cuz_we_no_monitor (false)
 	, _mute_master (mm)
 	, _no_panner_reset (false)
 {
 	if (pannable) {
 		bool is_send = false;
-		if (r & (Delivery::Send|Delivery::Aux)) is_send = true;
+		if (r & (Delivery::Send|Delivery::Aux|Delivery::Foldback)) is_send = true;
 		_panshell = boost::shared_ptr<PannerShell>(new PannerShell (_name, _session, pannable, is_send));
 	}
 
@@ -305,7 +309,7 @@ Delivery::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample
 
 		for (DataType::iterator t = DataType::begin(); t != DataType::end(); ++t) {
 			if (*t != DataType::AUDIO && bufs.count().get(*t) > 0) {
-				_output->copy_to_outputs (bufs, *t, nframes, Port::port_offset());
+				_output->copy_to_outputs (bufs, *t, nframes, 0);
 			}
 		}
 
@@ -324,7 +328,7 @@ Delivery::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample
 
 		for (DataType::iterator t = DataType::begin(); t != DataType::end(); ++t) {
 			if (*t != DataType::AUDIO && bufs.count().get(*t) > 0) {
-				_output->copy_to_outputs (bufs, *t, nframes, Port::port_offset());
+				_output->copy_to_outputs (bufs, *t, nframes, 0);
 			}
 		}
 	}
@@ -345,7 +349,7 @@ Delivery::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample
 				if (outs.count ().get (*t) <= n) {
 					continue;
 				}
-				b->read_from (outs.get (*t, n++), nframes, (*t == DataType::AUDIO ? 0 : -Port::port_offset()));
+				b->read_from (outs.get_available (*t, n++), nframes, 0);
 			}
 		}
 	}
@@ -371,8 +375,8 @@ Delivery::state ()
 
 	if (_panshell) {
 		node.add_child_nocopy (_panshell->get_state ());
-		if (_panshell->pannable()) {
-			node.add_child_nocopy (_panshell->pannable()->get_state ());
+		if (_panshell->unlinked_pannable ()) {
+			node.add_child_nocopy (_panshell->unlinked_pannable()->get_state ());
 		}
 	}
 
@@ -401,8 +405,9 @@ Delivery::set_state (const XMLNode& node, int version)
 	reset_panner ();
 
 	XMLNode* pannnode = node.child (X_("Pannable"));
+
 	if (_panshell && _panshell->panner() && pannnode) {
-		_panshell->pannable()->set_state (*pannnode, version);
+		_panshell->unlinked_pannable()->set_state (*pannnode, version);
 	}
 
 	return 0;
@@ -516,13 +521,13 @@ Delivery::non_realtime_transport_stop (samplepos_t now, bool flush)
 }
 
 void
-Delivery::realtime_locate ()
+Delivery::realtime_locate (bool for_loop_end)
 {
 	if (_output) {
 		PortSet& ports (_output->ports());
 
 		for (PortSet::iterator i = ports.begin(); i != ports.end(); ++i) {
-			i->realtime_locate ();
+			i->realtime_locate (for_loop_end);
 		}
 	}
 }
@@ -556,6 +561,7 @@ Delivery::target_gain ()
 		case Send:
 		case Insert:
 		case Aux:
+		case Foldback:
 			if (_pre_fader) {
 				mp = MuteMaster::PreFader;
 			} else {
@@ -565,6 +571,10 @@ Delivery::target_gain ()
 	}
 
 	gain_t desired_gain = _mute_master->mute_gain_at (mp);
+
+	if (_gain_control) {
+		desired_gain *= _gain_control->get_value();
+	}
 
 	if (_role == Listen && _session.monitor_out() && !_session.listening()) {
 

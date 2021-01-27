@@ -1,22 +1,21 @@
 /*
-    Copyright (C) 2010-2013 Paul Davis
-    Author: Robin Gareus <robin@gareus.org>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 #include <cstdio>
 #include <cmath>
 
@@ -114,6 +113,7 @@ AddVideoDialog::AddVideoDialog (Session* s)
 
 	/* file chooser */
 	chooser.set_border_width (4);
+	Gtkmm2ext::add_volume_shortcuts (chooser);
 #ifdef __APPLE__
 	/* some broken redraw behaviour - this is a bandaid */
 	chooser.signal_selection_changed().connect (mem_fun (chooser, &Widget::queue_draw));
@@ -519,7 +519,7 @@ AddVideoDialog::harvid_request(std::string u)
 
 	harvid_list->clear();
 
-	char* res = ArdourCurl::http_get (url, &status);
+	char* res = ArdourCurl::http_get (url, &status, false);
 	if (status != 200) {
 		printf("request failed\n"); // XXX
 		harvid_path.set_text(" - request failed -");
@@ -693,13 +693,13 @@ AddVideoDialog::request_preview(std::string u)
 	clip_yoff = (PREVIEW_HEIGHT - clip_height)/2;
 
 	char url[2048];
-	snprintf(url, sizeof(url), "%s%s?sample=%lli&w=%d&h=%di&file=%s&format=rgb"
+	snprintf(url, sizeof(url), "%s%s?frame=%lli&w=%d&h=%di&file=%s&format=rgb"
 		, video_server_url.c_str()
 		, (video_server_url.length()>0 && video_server_url.at(video_server_url.length()-1) == '/')?"":"/"
 		, (long long) (video_duration * seek_slider.get_value() / 1000.0)
 		, clip_width, clip_height, u.c_str());
 
-	char* data = ArdourCurl::http_get (url, NULL);
+	char* data = ArdourCurl::http_get (url, NULL, false);
 	if (!data) {
 		printf("image preview request failed %s\n", url);
 		imgbuf->fill(RGBA_TO_UINT(0,0,0,255));

@@ -1,21 +1,21 @@
 /*
-  Copyright (C) 2017 Paul Davis
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2017-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2017-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __ardour_selection_h__
 #define __ardour_selection_h__
@@ -27,13 +27,14 @@
 #include <boost/shared_ptr.hpp>
 
 #include "pbd/stateful.h"
-#include "pbd/i18n.h"
 
 #include "ardour/presentation_info.h"
+#include "ardour/types.h"
 
 namespace ARDOUR {
 
 class AutomationControl;
+class RouteGroup;
 class Session;
 class Stripable;
 class VCAManager;
@@ -48,7 +49,15 @@ class LIBARDOUR_API CoreSelection : public PBD::Stateful {
 	void add (boost::shared_ptr<Stripable>, boost::shared_ptr<AutomationControl>);
 	void remove (boost::shared_ptr<Stripable>, boost::shared_ptr<AutomationControl>);
 	void set (boost::shared_ptr<Stripable>, boost::shared_ptr<AutomationControl>);
+	void set (StripableList&);
+
+	void select_next_stripable (bool mixer_order, bool routes_only);
+	void select_prev_stripable (bool mixer_order, bool routes_only);
+	bool select_stripable_and_maybe_group (boost::shared_ptr<Stripable> s, bool with_group, bool routes_only, RouteGroup*);
+
 	void clear_stripables();
+
+	boost::shared_ptr<Stripable> first_selected_stripable () const;
 
 	bool selected (boost::shared_ptr<const Stripable>) const;
 	bool selected (boost::shared_ptr<const AutomationControl>) const;
@@ -104,9 +113,16 @@ class LIBARDOUR_API CoreSelection : public PBD::Stateful {
 
 	typedef std::set<SelectedStripable> SelectedStripables;
 
+	boost::weak_ptr<ARDOUR::Stripable> _first_selected_stripable;
+
 	SelectedStripables _stripables;
 
 	void send_selection_change ();
+
+	template<typename IterTypeCore>
+		void select_adjacent_stripable (bool mixer_order, bool routes_only,
+		                                IterTypeCore (StripableList::*begin_method)(),
+		                                IterTypeCore (StripableList::*end_method)());
 };
 
 } // namespace ARDOUR

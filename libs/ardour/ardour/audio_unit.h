@@ -1,22 +1,23 @@
 /*
-    Copyright (C) 2006 Paul Davis
-    Written by Taybin Rutkin
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2010 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __ardour_audio_unit_h__
 #define __ardour_audio_unit_h__
@@ -70,8 +71,7 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	const char * maker () const { return _info->creator.c_str(); }
 	uint32_t parameter_count () const;
 	float default_value (uint32_t port);
-	samplecnt_t signal_latency() const;
-	void set_parameter (uint32_t which, float val);
+	void set_parameter (uint32_t which, float val, sampleoffset_t);
 	float get_parameter (uint32_t which) const;
 
 	PluginOutputConfiguration possible_output () const { return _output_configs; }
@@ -85,13 +85,12 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 
 	int connect_and_run (BufferSet& bufs,
 			samplepos_t start, samplepos_t end, double speed,
-			ChanMapping in, ChanMapping out,
+			ChanMapping const& in, ChanMapping const& out,
 			pframes_t nframes, samplecnt_t offset);
 	std::set<Evoral::Parameter> automatable() const;
 	std::string describe_parameter (Evoral::Parameter);
 	IOPortDescription describe_io_port (DataType dt, bool input, uint32_t id) const;
 	std::string state_node_name () const { return "audiounit"; }
-	void print_parameter (uint32_t, char*, uint32_t len) const;
 
 	bool parameter_is_audio (uint32_t) const;
 	bool parameter_is_control (uint32_t) const;
@@ -107,10 +106,11 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 
 	bool has_editor () const;
 
-	bool can_support_io_configuration (const ChanCount& in, ChanCount& out, ChanCount* imprecise);
+	bool match_variable_io (ChanCount& in, ChanCount& aux_in, ChanCount& out);
+	bool reconfigure_io (ChanCount in, ChanCount aux_in, ChanCount out);
+
 	ChanCount output_streams() const;
 	ChanCount input_streams() const;
-	bool configure_io (ChanCount in, ChanCount out);
 	bool requires_fixed_size_buffers() const;
 
 	void set_fixed_size_buffers (bool yn) {
@@ -161,6 +161,7 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	void do_remove_preset (std::string);
 
   private:
+	samplecnt_t plugin_latency() const;
 	void find_presets ();
 
 	boost::shared_ptr<CAComponent> comp;
@@ -202,6 +203,7 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	uint32_t configured_output_busses;
 
 	uint32_t *bus_inputs;
+	uint32_t *bus_inused;
 	uint32_t *bus_outputs;
 	std::vector <std::string> _bus_name_in;
 	std::vector <std::string> _bus_name_out;
@@ -216,9 +218,8 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	samplecnt_t input_offset;
 	samplecnt_t *cb_offsets;
 	BufferSet* input_buffers;
-	ChanMapping * input_map;
+	ChanMapping const * input_map;
 	samplecnt_t samples_processed;
-	uint32_t   audio_input_cnt;
 
 	std::vector<AUParameterDescriptor> descriptors;
 	AUEventListenerRef _parameter_listener;
@@ -228,8 +229,9 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	void discover_factory_presets ();
 
 	samplepos_t transport_sample;
-	float      transport_speed;
-	float      last_transport_speed;
+	float       transport_speed;
+	float       last_transport_speed;
+	pframes_t   preset_holdoff;
 
 	static void _parameter_change_listener (void* /*arg*/, void* /*src*/, const AudioUnitEvent* event, UInt64 host_time, Float32 new_value);
 	void parameter_change_listener (void* /*arg*/, void* /*src*/, const AudioUnitEvent* event, UInt64 host_time, Float32 new_value);
@@ -244,21 +246,25 @@ struct LIBARDOUR_API AUPluginCachedInfo {
 class LIBARDOUR_API AUPluginInfo : public PluginInfo {
   public:
 	 AUPluginInfo (boost::shared_ptr<CAComponentDescription>);
-	~AUPluginInfo ();
+	~AUPluginInfo () {}
 
 	PluginPtr load (Session& session);
 
 	std::vector<Plugin::PresetRecord> get_presets (bool user_only) const;
 
 	bool needs_midi_input () const;
-	bool is_effect () const;
 	bool is_effect_without_midi_input () const;
 	bool is_effect_with_midi_input () const;
+
+	/* note: AU's have an explicit way to prompt for instrument/fx category */
+	bool is_effect () const;
 	bool is_instrument () const;
+	bool is_utility () const;
 
 	AUPluginCachedInfo cache;
 
 	bool reconfigurable_io() const { return true; }
+	uint32_t max_configurable_ouputs () const { return max_outputs; }
 
 	static void clear_cache ();
 	static PluginInfoList* discover (bool scan_only);
@@ -270,6 +276,7 @@ class LIBARDOUR_API AUPluginInfo : public PluginInfo {
   private:
 	boost::shared_ptr<CAComponentDescription> descriptor;
 	UInt32 version;
+	uint32_t max_outputs;
 	static FILE * _crashlog_fd;
 	static bool _scan_only;
 

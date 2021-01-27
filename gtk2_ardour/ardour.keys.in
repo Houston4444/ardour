@@ -57,6 +57,8 @@ just align the first region and moves other selected regions to maintain relativ
 
 %gmode Global Global Transport Modes
 
+%gmon Global Global Monitor Operations
+
 %movp Global Global Playhead Operations
 A left click in the rulers positions the playhead unless Ardour is recording. You can use {\tt KP$\_$n} to move the 
 playhead to the n-th marker.
@@ -68,6 +70,8 @@ playhead to the n-th marker.
 %grid Editor Grid Settings + Editor Modes
 
 %select Editor Selecting
+
+%gselect Global Selecting
 
 %ranges Editor Defining Loop, Punch Range and Tempo Changes
 
@@ -93,6 +97,8 @@ This mode provides many different operations on both regions and control points,
 
 %midi Global Global MIDI commands
 
+%notes MIDI Note Editing
+
 ;; END GROUP DEFINITIONS
 
 ;; punctuation
@@ -102,8 +108,6 @@ This mode provides many different operations on both regions and control points,
 @vis|Editor/zoom-to-session|<@TERTIARY@>underscore|zoom to session
 @eep|Editor/edit-cursor-to-previous-region-sync|apostrophe|EP to prev region sync
 @eep|Editor/edit-cursor-to-next-region-sync|semicolon|EP to next region sync
-@eep|Editor/cycle-edit-point|grave|next EP w/o marker
-@eep|Editor/cycle-edit-point-with-marker|<@PRIMARY@>grave|next EP w/marker
 
 @trans|Transport/ToggleRoll|space|toggle roll
 @trans|Transport/PlaySelection|<@SECONDARY@>space|play edit range
@@ -150,6 +154,7 @@ This mode provides many different operations on both regions and control points,
 @gmark|Common/jump-backward-to-mark|q|to previous mark
 @sess|Common/Quit|<@PRIMARY@>q|quit
 @gmark|Common/jump-forward-to-mark|w|to next mark
+@mmode|MouseMode/set-mouse-mode-content|e|content mode
 @select|Editor/select-all-before-edit-cursor|<@PRIMARY@>e|select all before EP
 @rop|Region/export-region|<@PRIMARY@><@SECONDARY@>e|export selected region(s)
 @sess|Main/ExportAudio|<@SECONDARY@>e|export session
@@ -159,27 +164,23 @@ This mode provides many different operations on both regions and control points,
 @edit|Editor/redo|<@PRIMARY@>r|redo
 @trans|Transport/Record|<@TERTIARY@>r|engage record
 @mmode|MouseMode/set-mouse-mode-timefx|t|timefx mode
-@select|Editor/select-all-tracks|<@PRIMARY@>t|select all tracks
-@mmode|MouseMode/set-mouse-mode-object-range|y|link object/range tools
+@gselect|Common/select-all-visible-lanes|<@PRIMARY@>t|select all visible lanes
 @edit|Editor/alternate-redo|<@PRIMARY@>y|redo
 @select|Editor/select-all-between-cursors|<@PRIMARY@>u|all enclosed by edit range
 @select|Editor/select-all-within-cursors|u|all present in edit range
-@eep|Region/insert-region-from-region-list|i|insert from region list
+@eep|Region/insert-region-from-source-list|i|insert from region list
 @sess|Common/addExistingAudioFiles|<@PRIMARY@>i|import audio files
-@select|Editor/invert-selection|<@TERTIARY@>i|invert selection
+@gselect|Common/invert-selection|<@PRIMARY@><@TERTIARY@>i|invert selection
 @edtrk|Editor/toggle-midi-input-active|<@SECONDARY@>i|toggle sel. track MIDI input
-@mmode|MouseMode/set-mouse-mode-object|g|object mode
-@mmode|MouseMode/set-mouse-mode-content|e|content mode
 @sess|Main/Open|<@PRIMARY@>o|open an existing session
 @sess|Main/Recent|<@PRIMARY@><@TERTIARY@>o|open a recent session
 @wvis|Window/toggle-session-options-editor|<@SECONDARY@>o|toggle preferences dialog
 @edit|Editor/set-playhead|p|set playhead position
 @wvis|Window/toggle-audio-connection-manager|<@SECONDARY@>p|toggle global audio patchbay
-@midi|MIDI/panic|<@PRIMARY@><@SECONDARY@>p|MIDI panic (stop all notes etc)
 
 ;; MIDDLE ROW
 
-@aep|Region/align-regions-sync-relative|a|align sync points (relative)
+@trans|Transport/solo-selection|a|solo selection
 @select|Editor/select-all-objects|<@PRIMARY@>a|select all objects
 @aep|Region/align-regions-end|<@SECONDARY@>a|align end(s)
 @aep|Region/align-regions-sync|<@TERTIARY@>a|align sync points
@@ -189,16 +190,18 @@ This mode provides many different operations on both regions and control points,
 @sess|Common/Save|<@PRIMARY@>s|save session
 @sess|Main/SnapshotStay|<@PRIMARY@><@TERTIARY@>s|snapshot session
 @edtrk|Editor/track-solo-toggle|<@SECONDARY@>s|toggle track solo status
+@edit|Editor/ToggleSummary|<@TERTIARY@>s|toggle summary
 @mmode|MouseMode/set-mouse-mode-draw|d|note-draw mode
 @edit|Editor/duplicate|<@SECONDARY@>d|duplicate (once)
 @edit|Editor/multi-duplicate|<@TERTIARY@>d|duplicate (multi)
 @select|Editor/select-all-in-punch-range|<@PRIMARY@>d|select all in punch range
 @vis|Editor/fit-selection|f|fit selection vertically
 @edit|Editor/toggle-follow-playhead|<@PRIMARY@>f|toggle playhead tracking
+@edit|Editor/toggle-stationary-playhead|<@TERTIARY@>f|toggle stationary playhead
 @rop|Region/show-rhythm-ferret|<@SECONDARY@>f|show rhythm ferret window 
-@gmode|Transport/ToggleFollowEdits|<@TERTIARY@>f|toggle playhead follows edits
 @wvis|Common/ToggleMaximalEditor|<@PRIMARY@><@SECONDARY@>f|maximise editor space
 @wvis|Common/ToggleMaximalMixer|<@PRIMARY@><@TERTIARY@>f|maximise mixer space
+@mmode|MouseMode/set-mouse-mode-object|g|object mode
 @edit|Region/play-selected-regions|h|play selected region(s)
 @eep|Region/trim-front|j|trim front
 @eep|Region/trim-back|k|trim back
@@ -206,6 +209,7 @@ This mode provides many different operations on both regions and control points,
 @trans|Transport/Loop|l|loop play (the loop range)
 @select|Editor/select-all-in-loop-range|<@PRIMARY@>l|select all in loop range
 @wvis|Window/toggle-locations|<@SECONDARY@>l| toggle locations dialog
+@edit|Editor/show-editor-list|<@TERTIARY@>l| show editor list
 
 ;; BOTTOM ROW
 
@@ -213,8 +217,9 @@ This mode provides many different operations on both regions and control points,
 @edit|Editor/undo|<@PRIMARY@>z|undo
 @edit|Editor/alternate-alternate-redo|<@PRIMARY@><@TERTIARY@>z|redo
 @vis|Editor/toggle-zoom|<@TERTIARY@>z|toggle last 2 zoom states
-@mmode|MouseMode/set-mouse-mode-cut|c|cut mode
+@aep|Region/align-regions-sync-relative|x|align sync points (relative)
 @edit|Editor/editor-cut|<@PRIMARY@>x|cut
+@mmode|MouseMode/set-mouse-mode-cut|c|cut mode
 @edit|Editor/editor-copy|<@PRIMARY@>c|copy
 @wvis|Window/toggle-big-clock|<@SECONDARY@>c|toggle big clock
 @-edit|Editor/crop|<@PRIMARY@><@TERTIARY@>c|crop
@@ -226,18 +231,24 @@ This mode provides many different operations on both regions and control points,
 @sess|Main/AddTrackBus|<@PRIMARY@><@TERTIARY@>n|add track(s) or bus(ses)
 @sess|Main/New|<@PRIMARY@>n|open a new session
 @wvis|Window/toggle-midi-connection-manager|<@SECONDARY@><@TERTIARY@>m|toggle global midi patchbay
-@wvis|Window/show-mixer|<@SECONDARY@>m|show mixer window
+@wvis|Common/show-mixer|<@SECONDARY@>m|show mixer window
+
+@gmon|Monitor Section/monitor-cut-all|<@PRIMARY@>m|monitor cut all
+@gmon|Monitor Section/monitor-mono|<@PRIMARY@><@SECONDARY@>m|monitor mono
+@gmon|Monitor Section/monitor-dim-all|<@PRIMARY@><@TERTIARY@>m|monitor dim
 
 ;; arrow keys, navigation etc.
 
 @vis|Editor/step-tracks-up|Up|scroll up (step)
 @trans|Transport/TransitionToRoll|<@TERTIARY@>Up|transition to roll
 @select|Editor/select-prev-route|<@SECONDARY@>Up|select previous track/bus
+@select|Editor/select-prev-stripable|<@SECONDARY@><@TERTIARY@>Up|select previous strip
 @vis|Editor/move-selected-tracks-up|<@PRIMARY@>Up|move selected tracks up
 
 @vis|Editor/step-tracks-down|Down|scroll down (step)
 @trans|Transport/TransitionToReverse|<@TERTIARY@>Down|transition to reverse
 @select|Editor/select-next-route|<@SECONDARY@>Down|select next track/bus
+@select|Editor/select-next-stripable|<@SECONDARY@><@TERTIARY@>Down|select next strip
 @vis|Editor/move-selected-tracks-down|<@PRIMARY@>Down|move selected tracks down
 
 @movp|Common/playhead-backward-to-grid|Left|to previous grid point
@@ -273,13 +284,13 @@ This mode provides many different operations on both regions and control points,
 
 ;; keypad
 
-@rop|Region/nudge-backward|KP_Subtract|nudge backward
+@select|Editor/nudge-backward|KP_Subtract|nudge backward
 @trans|Common/nudge-next-backward|<@PRIMARY@>KP_Subtract|some text
 
 @gmark|Common/alternate-jump-forward-to-mark|<@PRIMARY@>KP_Right|to next mark
 @gmark|Common/alternate-jump-backward-to-mark|<@PRIMARY@>KP_Left|to previous mark
 
-@rop|Region/nudge-forward|KP_Add|nudge forward
+@select|Editor/nudge-forward|KP_Add|nudge forward
 @trans|Common/nudge-next-forward|<@PRIMARY@>KP_Add|some text
 
 @gedt|Common/start-range|comma|some text
@@ -340,15 +351,21 @@ This mode provides many different operations on both regions and control points,
 
 ;; numbers
 
-@vis|Editor/cycle-zoom-focus|1|cycle to next zoom focus
-@grid|Editor/cycle-snap-mode|2|cycle to next grid snap mode
-@grid|Editor/prev-snap-choice|3|use next grid unit
-@grid|Editor/prev-snap-choice-music-only|<@PRIMARY@>3|use previous grid unit
-@grid|Editor/next-snap-choice|4|use next grid unit
-@grid|Editor/next-snap-choice-music-only|<@PRIMARY@>4|use next musical grid unit
-@gmode|Transport/ToggleAutoPlay|5|toggle auto play
-@gmode|Transport/ToggleAutoReturn|6|toggle auto return
-@gmode|Transport/ToggleClick|7|toggle click (metronome)
+@gmode|Transport/ToggleClick|grave|toggle click (metronome)
+@midi|MIDI/panic|<@PRIMARY@>grave|MIDI panic (stop all midi notes)
+@trans|Transport/ToggleExternalSync|<@SECONDARY@>grave|toggle external sync
+@eep|Editor/cycle-edit-mode|1|cycle edit mode {slide, lock, ripple}
+@eep|Editor/cycle-edit-point|2|next EP w/o marker {playhead, mouse}
+@eep|Editor/cycle-edit-point-with-marker|<@PRIMARY@>2|next EP w/marker {playhead, mouse, marker}
+@mmode|MouseMode/set-mouse-mode-object-range|3|Smart Mode (provide some Range tools in Object mode)
+@gmode|Transport/ToggleFollowEdits|<@PRIMARY@>3|toggle playhead follows edits
+@grid|Editor/cycle-snap-mode|4|cycle to next snap mode {On/Off}
+@grid|Editor/prev-grid-choice|5|use prev grid unit
+@grid|Editor/next-grid-choice|6|use next grid unit
+@gmode|Transport/ToggleAutoReturn|7|toggle auto return
+@gmode|Transport/ToggleAutoPlay|<@PRIMARY@>7|toggle auto play
+@gmode|Transport/TogglePunch|8|toggle punch in+out
+; ToDo @gmode|Transport/ToggleRecMode|<@PRIMARY@>8|toggle recording mode ( layered, overwrite, merge )
 @ranges|Region/set-tempo-from-region|9|set tempo (1 bar) from region(s)
 @ranges|Editor/set-tempo-from-edit-range|0|set tempo (1 bar) from edit range
 
@@ -402,3 +419,47 @@ This mode provides many different operations on both regions and control points,
 @+mopsfader|foo|<@PRIMARY@><@SECONDARY@>left-drag|finest-drag control
 @+mopsfader|foo|<@PRIMARY@>left-drag|fine-drag control
 @+mopsfader|foo|left-drag|adjust
+
+;; MIDI Editing
+
+@notes|Notes/move-starts-earlier|comma|Move Note Starts Earlier
+@notes|Notes/move-starts-earlier-fine|<@SECONDARY@>comma|Move Note Starts Earlier (Fine)
+@notes|Notes/move-ends-later|period|Move Note Ends Later
+@notes|Notes/move-ends-later-fine|<@SECONDARY@>period|Move Note Ends Later (Fine)
+@notes|Notes/nudge-later|Right|Nudge Notes Later
+@notes|Notes/nudge-later-fine|<@SECONDARY@>Right|Nudge Notes Later (fine)
+@notes|Notes/nudge-earlier|Left|Nudge Notes Earlier
+@notes|Notes/nudge-earlier-fine|<@SECONDARY@>Left|Nudge Notes Earlier (fine)
+@notes|Notes/edit-channels|c|Edit Note Channels
+@notes|Notes/edit-velocities|v|Edit Note Velocities
+
+@notes|Notes/transpose-up-octave|<@SECONDARY@>Up|Transpose up (1 octave)
+@notes|Notes/transpose-down-octave|<@SECONDARY@>Down|Transpose down (1 octave)
+@notes|Notes/transpose-up-semitone|Up|Transpose up (1 semitone)
+@notes|Notes/transpose-down-semitone|Down|Transpose down (1 semitone)
+@notes|Notes/transpose-up-octave-smush|<@TERTIARY@>Up|Transpose up (1 octave) allow mushing
+@notes|Notes/transpose-down-octave-smush|<@TERTIARY@>Down|Transpose down (1 octave) allow mushing
+@notes|Notes/transpose-up-semitone-smush|<@TERTIARY@><@SECONDARY@>Up|Transpose up (1 semitone) allow mushing
+@notes|Notes/transpose-down-semitone-smush|<@TERTIARY@><@SECONDARY>Down|Transpose down (1 tone) allow mushing
+
+@notes|Notes/increase-velocity|<@PRIMARY@>Up|Increase Note Velocity (+8)
+@notes|Notes/decrease-velocity|<@PRIMARY@>Down|Increase Note Velocity (+8)
+@notes|Notes/increase-velocity-smush|<@PRIMARY@><@TERTIARY@>Up|Increase Note Velocity (+8) allow mushing
+@notes|Notes/decrease-velocity-smush|<@PRIMARY@><@TERTIARY@>Down|Increase Note Velocity (+8) allow mushing
+@notes|Notes/increase-velocity-fine|<@PRIMARY@><@SECONDARY@>Up|Increase Note Velocity (+1)
+@notes|Notes/decrease-velocity-fine|<@PRIMARY@><@SECONDARY@>Down|Increase Note Velocity (+1)
+@notes|Notes/increase-velocity-fine-smush|<@PRIMARY@><@SECONDARY@><@TERTIARY@>Up|Increase Note Velocity (+1) allow mushing
+@notes|Notes/decrease-velocity-fine-smush|<@PRIMARY@><@SECONDARY@><@TERTIARY@>Down|Increase Note Velocity (+1) allow mushing
+
+@notes|Notes/delete|Backspace|Delete Note Selection
+@notes|Notes/alt-delete|Delete|Delete Note Selection
+@notes|Notes/clear-selection|Escape|Clear selection
+
+@notes|Notes/select-next|Tab|Select next note
+@notes|Notes/select-previous|<@PRIMARY@>Tab|Select previous note
+@notes|Notes/add-select-next|<@TERTIARY@>Tab|Select next note
+@notes|Notes/add-select-previous|<@PRIMARY@><@TERTIARY@>Tab|Select previous note
+@notes|Notes/alt-add-select-next|<@TERTIARY@>ISO_Left_Tab|Select next note
+@notes|Notes/alt-add-select-previous|<@PRIMARY@><@TERTIARY@>ISO_Left_Tab|Select previous note
+
+

@@ -1,31 +1,40 @@
 /*
-  Copyright (C) 2008-2012 Paul Davis
-  Author: Sakari Bergen
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
-
-#include "ardour/export_graph_builder.h"
+ * Copyright (C) 2009-2013 Sakari Bergen <sakari.bergen@beatwaves.net>
+ * Copyright (C) 2010-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2010-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2011-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2012-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2013-2016 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2015-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <vector>
 
 #include <glibmm/miscutils.h>
+#include <glibmm/timer.h>
+
+#include "pbd/uuid.h"
+#include "pbd/file_utils.h"
+#include "pbd/cpus.h"
 
 #include "audiographer/process_context.h"
 #include "audiographer/general/chunker.h"
+#include "audiographer/general/cmdpipe_writer.h"
+#include "audiographer/general/demo_noise.h"
 #include "audiographer/general/interleaver.h"
 #include "audiographer/general/normalizer.h"
 #include "audiographer/general/analyser.h"
@@ -42,14 +51,16 @@
 
 #include "ardour/audioengine.h"
 #include "ardour/export_channel_configuration.h"
+#include "ardour/export_failed.h"
 #include "ardour/export_filename.h"
 #include "ardour/export_format_specification.h"
+#include "ardour/export_graph_builder.h"
 #include "ardour/export_timespan.h"
+#include "ardour/filesystem_paths.h"
 #include "ardour/session_directory.h"
+#include "ardour/session_metadata.h"
 #include "ardour/sndfile_helpers.h"
-
-#include "pbd/file_utils.h"
-#include "pbd/cpus.h"
+#include "ardour/system_exec.h"
 
 using namespace AudioGrapher;
 using std::string;
@@ -67,20 +78,33 @@ ExportGraphBuilder::~ExportGraphBuilder ()
 {
 }
 
-int
+samplecnt_t
 ExportGraphBuilder::process (samplecnt_t samples, bool last_cycle)
 {
 	assert(samples <= process_buffer_samples);
 
+	sampleoffset_t off = 0;
 	for (ChannelMap::iterator it = channels.begin(); it != channels.end(); ++it) {
 		Sample const * process_buffer = 0;
 		it->first->read (process_buffer, samples);
-		ConstProcessContext<Sample> context(process_buffer, samples, 1);
+
+		if (session.remaining_latency_preroll () >= _master_align + samples) {
+			/* Skip processing during pre-roll, only read/write export ringbuffers */
+			return 0;
+		}
+
+		off = 0;
+		if (session.remaining_latency_preroll () > _master_align) {
+			off = session.remaining_latency_preroll () - _master_align;
+			assert (off < samples);
+		}
+
+		ConstProcessContext<Sample> context(&process_buffer[off], samples - off, 1);
 		if (last_cycle) { context().set_flag (ProcessContext<Sample>::EndOfInput); }
 		it->second->process (context);
 	}
 
-	return 0;
+	return samples - off;
 }
 
 bool
@@ -116,6 +140,7 @@ ExportGraphBuilder::reset ()
 	intermediates.clear ();
 	analysis_map.clear();
 	_realtime = false;
+	_master_align = 0;
 }
 
 void
@@ -138,17 +163,25 @@ ExportGraphBuilder::set_current_timespan (boost::shared_ptr<ExportTimespan> span
 void
 ExportGraphBuilder::add_config (FileSpec const & config, bool rt)
 {
-	ExportChannelConfiguration::ChannelList const & channels =
-		config.channel_config->get_channels();
-	for(ExportChannelConfiguration::ChannelList::const_iterator it = channels.begin();
-	    it != channels.end(); ++it) {
-		(*it)->set_max_buffer_size(process_buffer_samples);
+	/* calculate common latency, shave off master-bus hardware playback latency (if any) */
+	_master_align = session.master_out() ? session.master_out()->output()->connected_latency (true) : 0;
+
+	ExportChannelConfiguration::ChannelList const & channels = config.channel_config->get_channels();
+
+	for(ExportChannelConfiguration::ChannelList::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+		_master_align = std::min (_master_align, (*it)->common_port_playback_latency ());
+	}
+
+	/* now set-up port-data sniffing and delay-ringbuffers */
+	for(ExportChannelConfiguration::ChannelList::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+		(*it)->prepare_export (process_buffer_samples, _master_align);
 	}
 
 	_realtime = rt;
 
-	// If the sample rate is "session rate", change it to the real value.
-	// However, we need to copy it to not change the config which is saved...
+	/* If the sample rate is "session rate", change it to the real value.
+	 * However, we need to copy it to not change the config which is saved...
+	 */
 	FileSpec new_config (config);
 	new_config.format.reset(new ExportFormatSpecification(*new_config.format, false));
 	if(new_config.format->sample_rate() == ExportFormatBase::SR_Session) {
@@ -156,14 +189,14 @@ ExportGraphBuilder::add_config (FileSpec const & config, bool rt)
 		new_config.format->set_sample_rate(ExportFormatBase::nearest_sample_rate(session_rate));
 	}
 
-
 	if (!new_config.channel_config->get_split ()) {
 		add_split_config (new_config);
 		return;
 	}
 
-	// Split channel configurations are split into several channel configurations,
-	// each corresponding to a file, at this stage
+	/* Split channel configurations are split into several channel configurations,
+	 * each corresponding to a file, at this stage
+	 */
 	typedef std::list<boost::shared_ptr<ExportChannelConfiguration> > ConfigList;
 	ConfigList file_configs;
 	new_config.channel_config->configurations_for_files (file_configs);
@@ -212,8 +245,13 @@ boost::shared_ptr<AudioGrapher::Sink<Sample> >
 ExportGraphBuilder::Encoder::init (FileSpec const & new_config)
 {
 	config = new_config;
-	init_writer (float_writer);
-	return float_writer;
+	if (config.format->format_id() == ExportFormatBase::F_FFMPEG) {
+		init_writer (pipe_writer);
+		return pipe_writer;
+	} else {
+		init_writer (float_writer);
+		return float_writer;
+	}
 }
 
 template <>
@@ -257,6 +295,10 @@ ExportGraphBuilder::Encoder::destroy_writer (bool delete_out_file)
 			short_writer->close ();
 		}
 
+		if (pipe_writer) {
+			pipe_writer->close ();
+		}
+
 		if (std::remove(writer_filename.c_str() ) != 0) {
 			std::cout << "Encoder::destroy_writer () : Error removing file: " << strerror(errno) << std::endl;
 		}
@@ -265,6 +307,7 @@ ExportGraphBuilder::Encoder::destroy_writer (bool delete_out_file)
 	float_writer.reset ();
 	int_writer.reset ();
 	short_writer.reset ();
+	pipe_writer.reset ();
 }
 
 bool
@@ -291,6 +334,88 @@ ExportGraphBuilder::Encoder::init_writer (boost::shared_ptr<AudioGrapher::Sndfil
 
 	writer.reset (new AudioGrapher::SndfileWriter<T> (writer_filename, format, channels, config.format->sample_rate(), config.broadcast_info));
 	writer->FileWritten.connect_same_thread (copy_files_connection, boost::bind (&ExportGraphBuilder::Encoder::copy_files, this, _1));
+	if (format & ExportFormatBase::SF_Vorbis) {
+		/* libsndfile uses range 0..1 (worst.. best) for
+		 * SFC_SET_VBR_ENCODING_QUALITY and maps
+		 * SFC_SET_COMPRESSION_LEVEL = 1.0 - VBR_ENCODING_QUALITY
+		 */
+		double vorbis_quality = config.format->codec_quality () / 100.f;
+		if (vorbis_quality >= 0 && vorbis_quality <= 1.0) {
+			writer->command (SFC_SET_VBR_ENCODING_QUALITY, &vorbis_quality, sizeof (double));
+		}
+	}
+}
+
+template<typename T>
+void
+ExportGraphBuilder::Encoder::init_writer (boost::shared_ptr<AudioGrapher::CmdPipeWriter<T> > & writer)
+{
+	unsigned channels = config.channel_config->get_n_chans();
+	config.filename->set_channel_config(config.channel_config);
+	writer_filename = config.filename->get_path (config.format);
+
+	std::string ffmpeg_exe;
+	std::string unused;
+
+	if (!ArdourVideoToolPaths::transcoder_exe (ffmpeg_exe, unused)) {
+		throw ExportFailed ("External encoder (ffmpeg) is not available.");
+	}
+
+	int quality = config.format->codec_quality ();
+
+	int a=0;
+	char **argp = (char**) calloc (100, sizeof(char*));
+	char tmp[64];
+	argp[a++] = strdup(ffmpeg_exe.c_str());
+	argp[a++] = strdup ("-f");
+	argp[a++] = strdup ("f32le");
+	argp[a++] = strdup ("-acodec");
+	argp[a++] = strdup ("pcm_f32le");
+	argp[a++] = strdup ("-ac");
+	snprintf (tmp, sizeof(tmp), "%d", channels);
+	argp[a++] = strdup (tmp);
+	argp[a++] = strdup ("-ar");
+	snprintf (tmp, sizeof(tmp), "%d", config.format->sample_rate());
+	argp[a++] = strdup (tmp);
+	argp[a++] = strdup ("-i");
+	argp[a++] = strdup ("pipe:0");
+
+	argp[a++] = strdup ("-y");
+	if (quality <= 0) {
+		/* variable rate, lower is better */
+		snprintf (tmp, sizeof(tmp), "%d", -quality);
+		argp[a++] = strdup ("-q:a"); argp[a++] = strdup (tmp);
+	} else {
+		/* fixed bitrate, higher is better */
+		snprintf (tmp, sizeof(tmp), "%dk", quality); // eg. "192k"
+		argp[a++] = strdup ("-b:a"); argp[a++] = strdup (tmp);
+	}
+
+	SessionMetadata::MetaDataMap meta;
+	meta["comment"] = "Created with " PROGRAM_NAME;
+
+	if (config.format->tag()) {
+		ARDOUR::SessionMetadata* session_data = ARDOUR::SessionMetadata::Metadata();
+		session_data->av_export_tag (meta);
+	}
+
+	for(SessionMetadata::MetaDataMap::const_iterator it = meta.begin(); it != meta.end(); ++it) {
+		argp[a++] = strdup("-metadata");
+		argp[a++] = SystemExec::format_key_value_parameter (it->first.c_str(), it->second.c_str());
+	}
+
+	argp[a++] = strdup (writer_filename.c_str());
+	argp[a] = (char *)0;
+
+	/* argp is free()d in ~SystemExec,
+	 * SystemExec is deleted when writer is destroyed */
+	ARDOUR::SystemExec* exec = new ARDOUR::SystemExec (ffmpeg_exe, argp);
+	PBD::info << "Encode command: { " << exec->to_s () << "}" << endmsg;
+	if (exec->start (SystemExec::MergeWithStdin)) {
+		throw ExportFailed ("External encoder (ffmpeg) cannot be started.");
+	}
+	writer.reset (new AudioGrapher::CmdPipeWriter<T> (exec, writer_filename));
+	writer->FileWritten.connect_same_thread (copy_files_connection, boost::bind (&ExportGraphBuilder::Encoder::copy_files, this, _1));
 }
 
 void
@@ -312,12 +437,14 @@ ExportGraphBuilder::SFC::SFC (ExportGraphBuilder &parent, FileSpec const & new_c
 	data_width = sndfile_data_width (Encoder::get_real_format (config));
 	unsigned channels = new_config.channel_config->get_n_chans();
 	_analyse = config.format->analyse();
+
+	boost::shared_ptr<AudioGrapher::ListedSource<float> > intermediate;
 	if (_analyse) {
 		samplecnt_t sample_rate = parent.session.nominal_sample_rate();
 		samplecnt_t sb = config.format->silence_beginning_at (parent.timespan->get_start(), sample_rate);
 		samplecnt_t se = config.format->silence_end_at (parent.timespan->get_end(), sample_rate);
 		samplecnt_t duration = parent.timespan->get_length () + sb + se;
-		max_samples = min ((samplecnt_t) 8192 * channels, max ((samplecnt_t) 4096 * channels, max_samples));
+		max_samples = std::min ((samplecnt_t) 8192 * channels, std::max ((samplecnt_t) 4096 * channels, max_samples));
 		chunker.reset (new Chunker<Sample> (max_samples));
 		analyser.reset (new Analyser (config.format->sample_rate(), channels, max_samples,
 					(samplecnt_t) ceil (duration * config.format->sample_rate () / (double) sample_rate)));
@@ -325,25 +452,43 @@ ExportGraphBuilder::SFC::SFC (ExportGraphBuilder &parent, FileSpec const & new_c
 
 		config.filename->set_channel_config (config.channel_config);
 		parent.add_analyser (config.filename->get_path (config.format), analyser);
+		intermediate = analyser;
+	}
+
+	if (config.format->format_id() == ExportFormatBase::F_None) {
+		/* do not encode result, stop after chunker/analyzer */
+		assert (_analyse);
+		return;
+	}
+
+	if (config.format->demo_noise_duration () > 0 && config.format->demo_noise_interval () > 0) {
+		samplecnt_t sample_rate = parent.session.nominal_sample_rate();
+		demo_noise_adder.reset (new DemoNoiseAdder (channels));
+		demo_noise_adder->init (max_samples,
+				sample_rate * config.format->demo_noise_interval () / 1000,
+				sample_rate * config.format->demo_noise_duration () / 1000,
+				config.format->demo_noise_level ());
+		if (intermediate) { intermediate->add_output (demo_noise_adder); }
+		intermediate = demo_noise_adder;
 	}
 
 	if (data_width == 8 || data_width == 16) {
 		short_converter = ShortConverterPtr (new SampleFormatConverter<short> (channels));
 		short_converter->init (max_samples, config.format->dither_type(), data_width);
 		add_child (config);
-		if (_analyse) { analyser->add_output (short_converter); }
+		if (intermediate) { intermediate->add_output (short_converter); }
 
 	} else if (data_width == 24 || data_width == 32) {
 		int_converter = IntConverterPtr (new SampleFormatConverter<int> (channels));
 		int_converter->init (max_samples, config.format->dither_type(), data_width);
 		add_child (config);
-		if (_analyse) { analyser->add_output (int_converter); }
+		if (intermediate) { intermediate->add_output (int_converter); }
 	} else {
 		int actual_data_width = 8 * sizeof(Sample);
 		float_converter = FloatConverterPtr (new SampleFormatConverter<Sample> (channels));
 		float_converter->init (max_samples, config.format->dither_type(), actual_data_width);
 		add_child (config);
-		if (_analyse) { analyser->add_output (float_converter); }
+		if (intermediate) { intermediate->add_output (float_converter); }
 	}
 }
 
@@ -358,8 +503,10 @@ ExportGraphBuilder::SFC::set_peak (float gain)
 ExportGraphBuilder::FloatSinkPtr
 ExportGraphBuilder::SFC::sink ()
 {
-	if (_analyse) {
+	if (chunker) {
 		return chunker;
+	} else if (demo_noise_adder) {
+		return demo_noise_adder;
 	} else if (data_width == 8 || data_width == 16) {
 		return short_converter;
 	} else if (data_width == 24 || data_width == 32) {
@@ -554,10 +701,24 @@ ExportGraphBuilder::Intermediate::prepare_post_processing()
 void
 ExportGraphBuilder::Intermediate::start_post_processing()
 {
-	// called in disk-thread (when exporting in realtime)
 	tmp_file->seek (0, SEEK_SET);
+
+	/* called in disk-thread when exporting in realtime,
+	 * to enable freewheeling for post-proc.
+	 *
+	 * It may also be called to normalize from the
+	 * freewheeling rt-callback, in which case this
+	 * will be a no-op.
+	 *
+	 * RT Stem export has multiple TmpFileRt threads,
+	 * prevent concurrent calls to enable freewheel ()
+	 */
+	Glib::Threads::Mutex::Lock lm (parent.engine_request_lock);
 	if (!AudioEngine::instance()->freewheeling ()) {
 		AudioEngine::instance()->freewheel (true);
+		while (!AudioEngine::instance()->freewheeling ()) {
+			Glib::usleep (AudioEngine::instance()->usecs_per_cycle ());
+		}
 	}
 }
 

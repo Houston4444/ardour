@@ -1,28 +1,32 @@
-/* Faderport 8 Control Surface
- * This is the button "Controller" of the MVC surface inteface,
- * see callbacks.cc for the "View".
+/*
+ * Copyright (C) 2017-2018 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2018 Ben Loftis <ben@harrisonconsoles.com>
  *
- * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
+/* Faderport 8 Control Surface
+ * This is the button "Controller" of the MVC surface inteface,
+ * see callbacks.cc for the "View".
  */
 
 #include "ardour/dB.h"
 #include "ardour/plugin_insert.h"
 #include "ardour/session.h"
 #include "ardour/session_configuration.h"
+#include "ardour/track.h"
 #include "ardour/types.h"
 
 #include "gtkmm2ext/actions.h"
@@ -31,13 +35,16 @@
 
 #include "pbd/i18n.h"
 
-using namespace ARDOUR;
-using namespace ArdourSurface;
 using namespace std;
-using namespace ArdourSurface::FP8Types;
+using namespace ARDOUR;
+using namespace ArdourSurface::FP_NAMESPACE;
+using namespace ArdourSurface::FP_NAMESPACE::FP8Types;
 
 #define BindMethod(ID, CB) \
 	_ctrls.button (FP8Controls::ID).released.connect_same_thread (button_connections, boost::bind (&FaderPort8:: CB, this));
+
+#define BindMethod2(ID, ACT, CB) \
+	_ctrls.button (FP8Controls::ID). ACT .connect_same_thread (button_connections, boost::bind (&FaderPort8:: CB, this));
 
 #define BindFunction(ID, ACT, CB, ...) \
 	_ctrls.button (FP8Controls::ID). ACT .connect_same_thread (button_connections, boost::bind (&FaderPort8:: CB, this, __VA_ARGS__));
@@ -57,11 +64,11 @@ _ctrls.button (ID).released.connect_same_thread (button_connections, boost::bind
 void
 FaderPort8::setup_actions ()
 {
-	BindMethod (BtnPlay, button_play);
-	BindMethod (BtnStop, button_stop);
-	BindMethod (BtnLoop, button_loop);
-	BindMethod (BtnRecord, button_record);
-	BindMethod (BtnClick, button_metronom);
+	BindMethod2 (BtnPlay, pressed, button_play);
+	BindMethod2 (BtnStop, pressed, button_stop);
+	BindMethod2 (BtnLoop, pressed, button_loop);
+	BindMethod2 (BtnRecord, pressed, button_record);
+	BindMethod2 (BtnClick, pressed, button_metronom);
 	BindAction (BtnRedo, "Editor", "redo");
 
 	BindAction (BtnSave, "Common", "Save");
@@ -93,7 +100,11 @@ FaderPort8::setup_actions ()
 	BindFunction (BtnALatch, released, button_automation, ARDOUR::Latch);
 
 	_ctrls.button (FP8Controls::BtnEncoder).pressed.connect_same_thread (button_connections, boost::bind (&FaderPort8::button_encoder, this));
+#ifdef FADERPORT2
+	_ctrls.button (FP8Controls::BtnParam).pressed.connect_same_thread (button_connections, boost::bind (&FaderPort8::button_encoder, this));
+#else
 	_ctrls.button (FP8Controls::BtnParam).pressed.connect_same_thread (button_connections, boost::bind (&FaderPort8::button_parameter, this));
+#endif
 
 
 	BindMethod (BtnBypass, button_bypass);
@@ -104,6 +115,11 @@ FaderPort8::setup_actions ()
 
 	BindMethod (BtnLink, button_link);
 	BindMethod (BtnLock, button_lock);
+
+#ifdef FADERPORT2
+	BindMethod (BtnChanLock, button_chanlock);
+	BindMethod (BtnFlip, button_flip);
+#endif
 
 	// user-specific
 	for (FP8Controls::UserButtonMap::const_iterator i = _ctrls.user_buttons ().begin ();
@@ -119,8 +135,8 @@ FaderPort8::setup_actions ()
 void
 FaderPort8::button_play ()
 {
-	if (session->transport_rolling ()) {
-		if (session->transport_speed () != 1.0) {
+	if (transport_rolling ()) {
+		if (get_transport_speed() != 1.0) {
 			session->request_transport_speed (1.0);
 		} else {
 			transport_stop ();
@@ -133,7 +149,7 @@ FaderPort8::button_play ()
 void
 FaderPort8::button_stop ()
 {
-	if (session->transport_rolling ()) {
+	if (transport_rolling ()) {
 		transport_stop ();
 	} else {
 		AccessAction ("Transport", "GotoStart");
@@ -179,6 +195,20 @@ FaderPort8::button_open ()
 		AccessAction ("Common", "addExistingAudioFiles");
 	}
 }
+
+void
+FaderPort8::button_chanlock ()
+{
+	_chan_locked = !_chan_locked;
+
+	_ctrls.button (FP8Controls::BtnChannel).set_blinking (_chan_locked);
+}
+
+void
+FaderPort8::button_flip ()
+{
+}
+
 void
 FaderPort8::button_lock ()
 {
@@ -218,7 +248,7 @@ FaderPort8::button_automation (ARDOUR::AutoState as)
 	switch (fadermode) {
 		case ModePlugins:
 #if 0 // Plugin Control Automation Mode
-			for ( std::list <ProcessorCtrl>::iterator i = _proc_params.begin(); i != _proc_params.end(); ++i) {
+			for (std::list <ProcessorCtrl>::iterator i = _proc_params.begin(); i != _proc_params.end(); ++i) {
 				((*i).ac)->set_automation_state (as);
 			}
 #endif
@@ -279,26 +309,26 @@ FaderPort8::button_varispeed (bool ffw)
 		// stop key-repeat
 		dynamic_cast<FP8RepeatButton*>(&b_ffw)->stop_repeat();
 		dynamic_cast<FP8RepeatButton*>(&b_rew)->stop_repeat();
-		session->request_locate (0, false);
+		session->request_locate (0, MustStop);
 		return;
 	}
 
 	// switch play direction, if needed
 	if (ffw) {
-		if (session->transport_speed () <= 0) {
+		if (get_transport_speed() <= 0) {
 			session->request_transport_speed (1.0);
 			return ;
 		}
 	} else {
-		if (session->transport_speed () >= 0) {
+		if (get_transport_speed() >= 0) {
 			session->request_transport_speed (-1.0);
 			return ;
 		}
 	}
-	// incremetally increase speed. double speed every 10 clicks
+	// incrementally increase speed by semitones
 	// (keypress auto-repeat is 100ms)
 	float maxspeed = Config->get_shuttle_max_speed();
-	float speed = exp2f(0.1f) * session->transport_speed ();
+	float speed = exp2f(1.0/12.0) * get_transport_speed();
 	speed = std::max (-maxspeed, std::min (maxspeed, speed));
 	session->request_transport_speed (speed, false);
 }
@@ -401,9 +431,9 @@ FaderPort8::handle_encoder_pan (int steps)
 			if (steps == 0) {
 				ac->set_value (ac->normal(), PBD::Controllable::UseGroup);
 			} else {
-				double v = ac->internal_to_interface (ac->get_value());
+				double v = ac->internal_to_interface (ac->get_value(), true);
 				v = std::max (0.0, std::min (1.0, v + steps * .01));
-				ac->set_value (ac->interface_to_internal(v), PBD::Controllable::UseGroup);
+				ac->set_value (ac->interface_to_internal(v, true), PBD::Controllable::UseGroup);
 			}
 		}
 	}
@@ -420,7 +450,7 @@ FaderPort8::handle_encoder_link (int steps)
 		return;
 	}
 
-	double v = ac->internal_to_interface (ac->get_value());
+	double v = ac->internal_to_interface (ac->get_value(), true);
 	ac->start_touch (ac->session().transport_sample());
 
 	if (steps == 0) {
@@ -438,7 +468,7 @@ FaderPort8::handle_encoder_link (int steps)
 	} else {
 		v = std::max (0.0, std::min (1.0, v + steps * .01));
 	}
-	ac->set_value (ac->interface_to_internal(v), PBD::Controllable::UseGroup);
+	ac->set_value (ac->interface_to_internal(v, true), PBD::Controllable::UseGroup);
 }
 
 
@@ -450,11 +480,21 @@ FaderPort8::handle_encoder_link (int steps)
 void
 FaderPort8::button_arm (bool press)
 {
+#ifdef FADERPORT2
+	boost::shared_ptr<Stripable> s = first_selected_stripable();
+	if (press && s) {
+		boost::shared_ptr<Track> t = boost::dynamic_pointer_cast<Track>(s);
+		if (t) {
+			t->rec_enable_control()->set_value (!t->rec_enable_control()->get_value(), PBD::Controllable::UseGroup);
+		}
+	}
+#else
 	FaderMode fadermode = _ctrls.fader_mode ();
 	if (fadermode == ModeTrack || fadermode == ModePan) {
 		_ctrls.button (FP8Controls::BtnArm).set_active (press);
 		ARMButtonChange (press); /* EMIT SIGNAL */
 	}
+#endif
 }
 
 void
@@ -462,10 +502,13 @@ FaderPort8::button_prev_next (bool next)
 {
 	switch (_ctrls.nav_mode()) {
 		case NavChannel:
+#ifndef FADERPORT2
 			select_prev_next (next);
 			break;
+#endif
 		case NavMaster:
 		case NavScroll:
+		case NavPan:
 			bank (!next, false);
 			break;
 		case NavBank:
@@ -533,6 +576,8 @@ FaderPort8::button_encoder ()
 				}
 			}
 			break;
+		case NavPan:
+			break;
 		case NavSection:
 			// TODO nudge
 			break;
@@ -543,7 +588,7 @@ FaderPort8::button_encoder ()
 				 * the current position and we're not rolling.
 				 */
 				samplepos_t where = session->audible_sample();
-				if (session->transport_stopped() && session->locations()->mark_at (where, session->sample_rate() / 100.0)) {
+				if (session->transport_stopped_or_stopping() && session->locations()->mark_at (where, session->sample_rate() / 100.0)) {
 					return;
 				}
 
@@ -619,6 +664,9 @@ FaderPort8::encoder_navigate (bool neg, int steps)
 			} else {
 				AccessAction ("Common", "nudge-playhead-forward");
 			}
+			break;
+		case NavPan:
+			abort(); /*NOTREACHED*/
 			break;
 	}
 }

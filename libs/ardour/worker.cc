@@ -1,30 +1,32 @@
 /*
-  Copyright (C) 2012-2016 Paul Davis
-  Author: David Robillard
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2012-2016 David Robillard <d@drobilla.net>
+ * Copyright (C) 2012-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "ardour/worker.h"
+#include <glibmm/timer.h>
+
 #include "pbd/error.h"
 #include "pbd/compose.h"
+#include "pbd/pthread_utils.h"
 
-#include <glibmm/timer.h>
+#include "ardour/worker.h"
 
 namespace ARDOUR {
 
@@ -61,6 +63,7 @@ Worker::schedule(uint32_t size, const void* data)
 {
 	if (_synchronous || !_requests) {
 		_workee->work(*this, size, data);
+		emit_responses ();
 		return true;
 	}
 	if (_requests->write_space() < size + sizeof(size)) {
@@ -105,7 +108,7 @@ Worker::verify_message_completeness(PBD::RingBuffer<uint8_t>* rb)
 		memcpy (&size, vec.buf[0], sizeof (size));
 	} else {
 		memcpy (&size, vec.buf[0], vec.len[0]);
-		memcpy (&size + vec.len[0], vec.buf[1], sizeof(size) - vec.len[0]);
+		memcpy (& reinterpret_cast<uint8_t*>(&size)[vec.len[0]], vec.buf[1], sizeof(size) - vec.len[0]);
 	}
 	if (read_space < size+sizeof(size)) {
 		/* message from writer is yet incomplete. respond next cycle */
@@ -135,6 +138,8 @@ Worker::emit_responses()
 void
 Worker::run()
 {
+	pthread_set_name ("LV2Worker");
+
 	void*  buf      = NULL;
 	size_t buf_size = 0;
 	while (true) {
@@ -167,11 +172,11 @@ Worker::run()
 			if (buf) {
 				buf_size = size;
 			} else {
-				PBD::error << "Worker: Error allocating memory"
-				           << endmsg;
-				buf_size = 0; // TODO: This is probably fatal
+				PBD::fatal << "Worker: Error allocating memory" << endmsg;
+				abort(); /*NOTREACHED*/
 			}
 		}
+		assert (buf);
 
 		if (_requests->read((uint8_t*)buf, size) < size) {
 			PBD::error << "Worker: Error reading body from request ring"

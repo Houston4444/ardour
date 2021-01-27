@@ -1,28 +1,30 @@
 /*
-    Copyright (C) 2010 Paul Davis
-    Author: Robin Gareus <robin@gareus.org>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013 John Emmas <john@creativepost.co.uk>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 #include <algorithm>
 #include <sigc++/bind.h>
 #include "ardour/tempo.h"
 
 #include "pbd/file_utils.h"
 #include "pbd/types_convert.h"
+#include "ardour/filesystem_paths.h"
 #include "ardour/session_directory.h"
 
 #include "ardour_ui.h"
@@ -32,7 +34,6 @@
 #include "utils_videotl.h"
 #include "rgb_macros.h"
 #include "video_timeline.h"
-#include "video_tool_paths.h"
 
 #include <gtkmm2ext/utils.h>
 #include <pthread.h>
@@ -48,8 +49,8 @@ using namespace VideoUtils;
 
 VideoTimeLine::VideoTimeLine (PublicEditor *ed, ArdourCanvas::Container *vbg, int initial_height)
 	: editor (ed)
-		, videotl_group(vbg)
-		, bar_height(initial_height)
+	, videotl_group(vbg)
+	, bar_height(initial_height)
 {
 	video_start_offset = 0L;
 	video_offset = 0L;
@@ -62,7 +63,7 @@ VideoTimeLine::VideoTimeLine (PublicEditor *ed, ArdourCanvas::Container *vbg, in
 	video_filename = "";
 	local_file = true;
 	video_file_fps = 25.0;
-	flush_samples = false;
+	_flush_frames = false;
 	vmonitor=0;
 	reopen_vmonitor=false;
 	find_xjadeo();
@@ -119,7 +120,7 @@ VideoTimeLine::close_session ()
 	sessionsave.disconnect();
 	close_video_monitor();
 
-	remove_samples();
+	remove_frames ();
 	video_filename = "";
 	video_duration = 0;
 	GuiUpdate("set-xjadeo-sensitive-off");
@@ -231,24 +232,24 @@ VideoTimeLine::get_state ()
 }
 
 void
-VideoTimeLine::remove_samples ()
+VideoTimeLine::remove_frames ()
 {
-	for (VideoSamples::iterator i = video_frames.begin(); i != video_frames.end(); ++i ) {
-		VideoImageFrame *sample = (*i);
-		delete sample;
+	for (VideoFrames::iterator i = video_frames.begin(); i != video_frames.end(); ++i ) {
+		VideoImageFrame* frame = (*i);
+		delete frame;
 		(*i) = 0;
 	}
 	video_frames.clear();
 }
 
-VideoImageFrame *
+VideoImageFrame*
 VideoTimeLine::get_video_frame (samplepos_t vfn, int cut, int rightend)
 {
 	if (vfn==0) cut=0;
-	for (VideoSamples::iterator i = video_frames.begin(); i != video_frames.end(); ++i) {
-		VideoImageFrame *sample = (*i);
-		if (abs(sample->get_video_frame_number()-vfn)<=cut
-		    && sample->get_rightend() == rightend) { return sample; }
+	for (VideoFrames::iterator i = video_frames.begin(); i != video_frames.end(); ++i) {
+		VideoImageFrame* frame = (*i);
+		if (abs(frame->get_video_frame_number()-vfn)<=cut
+		    && frame->get_rightend() == rightend) { return frame; }
 	}
 	return 0;
 }
@@ -294,11 +295,11 @@ VideoTimeLine::update_video_timeline()
 	const samplepos_t leftmost_sample =  editor->leftmost_sample();
 
 	/* Outline:
-	 * 1) calculate how many samples there should be in current zoom (plus 1 page on each side)
-	 * 2) calculate first sample and distance between video-frames (according to zoom)
-	 * 3) destroy/add samples
-	 * 4) reposition existing samples
-	 * 5) assign framenumber to samples -> request/decode video.
+	 * 1) calculate how many frames there should be in current zoom (plus 1 page on each side)
+	 * 2) calculate first frame and distance between video-frames (according to zoom)
+	 * 3) destroy/add frames
+	 * 4) reposition existing frames
+	 * 5) assign framenumber to frames -> request/decode video.
 	 */
 
 	/* video-file and session properties */
@@ -309,7 +310,7 @@ VideoTimeLine::update_video_timeline()
 	/* variables needed to render videotimeline -- what needs to computed first */
 	samplepos_t vtl_start; /* unit: audio-samples ; first displayed video-frame */
 	samplepos_t vtl_dist;  /* unit: audio-samples ; distance between displayed video-frames */
-	unsigned int visible_video_frames; /* number of samples that fit on current canvas */
+	unsigned int visible_video_frames; /* number of frames that fit on current canvas */
 
 	if (_session->config.get_videotimeline_pullup()) {
 		apv = _session->sample_rate();
@@ -338,43 +339,43 @@ VideoTimeLine::update_video_timeline()
 	leftmost_video_frame = floor (floor((long double)(leftmost_sample - video_start_offset - video_offset ) / vtl_dist) * vtl_dist / apv);
 
 	vtl_start = rint (video_offset + video_start_offset + leftmost_video_frame * apv);
-	visible_video_frames = 2 + ceil((double)editor->current_page_samples() / vtl_dist); /* +2 left+right partial samples */
+	visible_video_frames = 2 + ceil((double)editor->current_page_samples() / vtl_dist); /* +2 left+right partial frames */
 
 	/* expand timeline (cache next/prev page images) */
 	vtl_start -= visible_video_frames * vtl_dist;
 	visible_video_frames *=3;
 
-	/* don't request samples that are too far to the right */
+	/* don't request frames that are too far to the right */
 	if (vtl_start < video_offset) {
 		visible_video_frames = std::max((double)0.0, (double)visible_video_frames + ceil((double)(vtl_start - video_offset)/vtl_dist));
 		vtl_start = video_offset;
 	}
 
 	/* apply video-file constraints
-	 * (first sample in video is at video_start_offset) */
+	 * (first frame in video is at video_start_offset) */
 	if (vtl_start > video_start_offset + video_duration + video_offset ) {
 		visible_video_frames = 0;
 	}
 	/* trim end.
-	 * end = position on timeline (video-offset)  minus  video-file's first sample position
+	 * end = position on timeline (video-offset)  minus  video-file's first frame position
 	 * TODO optimize: compute rather than iterate */
 	while (visible_video_frames > 0 && vtl_start + (visible_video_frames-1) * vtl_dist >= video_start_offset + video_duration + video_offset) {
 		--visible_video_frames;
 	}
 
-	if (flush_samples) {
-		remove_samples();
-		flush_samples=false;
+	if (_flush_frames) {
+		remove_frames ();
+		_flush_frames = false;
 	}
 
 	while (video_frames.size() < visible_video_frames) {
-		VideoImageFrame *sample;
-		sample = new VideoImageFrame(*editor, *videotl_group, display_vframe_width, bar_height, video_server_url, translated_filename());
-		sample->ImgChanged.connect (*this, invalidator (*this), boost::bind (&PublicEditor::queue_visual_videotimeline_update, editor), gui_context());
-		video_frames.push_back(sample);
+		VideoImageFrame *frame;
+		frame = new VideoImageFrame(*editor, *videotl_group, display_vframe_width, bar_height, video_server_url, translated_filename());
+		frame->ImgChanged.connect (*this, invalidator (*this), boost::bind (&PublicEditor::queue_visual_videotimeline_update, editor), gui_context());
+		video_frames.push_back(frame);
 	}
 
-	VideoSamples outdated_video_frames;
+	VideoFrames outdated_video_frames;
 	std::list<int> remaining;
 
 	outdated_video_frames = video_frames;
@@ -400,21 +401,21 @@ VideoTimeLine::update_video_timeline()
 			rightend = display_vframe_width * (video_start_offset + video_duration + video_offset - vfpos) / vtl_dist;
 			//printf("lf(e): %lu\n", vframeno); // XXX
 		}
-		VideoImageFrame * sample = get_video_frame(vframeno, cut, rightend);
-		if (sample) {
-		  sample->set_position(vfpos);
-			outdated_video_frames.remove(sample);
+		VideoImageFrame* frame = get_video_frame(vframeno, cut, rightend);
+		if (frame) {
+		  frame->set_position(vfpos);
+			outdated_video_frames.remove (frame);
 		} else {
 			remaining.push_back(vfcount);
 		}
 	}
 
-	for (VideoSamples::iterator i = outdated_video_frames.begin(); i != outdated_video_frames.end(); ++i ) {
-		VideoImageFrame *sample = (*i);
+	for (VideoFrames::iterator i = outdated_video_frames.begin(); i != outdated_video_frames.end(); ++i ) {
+		VideoImageFrame* frame = (*i);
 		if (remaining.empty()) {
-		  sample->set_position(-2 * vtl_dist + leftmost_sample); /* move off screen */
+		  frame->set_position(-2 * vtl_dist + leftmost_sample); /* move off screen */
 		} else {
-			int vfcount=remaining.front();
+			int vfcount = remaining.front();
 			remaining.pop_front();
 			samplepos_t vfpos = vtl_start + vfcount * vtl_dist; /* unit: audio-samples */
 			samplepos_t vframeno = rint ((vfpos - video_offset) / apv);  /* unit: video-frames */
@@ -423,8 +424,8 @@ VideoTimeLine::update_video_timeline()
 				rightend = display_vframe_width * (video_start_offset + video_duration + video_offset - vfpos) / vtl_dist;
 				//printf("lf(n): %lu\n", vframeno); // XXX
 			}
-			sample->set_position(vfpos);
-			sample->set_videoframe(vframeno, rightend);
+			frame->set_position(vfpos);
+			frame->set_videoframe(vframeno, rightend);
 		}
 	}
 }
@@ -544,7 +545,7 @@ VideoTimeLine::check_server ()
 			, video_server_url.c_str()
 			, (video_server_url.length()>0 && video_server_url.at(video_server_url.length()-1) == '/')?"":"/"
 			);
-	char* res = ArdourCurl::http_get (url, NULL);
+	char* res = ArdourCurl::http_get (url, NULL, false);
 	if (res) {
 		if (strstr(res, "status: ok, online.")) { ok = true; }
 		free(res);
@@ -566,7 +567,7 @@ VideoTimeLine::check_server_docroot ()
 			, video_server_url.c_str()
 			, (video_server_url.length()>0 && video_server_url.at(video_server_url.length()-1) == '/')?"":"/"
 			);
-	char* res = ArdourCurl::http_get (url, NULL);
+	char* res = ArdourCurl::http_get (url, NULL, false);
 	if (!res) {
 		return false;
 	}
@@ -609,9 +610,9 @@ VideoTimeLine::gui_update(std::string const & t) {
 		editor->toggle_xjadeo_viewoption(2, 1);
 	} else if (t == "xjadeo-window-osd-timecode-off") {
 		editor->toggle_xjadeo_viewoption(2, 0);
-	} else if (t == "xjadeo-window-osd-sample-on") {
+	} else if (t == "xjadeo-window-osd-frame-on") {
 		editor->toggle_xjadeo_viewoption(3, 1);
-	} else if (t == "xjadeo-window-osd-sample-off") {
+	} else if (t == "xjadeo-window-osd-frame-off") {
 		editor->toggle_xjadeo_viewoption(3, 0);
 	} else if (t == "xjadeo-window-osd-box-on") {
 		editor->toggle_xjadeo_viewoption(4, 1);
@@ -650,7 +651,7 @@ VideoTimeLine::vmon_update () {
 
 void
 VideoTimeLine::flush_local_cache () {
-	flush_samples = true;
+	_flush_frames = true;
 	vmon_update();
 }
 
@@ -662,7 +663,7 @@ VideoTimeLine::flush_cache () {
 			, video_server_url.c_str()
 			, (video_server_url.length()>0 && video_server_url.at(video_server_url.length()-1) == '/')?"":"/"
 			);
-	char* res = ArdourCurl::http_get (url, NULL);
+	char* res = ArdourCurl::http_get (url, NULL, false);
 	if (res) {
 		free (res);
 	}
@@ -726,7 +727,7 @@ VideoTimeLine::find_xjadeo () {
 		xjadeo_version = "";
 		version_check.ReadStdout.connect_same_thread (*this, boost::bind (&VideoTimeLine::xjadeo_readversion, this, _1 ,_2));
 		version_check.Terminated.connect_same_thread (*this, boost::bind (&VideoTimeLine::xjadeo_readversion, this, "\n" ,1));
-		if (version_check.start(2)) {
+		if (version_check.start (ARDOUR::SystemExec::MergeWithStdin)) {
 			warning << _(
 					"Video-monitor 'xjadeo' cannot be launched."
 					) << endmsg;
@@ -795,7 +796,7 @@ VideoTimeLine::find_harvid () {
 	harvid_version = "";
 	version_check.ReadStdout.connect_same_thread (*this, boost::bind (&VideoTimeLine::harvid_readversion, this, _1 ,_2));
 	version_check.Terminated.connect_same_thread (*this, boost::bind (&VideoTimeLine::harvid_readversion, this, "\n" ,1));
-	if (version_check.start(2)) {
+	if (version_check.start (ARDOUR::SystemExec::MergeWithStdin)) {
 		return;
 	}
 

@@ -1,21 +1,24 @@
 /*
-    Copyright (C) 2002-2009 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2009-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2012-2016 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016 Julien "_FrnchFrgg_" RIVAUD <frnchfrgg@free.fr>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cstring>
 #include <boost/shared_ptr.hpp>
@@ -23,6 +26,8 @@
 
 #include "midi++/mmc.h"
 
+#include "ardour/audio_port.h"
+#include "ardour/async_midi_port.h"
 #include "ardour/audioengine.h"
 #include "ardour/auditioner.h"
 #include "ardour/bundle.h"
@@ -30,9 +35,13 @@
 #include "ardour/io_processor.h"
 #include "ardour/midi_port.h"
 #include "ardour/midiport_manager.h"
+#include "ardour/plugin_insert.h"
 #include "ardour/port.h"
 #include "ardour/profile.h"
 #include "ardour/session.h"
+#include "ardour/sidechain.h"
+#include "ardour/transport_master.h"
+#include "ardour/transport_master_manager.h"
 #include "ardour/user_bundle.h"
 
 #include "control_protocol/control_protocol.h"
@@ -337,6 +346,7 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 
 	boost::shared_ptr<PortGroup> bus (new PortGroup (string_compose (_("%1 Busses"), PROGRAM_NAME)));
 	boost::shared_ptr<PortGroup> track (new PortGroup (string_compose (_("%1 Tracks"), PROGRAM_NAME)));
+	boost::shared_ptr<PortGroup> sidechain (new PortGroup (string_compose (_("%1 Sidechains"), PROGRAM_NAME)));
 	boost::shared_ptr<PortGroup> system (new PortGroup (_("Hardware")));
 	boost::shared_ptr<PortGroup> program (new PortGroup (string_compose (_("%1 Misc"), PROGRAM_NAME)));
 	boost::shared_ptr<PortGroup> other (new PortGroup (_("Other")));
@@ -399,6 +409,25 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 				}
 			}
 		}
+
+		/* When on input side, let's look for sidechains in the route's plugins
+		   to display them right next to their route */
+		for (uint32_t n = 0; inputs; ++n) {
+			boost::shared_ptr<Processor> p = (i->route)->nth_plugin (n);
+			if (!p) {
+				break;
+			}
+			boost::shared_ptr<SideChain> sc = boost::static_pointer_cast<PluginInsert> (p)->sidechain ();
+
+			if (sc) {
+				boost::shared_ptr<IO> io = sc->input();
+				if (tv) {
+					sidechain->add_bundle (io->bundle(), io, tv->color ());
+				} else {
+					sidechain->add_bundle (io->bundle(), io);
+				}
+			}
+		}
 	}
 
 	/* Bundles owned by the session; add user bundles first, then normal ones, so
@@ -426,19 +455,36 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 
 	if (type == DataType::AUDIO || type == DataType::NIL) {
 		if (!inputs) {
+
 			program->add_bundle (session->the_auditioner()->output()->bundle());
 			program->add_bundle (session->click_io()->bundle());
-			/* Note: the LTC ports do not have the usual ":audio_out 1" postfix, so
-			 *  program->add_bundle (session->ltc_output_io()->bundle());
-			 *  won't work
-			 */
+
 			boost::shared_ptr<Bundle> ltc (new Bundle (_("LTC Out"), inputs));
 			ltc->add_channel (_("LTC Out"), DataType::AUDIO, session->engine().make_port_name_non_relative (session->ltc_output_port()->name()));
 			program->add_bundle (ltc);
+
 		} else {
-			boost::shared_ptr<Bundle> ltc (new Bundle (_("LTC In"), inputs));
-			ltc->add_channel (_("LTC In"), DataType::AUDIO, session->engine().make_port_name_non_relative (session->ltc_input_port()->name()));
-			program->add_bundle (ltc);
+
+			boost::shared_ptr<Bundle> sync (new Bundle (_("Sync"), inputs));
+			AudioEngine* ae = AudioEngine::instance();
+			TransportMasterManager::TransportMasters const & tm (TransportMasterManager::instance().transport_masters());
+
+			for (TransportMasterManager::TransportMasters::const_iterator i = tm.begin(); i != tm.end(); ++i) {
+
+				boost::shared_ptr<Port> port = (*i)->port ();
+
+				if (!port) {
+					continue;
+				}
+
+				if (!boost::dynamic_pointer_cast<AudioPort> (port)) {
+					continue;
+				}
+
+				sync->add_channel ((*i)->name(), DataType::AUDIO, ae->make_port_name_non_relative (port->name()));
+			}
+
+			program->add_bundle (sync);
 		}
 	}
 
@@ -463,23 +509,41 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 		}
 	}
 
+	/* virtual keyboard */
+	if (!inputs && (type == DataType::MIDI || type == DataType::NIL)) {
+		boost::shared_ptr<ARDOUR::Port> ap = boost::dynamic_pointer_cast<ARDOUR::Port> (session->vkbd_output_port());
+		AudioEngine* ae = AudioEngine::instance();
+		boost::shared_ptr<Bundle> vm (new Bundle (ap->pretty_name (), inputs));
+		vm->add_channel (ap->pretty_name (), DataType::MIDI, ae->make_port_name_non_relative (ap->name()));
+		program->add_bundle (vm);
+	}
+
 	/* our sync ports */
 
 	if ((type == DataType::MIDI || type == DataType::NIL)) {
 		boost::shared_ptr<Bundle> sync (new Bundle (_("Sync"), inputs));
 		AudioEngine* ae = AudioEngine::instance();
+		TransportMasterManager::TransportMasters const & tm (TransportMasterManager::instance().transport_masters());
 
 		if (inputs) {
-			sync->add_channel (
-				_("MTC in"), DataType::MIDI, ae->make_port_name_non_relative (session->mtc_input_port()->name())
-				);
-			sync->add_channel (
-				_("MIDI clock in"), DataType::MIDI, ae->make_port_name_non_relative (session->midi_clock_input_port()->name())
-				);
-			sync->add_channel (
-				_("MMC in"), DataType::MIDI, ae->make_port_name_non_relative (session->mmc_input_port()->name())
-				);
+
+			for (TransportMasterManager::TransportMasters::const_iterator i = tm.begin(); i != tm.end(); ++i) {
+				boost::shared_ptr<Port> port = (*i)->port ();
+				if (!port) {
+					continue;
+				}
+
+				if (!boost::dynamic_pointer_cast<MidiPort> (port)) {
+					continue;
+				}
+
+				sync->add_channel ((*i)->name(), DataType::MIDI, ae->make_port_name_non_relative (port->name()));
+			}
+
+			sync->add_channel (_("MMC in"), DataType::MIDI, ae->make_port_name_non_relative (session->mmc_input_port()->name()));
+
 		} else {
+
 			sync->add_channel (
 				_("MTC out"), DataType::MIDI, ae->make_port_name_non_relative (session->mtc_output_port()->name())
 				);
@@ -526,6 +590,7 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 			if (!system->has_port(p) &&
 			    !bus->has_port(p) &&
 			    !track->has_port(p) &&
+			    !sidechain->has_port(p) &&
 			    !program->has_port(p) &&
 			    !other->has_port(p)) {
 
@@ -571,24 +636,24 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 
 				if (t != DataType::NIL) {
 
-					if (port_has_prefix (p, X_("system:")) ||
-					    port_has_prefix (p, X_("alsa_pcm:")) ||
-					    port_has_prefix (p, X_("alsa_midi:"))) {
-						extra_system[t].push_back (p);
+					PortFlags flags (AudioEngine::instance()->port_engine().get_port_flags (ph));
 
-					} else if (port_has_prefix (p, lpnc)) {
+					if (port_has_prefix (p, lpnc)) {
 
 						/* we own this port (named after the program) */
 
-						/* Hide scene ports from non-Tracks Live builds */
-						if (!ARDOUR::Profile->get_trx()) {
-							if (p.find (_("Scene ")) != string::npos) {
-								++s;
-								continue;
-							}
+						/* Hide scene ports for now */
+						if (p.find (_("Scene ")) != string::npos) {
+							++s;
+							continue;
 						}
 
 						extra_program[t].push_back (p);
+
+					} else if (flags & IsPhysical) {
+
+						extra_system[t].push_back (p);
+
 					} else {
 						extra_other[t].push_back (p);
 					}
@@ -642,6 +707,7 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 	add_group_if_not_empty (other);
 	add_group_if_not_empty (bus);
 	add_group_if_not_empty (track);
+	add_group_if_not_empty (sidechain);
 	add_group_if_not_empty (program);
 	add_group_if_not_empty (system);
 

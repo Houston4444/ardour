@@ -1,21 +1,25 @@
 /*
-    Copyright (C) 2004 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2007-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2008-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2014-2018 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2017 Johannes Mueller <github@johannes-mueller.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __ardour_gtk_processor_box__
 #define __ardour_gtk_processor_box__
@@ -120,7 +124,6 @@ class PluginPinWindowProxy : public WM::ProxyBase
 	ARDOUR::SessionHandlePtr* session_handle();
 
   private:
-	ProcessorBox* _processor_box;
 	boost::weak_ptr<ARDOUR::Processor> _processor;
 
 	void processor_going_away ();
@@ -197,7 +200,7 @@ private:
 
 	class Control : public sigc::trackable {
 	public:
-		Control (boost::shared_ptr<ARDOUR::AutomationControl>, std::string const &);
+		Control (ProcessorEntry&, boost::shared_ptr<ARDOUR::AutomationControl>, std::string const &);
 		~Control ();
 
 		void set_visible (bool);
@@ -227,6 +230,9 @@ private:
 		void start_touch ();
 		void end_touch ();
 
+		bool button_released (GdkEventButton*);
+
+		ProcessorEntry& _entry;
 		boost::weak_ptr<ARDOUR::AutomationControl> _control;
 		/* things for a slider */
 		Gtk::Adjustment _adjustment;
@@ -242,7 +248,9 @@ private:
 
 	std::list<Control*> _controls;
 
+	friend class Control;
 	void toggle_control_visibility (Control *);
+
 	void toggle_panner_link ();
 	void toggle_allow_feedback ();
 
@@ -255,10 +263,11 @@ private:
 		bool on_button_press_event (GdkEventButton *ev);
 		void update_height_alloc (uint32_t inline_height);
 
-		void display_sample (cairo_t* cr, double w, double h);
+		void display_frame (cairo_t* cr, double w, double h);
 
 		ProcessorEntry& _entry;
 		bool _scroll;
+		const uint32_t _given_max_height;
 	};
 
 	class LuaPluginDisplay : public PluginInlineDisplay {
@@ -484,7 +493,6 @@ private:
 	int _placement;
 
 	ProcessorSelection& _p_selection;
-	static Gtkmm2ext::ActionMap myactions;
 
 	static void load_bindings ();
 
@@ -511,8 +519,11 @@ private:
 	Gtk::Menu * build_processor_menu ();
 	void show_processor_menu (int);
 	Gtk::Menu* build_possible_aux_menu();
+	Gtk::Menu* build_possible_listener_menu();
+	Gtk::Menu* build_possible_remove_listener_menu();
 
 	void choose_aux (boost::weak_ptr<ARDOUR::Route>);
+	void remove_aux (boost::weak_ptr<ARDOUR::Route>);
 	void choose_send ();
 	void send_io_finished (IOSelector::Result, boost::weak_ptr<ARDOUR::Processor>, IOSelectorWindow*);
 	void return_io_finished (IOSelector::Result, boost::weak_ptr<ARDOUR::Processor>, IOSelectorWindow*);
@@ -553,6 +564,7 @@ private:
 	void get_selected_processors (ProcSelection&) const;
 
 	void set_disk_io_position (ARDOUR::DiskIOPoint);
+	void toggle_custom_loudness_pos ();
 
 	bool can_cut() const;
 	bool stub_processor_selected() const;
@@ -581,6 +593,7 @@ private:
 	static ProcessorBox* _current_processor_box;
 
 	static void rb_choose_aux (boost::weak_ptr<ARDOUR::Route>);
+	static void rb_remove_aux (boost::weak_ptr<ARDOUR::Route>);
 	static void rb_choose_plugin ();
 	static void rb_choose_insert ();
 	static void rb_choose_send ();
@@ -599,6 +612,7 @@ private:
 	static void rb_ab_plugins ();
 	static void rb_manage_pins ();
 	static void rb_set_disk_io_position (ARDOUR::DiskIOPoint);
+	static void rb_toggle_custom_loudness_pos ();
 	static void rb_edit ();
 	static void rb_edit_generic ();
 
@@ -621,6 +635,8 @@ private:
 
 	XMLNode* entry_gui_object_state (ProcessorEntry *);
 	PBD::ScopedConnection amp_config_connection;
+
+	static bool _ignore_rb_change;
 };
 
 #endif /* __ardour_gtk_processor_box__ */

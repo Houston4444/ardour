@@ -1,22 +1,22 @@
 /*
-    Copyright (C) 2012 Paul Davis
-    Inspired by code from Ben Loftis @ Harrison Consoles
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2015 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2014-2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <string>
 #include <cstring>
@@ -24,6 +24,7 @@
 #ifdef PLATFORM_WINDOWS
 #include <windows.h>
 #include <glibmm.h>
+#include "pbd/windows_special_dirs.h"
 #else
 #include <sys/utsname.h>
 #endif
@@ -52,38 +53,18 @@ struct ping_call {
 	    : version (v), announce_path (a) {}
 };
 
-#ifdef PLATFORM_WINDOWS
-static bool
-_query_registry (const char *regkey, const char *regval, std::string &rv) {
-	HKEY key;
-	DWORD size = PATH_MAX;
-	char tmp[PATH_MAX+1];
-
-	if (   (ERROR_SUCCESS == RegOpenKeyExA (HKEY_LOCAL_MACHINE, regkey, 0, KEY_READ, &key))
-	    && (ERROR_SUCCESS == RegQueryValueExA (key, regval, 0, NULL, reinterpret_cast<LPBYTE>(tmp), &size))
-		 )
-	{
-		rv = Glib::locale_to_utf8 (tmp);
-		return true;
-	}
-
-	if (   (ERROR_SUCCESS == RegOpenKeyExA (HKEY_LOCAL_MACHINE, regkey, 0, KEY_READ | KEY_WOW64_32KEY, &key))
-	    && (ERROR_SUCCESS == RegQueryValueExA (key, regval, 0, NULL, reinterpret_cast<LPBYTE>(tmp), &size))
-		 )
-	{
-		rv = Glib::locale_to_utf8 (tmp);
-		return true;
-	}
-
-	return false;
-}
-#endif
-
-
 static void*
 _pingback (void *arg)
 {
+	pthread_set_name ("Pingback");
 	ArdourCurl::HttpGet h;
+
+#ifdef MIXBUS
+	curl_easy_setopt (h.curl (), CURLOPT_FOLLOWLOCATION, 1);
+	/* do not check cert */
+	curl_easy_setopt (h.curl (), CURLOPT_SSL_VERIFYPEER, 0);
+	curl_easy_setopt (h.curl (), CURLOPT_SSL_VERIFYHOST, 0);
+#endif
 
 	ping_call* cm = static_cast<ping_call*> (arg);
 	string return_str;
@@ -139,7 +120,7 @@ _pingback (void *arg)
 	h.free (query);
 #else
 	std::string val;
-	if (_query_registry("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ProductName", val)) {
+	if (PBD::windows_query_registry ("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", "ProductName", val)) {
 		char* query = h.escape (val.c_str(), strlen (val.c_str()));
 		url += "r=";
 		url += query;
@@ -149,7 +130,7 @@ _pingback (void *arg)
 		url += "r=&";
 	}
 
-	if (_query_registry("Hardware\\Description\\System\\CentralProcessor\\0", "Identifier", val)) {
+	if (PBD::windows_query_registry ("Hardware\\Description\\System\\CentralProcessor\\0", "Identifier", val)) {
 		// remove "Family X Model YY Stepping Z" tail
 		size_t cut = val.find (" Family ");
 		if (string::npos != cut) {
@@ -172,13 +153,13 @@ _pingback (void *arg)
 
 #endif /* PLATFORM_WINDOWS */
 
-	return_str = h.get (url);
+	return_str = h.get (url, false);
 
 	if (!return_str.empty ()) {
 		if ( return_str.length() > 140 ) { // like a tweet :)
 			std::cerr << "Announcement string is too long (probably behind a proxy)." << std::endl;
 		} else {
-			std::cerr << "Announcement is: " << return_str << std::endl;
+			std::cout << "Announcement is: " << return_str << std::endl;
 
 			//write announcements to local file, even if the
 			//announcement is empty

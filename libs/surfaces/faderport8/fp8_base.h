@@ -1,19 +1,19 @@
 /*
  * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #ifndef _ardour_surfaces_fp8base_h_
@@ -24,7 +24,15 @@
 
 #include "pbd/signals.h"
 
-namespace ArdourSurface {
+#ifdef FADERPORT16
+# define FP_NAMESPACE FP16
+#elif defined FADERPORT2
+# define FP_NAMESPACE FP2
+#else
+# define FP_NAMESPACE FP8
+#endif
+
+namespace ArdourSurface { namespace FP_NAMESPACE {
 
 /* conveniece wrappers depending on "FP8Base& _base" */
 #define fp8_loop dynamic_cast<BaseUI*>(&_base)->main_loop
@@ -102,6 +110,9 @@ public:
 
 		 for  (size_t i = 0; i < txt.size(); ++i)
 		 {
+			 if (txt[i] < 0) {
+				 continue;
+			 }
 			 d.push_back (txt[i]);
 			 if (i >= 8) {
 				 break;
@@ -127,7 +138,11 @@ private:
 		d.push_back (0x00);
 		d.push_back (0x01);
 		d.push_back (0x06);
+#ifdef FADERPORT16
+		d.push_back (0x16);
+#else
 		d.push_back (0x02);
+#endif
 	}
 };
 
@@ -147,7 +162,8 @@ namespace FP8Types {
 		NavBank,
 		NavMaster,
 		NavSection,
-		NavMarker
+		NavMarker,
+		NavPan /* FP2 only */
 	};
 
 	enum MixMode {
@@ -166,5 +182,5 @@ namespace FP8Types {
 
 };
 
-} /* namespace */
+} } /* namespace */
 #endif /* _ardour_surfaces_fp8base_h_ */

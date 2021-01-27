@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2008-2011 Paul Davis
-    Author: David Robillard
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2009-2016 David Robillard <d@drobilla.net>
+ * Copyright (C) 2010-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2016-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cassert>
 #include <string>
@@ -56,8 +57,9 @@ URIMap::URIDs::init(URIMap& uri_map)
 	time_beatUnit       = uri_map.uri_to_id("http://lv2plug.in/ns/ext/time#beatUnit");
 	time_beatsPerBar    = uri_map.uri_to_id("http://lv2plug.in/ns/ext/time#beatsPerBar");
 	time_beatsPerMinute = uri_map.uri_to_id("http://lv2plug.in/ns/ext/time#beatsPerMinute");
-	time_sample          = uri_map.uri_to_id("http://lv2plug.in/ns/ext/time#frame");
+	time_frame          = uri_map.uri_to_id("http://lv2plug.in/ns/ext/time#frame");
 	time_speed          = uri_map.uri_to_id("http://lv2plug.in/ns/ext/time#speed");
+	time_scale          = uri_map.uri_to_id("http://ardour.org/lv2/time#scale"); // XXX
 	patch_Get           = uri_map.uri_to_id("http://lv2plug.in/ns/ext/patch#Get");
 	patch_Set           = uri_map.uri_to_id("http://lv2plug.in/ns/ext/patch#Set");
 	patch_property      = uri_map.uri_to_id("http://lv2plug.in/ns/ext/patch#property");
@@ -83,28 +85,6 @@ URIMap::instance()
 	return *URIMap::uri_map;
 }
 
-static uint32_t
-c_uri_map_uri_to_id(LV2_URI_Map_Callback_Data callback_data,
-                    const char*               map,
-                    const char*               uri)
-{
-	URIMap* const me = (URIMap*)callback_data;
-	const uint32_t id = me->uri_to_id(uri);
-
-	/* The event context with the uri-map extension guarantees a value in the
-	   range of uint16_t.  Ardour used to map to a separate range to achieve
-	   this, but unfortunately some plugins are broken and use the incorrect
-	   context.  To compensate, we simply use the same context for everything
-	   and hope that anything in the event context gets mapped before
-	   UINT16_MAX is reached (which will be fine unless something seriously
-	   weird is going on).  If this fails there is nothing we can do, die.
-	*/
-	assert(!map || strcmp(map, "http://lv2plug.in/ns/ext/event")
-	       || id < UINT16_MAX);
-
-	return id;
-}
-
 static LV2_URID
 c_urid_map(LV2_URID_Map_Handle handle,
            const char*         uri)
@@ -123,11 +103,6 @@ c_urid_unmap(LV2_URID_Unmap_Handle handle,
 
 URIMap::URIMap()
 {
-	_uri_map_feature_data.uri_to_id     = c_uri_map_uri_to_id;
-	_uri_map_feature_data.callback_data = this;
-	_uri_map_feature.URI                = LV2_URI_MAP_URI;
-	_uri_map_feature.data               = &_uri_map_feature_data;
-
 	_urid_map_feature_data.map    = c_urid_map;
 	_urid_map_feature_data.handle = this;
 	_urid_map_feature.URI         = LV2_URID_MAP_URI;

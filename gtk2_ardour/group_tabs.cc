@@ -1,21 +1,24 @@
 /*
-    Copyright (C) 2009 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2009-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2009-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <gtkmm/stock.h>
 
@@ -212,7 +215,15 @@ GroupTabs::on_button_release_event (GdkEventButton*)
 				run_new_group_dialog (&routes, false);
 			} else {
 				boost::shared_ptr<RouteList> r = _session->get_routes ();
-				for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
+				/* First add new ones, then remove old ones.
+				 * We cannot allow the group to become temporarily empty, because
+				 * Session::route_removed_from_route_group() will delete empty groups.
+				 */
+				for (RouteList::const_iterator i = routes.begin(); i != routes.end(); ++i) {
+					/* RouteGroup::add () ignores routes already present in the set */
+					_dragging->group->add (*i);
+				}
+				for (RouteList::const_iterator i = r->begin(); i != r->end(); ++i) {
 
 					bool const was_in_tab = find (
 						_initial_dragging_routes.begin(), _initial_dragging_routes.end(), *i
@@ -222,10 +233,9 @@ GroupTabs::on_button_release_event (GdkEventButton*)
 
 					if (was_in_tab && !now_in_tab) {
 						_dragging->group->remove (*i);
-					} else if (!was_in_tab && now_in_tab) {
-						_dragging->group->add (*i);
 					}
 				}
+
 			}
 		}
 
@@ -370,15 +380,35 @@ GroupTabs::get_menu (RouteGroup* g, bool in_tab_area)
 
 		items.push_back (SeparatorElem());
 
-		if (g->has_subgroup()) {
+		bool can_subgroup = true;
+		boost::shared_ptr<RouteList> rl = g->route_list();
+		for (RouteList::const_iterator i = rl->begin(); i != rl->end(); ++i) {
+#ifdef MIXBUS
+			if ((*i)->mixbus ()) {
+				can_subgroup = false;
+				break;
+			}
+#endif
+			if ((*i)->output()->n_ports().n_midi() != 0) {
+				can_subgroup = false;
+				break;
+			}
+		}
+
+		if (g->has_subgroup ()) {
 			items.push_back (MenuElem (_("Remove Subgroup Bus"), sigc::bind (sigc::mem_fun (*this, &GroupTabs::un_subgroup), g)));
-		} else {
+		} else if (can_subgroup) {
 			items.push_back (MenuElem (_("Add New Subgroup Bus"), sigc::bind (sigc::mem_fun (*this, &GroupTabs::subgroup), g, false, PreFader)));
 		}
-		items.push_back (MenuElem (_("Add New Aux Bus (pre-fader)"), sigc::bind (sigc::mem_fun (*this, &GroupTabs::subgroup), g, true, PreFader)));
-		items.push_back (MenuElem (_("Add New Aux Bus (post-fader)"), sigc::bind (sigc::mem_fun (*this, &GroupTabs::subgroup), g, true, PostFader)));
-		items.push_back (SeparatorElem());
 
+		if (can_subgroup) {
+			items.push_back (MenuElem (_("Add New Aux Bus (pre-fader)"), sigc::bind (sigc::mem_fun (*this, &GroupTabs::subgroup), g, true, PreFader)));
+			items.push_back (MenuElem (_("Add New Aux Bus (post-fader)"), sigc::bind (sigc::mem_fun (*this, &GroupTabs::subgroup), g, true, PostFader)));
+		}
+
+		if (can_subgroup || g->has_subgroup ()) {
+			items.push_back (SeparatorElem());
+		}
 	}
 
 	add_menu_items (_menu, g);
@@ -442,7 +472,7 @@ GroupTabs::assign_group_to_master (uint32_t which, RouteGroup* group, bool renam
 	boost::shared_ptr<VCA> master;
 
 	if (which == 0) {
-		if (_session->vca_manager().create_vca (1)) {
+		if (_session->vca_manager().create_vca (1).empty ()) {
 			/* error */
 			return;
 		}
@@ -499,7 +529,7 @@ GroupTabs::assign_some_to_master (uint32_t which, RouteList rl, std::string vcan
 	bool set_name = false;
 
 	if (which == 0) {
-		if (_session->vca_manager().create_vca (1)) {
+		if (_session->vca_manager().create_vca (1).empty ()) {
 			/* error */
 			return;
 		}
@@ -557,11 +587,10 @@ GroupTabs::get_rec_enabled ()
 RouteList
 GroupTabs::get_soloed ()
 {
-	boost::shared_ptr<RouteList> rl = _session->get_routes ();
-
+	RouteList rl = _session->get_routelist ();
 	RouteList soloed;
 
-	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
+	for (RouteList::iterator i = rl.begin(); i != rl.end(); ++i) {
 		if (!(*i)->is_master() && (*i)->soloed()) {
 			soloed.push_back (*i);
 		}
@@ -688,16 +717,16 @@ GroupTabs::collect (RouteGroup* g)
 	int const N = group_routes->size ();
 
 	RouteList::iterator i = group_routes->begin ();
-	boost::shared_ptr<RouteList> routes = _session->get_routes ();
-	routes->sort (Stripable::Sorter());
-	RouteList::const_iterator j = routes->begin ();
+	RouteList routes = _session->get_routelist ();
+	routes.sort (Stripable::Sorter());
+	RouteList::const_iterator j = routes.begin ();
 
 	int diff = 0;
 	int coll = -1;
 
 	PresentationInfo::ChangeSuspender cs;
 
-	while (i != group_routes->end() && j != routes->end()) {
+	while (i != group_routes->end() && j != routes.end()) {
 
 		PresentationInfo::order_t const k = (*j)->presentation_info ().order();
 

@@ -1,20 +1,19 @@
 /*
  * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
- * Copyright (C) 2016 Paul Davis
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <gtkmm/menu.h>
@@ -26,6 +25,7 @@
 
 #include "public_editor.h"
 #include "stripable_time_axis.h"
+#include "automation_line.h"
 
 #include "pbd/i18n.h"
 
@@ -74,9 +74,14 @@ StripableTimeAxisView::add_automation_child (Evoral::Parameter param, boost::sha
 
 	add_child (track);
 
-	track->Hiding.connect (sigc::bind (sigc::mem_fun (*this, &StripableTimeAxisView::automation_track_hidden), param));
-
-	_automation_tracks[param] = track;
+	if (param.type() != PluginAutomation) {
+		/* PluginAutomation is handled by
+		 * - RouteTimeAxisView::processor_automation_track_hidden
+		 * - RouteTimeAxisView::processor_automation
+		 */
+		track->Hiding.connect (sigc::bind (sigc::mem_fun (*this, &StripableTimeAxisView::automation_track_hidden), param));
+		_automation_tracks[param] = track;
+	}
 
 	/* existing state overrides "show" argument */
 	bool visible;
@@ -156,6 +161,7 @@ StripableTimeAxisView::update_mute_track_visibility ()
 Gtk::CheckMenuItem*
 StripableTimeAxisView::automation_child_menu_item (Evoral::Parameter param)
 {
+	assert (param.type() != PluginAutomation);
 	ParameterMenuMap::iterator i = _main_automation_menu_map.find (param);
 	if (i != _main_automation_menu_map.end()) {
 		return i->second;
@@ -185,14 +191,30 @@ StripableTimeAxisView::automation_track_hidden (Evoral::Parameter param)
 }
 
 boost::shared_ptr<AutomationTimeAxisView>
-StripableTimeAxisView::automation_child(Evoral::Parameter param)
+StripableTimeAxisView::automation_child(Evoral::Parameter param, PBD::ID)
 {
+	assert (param.type() != PluginAutomation);
 	AutomationTracks::iterator i = _automation_tracks.find(param);
 	if (i != _automation_tracks.end()) {
 		return i->second;
 	} else {
 		return boost::shared_ptr<AutomationTimeAxisView>();
 	}
+}
+
+boost::shared_ptr<AutomationLine>
+StripableTimeAxisView::automation_child_by_alist_id (PBD::ID alist_id)
+{
+	for (AutomationTracks::iterator i = _automation_tracks.begin(); i != _automation_tracks.end(); ++i) {
+		boost::shared_ptr<AutomationTimeAxisView> atv (i->second);
+		std::list<boost::shared_ptr<AutomationLine> > lines = atv->lines();
+		for (std::list<boost::shared_ptr<AutomationLine> >::const_iterator li = lines.begin(); li != lines.end(); ++li) {
+			if ((*li)->the_list()->id() == alist_id) {
+				return *li;
+			}
+		}
+	}
+	return boost::shared_ptr<AutomationLine> ();
 }
 
 void

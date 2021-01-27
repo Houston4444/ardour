@@ -1,23 +1,23 @@
 /*
-    Copyright (C) 2014 Paul Davis
+ * Copyright (C) 2014-2016 David Robillard <d@drobilla.net>
+ * Copyright (C) 2014-2017 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
-
-#include "evoral/Event.hpp"
+#include "evoral/Event.h"
 #include "midi++/channel.h"
 #include "midi++/parser.h"
 #include "midi++/port.h"
@@ -106,17 +106,17 @@ MIDISceneChanger::rt_deliver (MidiBuffer& mbuf, samplepos_t when, boost::shared_
 	MIDIOutputActivity (); /* EMIT SIGNAL */
 
 	if ((cnt = msc->get_bank_msb_message (buf, sizeof (buf))) > 0) {
-		mbuf.push_back (when, cnt, buf);
+		mbuf.push_back (when, Evoral::MIDI_EVENT, cnt, buf);
 
 		if ((cnt = msc->get_bank_lsb_message (buf, sizeof (buf))) > 0) {
-			mbuf.push_back (when, cnt, buf);
+			mbuf.push_back (when, Evoral::MIDI_EVENT, cnt, buf);
 		}
 
 		last_delivered_bank = msc->bank();
 	}
 
 	if ((cnt = msc->get_program_message (buf, sizeof (buf))) > 0) {
-		mbuf.push_back (when, cnt, buf);
+		mbuf.push_back (when, Evoral::MIDI_EVENT, cnt, buf);
 
 		last_delivered_program = msc->program();
 	}

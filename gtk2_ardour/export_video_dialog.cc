@@ -1,22 +1,24 @@
 /*
-    Copyright (C) 2010 Paul Davis
-    Author: Robin Gareus <robin@gareus.org>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2015 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 André Nusser <andre.nusser@googlemail.com>
+ * Copyright (C) 2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 #include <cstdio>
 #include <string>
 #include <sstream>
@@ -96,7 +98,7 @@ ExportVideoDialog::ExportVideoDialog ()
 	, optimizations_checkbox (_("Codec Optimizations:"))
 	, optimizations_label ("-")
 	, deinterlace_checkbox (_("Deinterlace"))
-	, bframes_checkbox (_("Use [2] B-samples (MPEG 2 or 4 only)"))
+	, bframes_checkbox (_("Use [2] B-frames (MPEG 2 or 4 only)"))
 	, fps_checkbox (_("Override FPS (Default is to retain FPS from the input video file):"))
 	, meta_checkbox (_("Include Session Metadata"))
 #if 1 /* tentative debug mode */
@@ -154,7 +156,6 @@ ExportVideoDialog::ExportVideoDialog ()
 	path_hbox->pack_start (*l, false, false, 2);
 	vbox->pack_start (*path_hbox, false, false, 2);
 
-	insnd_combo.append_text (string_compose (_("from the %1 session's start to the session's end"), PROGRAM_NAME));
 	outfn_path_entry.set_width_chars(38);
 
 	l = manage (new Label (_("<b>Settings:</b>"), Gtk::ALIGN_LEFT, Gtk::ALIGN_CENTER, false));
@@ -291,6 +292,8 @@ ExportVideoDialog::ExportVideoDialog ()
 	cancel_button = add_button (Stock::CANCEL, RESPONSE_CANCEL);
 	get_action_area()->pack_start (transcode_button, false, false);
 	show_all_children ();
+
+	progress_box->set_no_show_all();
 	progress_box->hide();
 }
 
@@ -335,10 +338,15 @@ ExportVideoDialog::apply_state (TimeSelection &tme, bool range)
 
 	// TODO remember setting for export-range.. somehow, (let explicit range override)
 	sampleoffset_t av_offset = ARDOUR_UI::instance()->video_timeline->get_offset();
+
+	insnd_combo.remove_all ();
+
+	insnd_combo.append_text (_("from session start marker to session end marker"));
+
 	if (av_offset < 0 ) {
-		insnd_combo.append_text (_("from 00:00:00:00 to the video's end"));
+		insnd_combo.append_text (_("from 00:00:00:00 to the video end"));
 	} else {
-		insnd_combo.append_text (_("from the video's start to the video's end"));
+		insnd_combo.append_text (_("from video start to video end"));
 	}
 	if (!export_range.empty()) {
 		insnd_combo.append_text (_("Selected range"));  // TODO show export_range.start() -> export_range.end_sample()
@@ -666,7 +674,7 @@ ExportVideoDialog::launch_export ()
 	XMLTree tree;
 	std::string vtl_samplerate = audio_samplerate_combo.get_active_text();
 	std::string vtl_normalize = _normalize ? "true" : "false";
-	tree.read_buffer(std::string(
+	tree.read_buffer(std::string (
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
 "<ExportFormatSpecification name=\"VTL-WAV-16\" id=\"3094591e-ccb9-4385-a93f-c9955ffeb1f0\">"
 "  <Encoding id=\"F_WAV\" type=\"T_Sndfile\" extension=\"wav\" name=\"WAV\" has-sample-format=\"true\" channel-limit=\"256\"/>"
@@ -685,19 +693,19 @@ ExportVideoDialog::launch_export ()
 "      <Start>"
 "        <Trim enabled=\"false\"/>"
 "        <Add enabled=\"false\">"
-"          <Duration format=\"Timecode\" hours=\"0\" minutes=\"0\" seconds=\"0\" samples=\"0\"/>"
+"          <Duration format=\"Timecode\" hours=\"0\" minutes=\"0\" seconds=\"0\" frames=\"0\"/>"
 "        </Add>"
 "      </Start>"
 "      <End>"
 "        <Trim enabled=\"false\"/>"
 "        <Add enabled=\"false\">"
-"          <Duration format=\"Timecode\" hours=\"0\" minutes=\"0\" seconds=\"0\" samples=\"0\"/>"
+"          <Duration format=\"Timecode\" hours=\"0\" minutes=\"0\" seconds=\"0\" frames=\"0\"/>"
 "        </Add>"
 "      </End>"
 "    </Silence>"
 "  </Processing>"
 "</ExportFormatSpecification>"
-));
+	).c_str());
 	boost::shared_ptr<ExportFormatSpecification> fmp = _session->get_export_handler()->add_format(*tree.root());
 
 	/* set up range */
@@ -771,6 +779,7 @@ ExportVideoDialog::launch_export ()
 
 	/* do sound export */
 	fmp->set_soundcloud_upload(false);
+	_session->get_export_handler()->reset ();
 	_session->get_export_handler()->add_export_config (tsp, ccp, fmp, fnp, b);
 	_session->get_export_handler()->do_export();
 	status = _session->get_export_status ();
@@ -786,7 +795,7 @@ ExportVideoDialog::launch_export ()
 		}
 	}
 	audio_progress_connection.disconnect();
-	status->finish ();
+	status->finish (TRS_UI);
 	if (status->aborted()) {
 		::g_unlink (_insnd.c_str());
 		delete _transcoder; _transcoder = 0;
@@ -999,30 +1008,11 @@ ExportVideoDialog::encode_pass (int pass)
 		_transcoder->set_avoffset(av_offset / (double)_session->nominal_sample_rate());
 	}
 
-	TranscodeFfmpeg::FFSettings meta = _transcoder->default_meta_data();
+	/* NOTE: type (MetaDataMap) == type (FFSettings) == map<string, string> */
+	ARDOUR::SessionMetadata::MetaDataMap meta = _transcoder->default_meta_data();
 	if (meta_checkbox.get_active()) {
 		ARDOUR::SessionMetadata * session_data = ARDOUR::SessionMetadata::Metadata();
-		if (session_data->year() > 0 ) {
-			std::ostringstream osstream; osstream << session_data->year();
-			meta["year"] = osstream.str();
-		}
-		if (session_data->track_number() > 0 ) {
-			std::ostringstream osstream; osstream << session_data->track_number();
-			meta["track"] = osstream.str();
-		}
-		if (session_data->disc_number() > 0 ) {
-			std::ostringstream osstream; osstream << session_data->disc_number();
-			meta["disc"] = osstream.str();
-		}
-		if (!session_data->title().empty())     {meta["title"] = session_data->title();}
-		if (!session_data->artist().empty())    {meta["author"] = session_data->artist();}
-		if (!session_data->album_artist().empty()) {meta["album_artist"] = session_data->album_artist();}
-		if (!session_data->album().empty())     {meta["album"] = session_data->album();}
-		if (!session_data->genre().empty())     {meta["genre"] = session_data->genre();}
-		if (!session_data->composer().empty())  {meta["composer"] = session_data->composer();}
-		if (!session_data->comment().empty())   {meta["comment"] = session_data->comment();}
-		if (!session_data->copyright().empty()) {meta["copyright"] = session_data->copyright();}
-		if (!session_data->subtitle().empty())  {meta["description"] = session_data->subtitle();}
+		session_data->av_export_tag (meta);
 	}
 
 #if 1 /* tentative debug mode */
@@ -1271,6 +1261,7 @@ void
 ExportVideoDialog::open_outfn_dialog ()
 {
 	Gtk::FileChooserDialog dialog(_("Save Exported Video File"), Gtk::FILE_CHOOSER_ACTION_SAVE);
+	Gtkmm2ext::add_volume_shortcuts (dialog);
 	dialog.set_filename (outfn_path_entry.get_text());
 
 	dialog.add_button(Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
@@ -1291,6 +1282,7 @@ void
 ExportVideoDialog::open_invid_dialog ()
 {
 	Gtk::FileChooserDialog dialog(_("Save Exported Video File"), Gtk::FILE_CHOOSER_ACTION_SAVE);
+	Gtkmm2ext::add_volume_shortcuts (dialog);
 	dialog.set_filename (invid_path_entry.get_text());
 
 	dialog.add_button(Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);

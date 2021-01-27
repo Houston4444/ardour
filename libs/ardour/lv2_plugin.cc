@@ -1,21 +1,29 @@
 /*
-    Copyright (C) 2008-2012 Paul Davis
-    Author: David Robillard
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2008-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2008-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2008-2019 David Robillard <d@drobilla.net>
+ * Copyright (C) 2012-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013-2018 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2013 Michael R. Fisher <mfisher@bketech.com>
+ * Copyright (C) 2014-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2016-2017 Damien Zammit <damien@zamaudio.com>
+ * Copyright (C) 2016 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2017 Johannes Mueller <github@johannes-mueller.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cctype>
 #include <string>
@@ -37,6 +45,7 @@
 #include "pbd/compose.h"
 #include "pbd/error.h"
 #include "pbd/locale_guard.h"
+#include "pbd/pthread_utils.h"
 #include "pbd/replace_all.h"
 #include "pbd/xml++.h"
 
@@ -45,10 +54,13 @@
 #include "pbd/windows_special_dirs.h"
 #endif
 
+#ifdef WAF_BUILD
 #include "libardour-config.h"
+#endif
 
 #include "ardour/audio_buffer.h"
 #include "ardour/audioengine.h"
+#include "ardour/directory_names.h"
 #include "ardour/debug.h"
 #include "ardour/lv2_plugin.h"
 #include "ardour/midi_patch_manager.h"
@@ -78,10 +90,9 @@
 #include "lv2/lv2plug.in/ns/extensions/units/units.h"
 #include "lv2/lv2plug.in/ns/ext/patch/patch.h"
 #include "lv2/lv2plug.in/ns/ext/port-groups/port-groups.h"
-#ifdef HAVE_LV2_1_2_0
+#include "lv2/lv2plug.in/ns/ext/parameters/parameters.h"
 #include "lv2/lv2plug.in/ns/ext/buf-size/buf-size.h"
 #include "lv2/lv2plug.in/ns/ext/options/options.h"
-#endif
 
 #include "lv2_evbuf.h"
 
@@ -117,7 +128,14 @@ using namespace std;
 using namespace ARDOUR;
 using namespace PBD;
 
-bool LV2Plugin::force_state_save = false;
+bool          LV2Plugin::force_state_save      = false;
+bool          LV2Plugin::_ui_style_flat        = false;
+bool          LV2Plugin::_ui_style_boxy        = false;
+uint32_t      LV2Plugin::_ui_background_color  = 0x000000ff; // RGBA
+uint32_t      LV2Plugin::_ui_foreground_color  = 0xffffffff; // RGBA
+uint32_t      LV2Plugin::_ui_contrasting_color = 0x33ff33ff; // RGBA
+float         LV2Plugin::_ui_scale_factor      = 1.0;
+unsigned long LV2Plugin::_ui_transient_win_id  = 0;
 
 class LV2World : boost::noncopyable {
 public:
@@ -141,6 +159,7 @@ public:
 	LilvNode* ext_causesArtifacts;
 	LilvNode* ext_notAutomatic;
 	LilvNode* ext_rangeSteps;
+	LilvNode* ext_displayPriority;
 	LilvNode* groups_group;
 	LilvNode* groups_element;
 	LilvNode* lv2_AudioPort;
@@ -166,7 +185,9 @@ public:
 	LilvNode* rdfs_range;
 	LilvNode* rsz_minimumSize;
 	LilvNode* time_Position;
+	LilvNode* time_beatsPerMin;
 	LilvNode* ui_GtkUI;
+	LilvNode* ui_X11UI;
 	LilvNode* ui_external;
 	LilvNode* ui_externalkx;
 	LilvNode* units_hz;
@@ -176,12 +197,11 @@ public:
 	LilvNode* units_midiNote;
 	LilvNode* patch_writable;
 	LilvNode* patch_Message;
-#ifdef HAVE_LV2_1_2_0
+	LilvNode* opts_requiredOptions;
 	LilvNode* bufz_powerOf2BlockLength;
 	LilvNode* bufz_fixedBlockLength;
 	LilvNode* bufz_nominalBlockLength;
 	LilvNode* bufz_coarseBlockLength;
-#endif
 
 #ifdef HAVE_LV2_1_10_0
 	LilvNode* atom_int;
@@ -191,11 +211,14 @@ public:
 #endif
 #ifdef LV2_EXTENDED
 	LilvNode* lv2_noSampleAccurateCtrl;
+	LilvNode* routing_connectAllOutputs; // lv2:optionalFeature
 	LilvNode* auto_can_write_automatation; // lv2:optionalFeature
 	LilvNode* auto_automation_control; // atom:supports
 	LilvNode* auto_automation_controlled; // lv2:portProperty
 	LilvNode* auto_automation_controller; // lv2:portProperty
+	LilvNode* inline_display_interface; // lv2:extensionData
 	LilvNode* inline_display_in_gui; // lv2:optionalFeature
+	LilvNode* inline_mixer_control; // lv2:PortProperty
 #endif
 
 private:
@@ -226,6 +249,25 @@ work_respond(LV2_Worker_Respond_Handle handle,
 	return (((Worker*)handle)->respond(size, data)
 	        ? LV2_WORKER_SUCCESS
 	        : LV2_WORKER_ERR_UNKNOWN);
+}
+
+static void
+set_port_value(const char* port_symbol,
+               void*       user_data,
+               const void* value,
+               uint32_t    /*size*/,
+               uint32_t    type)
+{
+	LV2Plugin* self = (LV2Plugin*)user_data;
+	if (type != 0 && type != URIMap::instance().urids.atom_Float) {
+		return;  // TODO: Support non-float ports
+	}
+
+	const uint32_t port_index = self->port_index(port_symbol);
+	if (port_index != (uint32_t)-1) {
+		self->set_parameter(port_index, *(const float*)value, 0);
+		self->PresetPortSetValue (port_index, *(const float*)value); /* EMIT SIGNAL */
+	}
 }
 
 #ifdef LV2_EXTENDED
@@ -307,14 +349,10 @@ log_printf(LV2_Log_Handle handle,
 struct LV2Plugin::Impl {
 	Impl() : plugin(0), ui(0), ui_type(0), name(0), author(0), instance(0)
 	       , work_iface(0)
-#ifdef HAVE_LV2_1_2_0
 	       , opts_iface(0)
-#endif
 	       , state(0)
 	       , block_length(0)
-#ifdef HAVE_LV2_1_2_0
 	       , options(0)
-#endif
 #ifdef LV2_EXTENDED
 	       , queue_draw(0)
 	       , midnam(0)
@@ -333,16 +371,12 @@ struct LV2Plugin::Impl {
 	LilvNode*                    author;
 	LilvInstance*                instance;
 	const LV2_Worker_Interface*  work_iface;
-#ifdef HAVE_LV2_1_2_0
 	const LV2_Options_Interface* opts_iface;
-#endif
 	LilvState*                   state;
 	LV2_Atom_Forge               forge;
 	LV2_Atom_Forge               ui_forge;
 	int32_t                      block_length;
-#ifdef HAVE_LV2_1_2_0
 	LV2_Options_Option*          options;
-#endif
 #ifdef LV2_EXTENDED
 	LV2_Inline_Display*          queue_draw;
 	LV2_Midnam*                  midnam;
@@ -353,7 +387,7 @@ struct LV2Plugin::Impl {
 LV2Plugin::LV2Plugin (AudioEngine& engine,
                       Session&     session,
                       const void*  c_plugin,
-                      samplecnt_t   rate)
+                      samplecnt_t  rate)
 	: Plugin (engine, session)
 	, Workee ()
 	, _impl(new Impl())
@@ -361,12 +395,15 @@ LV2Plugin::LV2Plugin (AudioEngine& engine,
 	, _worker(NULL)
 	, _state_worker(NULL)
 	, _insert_id("0")
+	, _bpm_control_port_index((uint32_t)-1)
 	, _patch_port_in_index((uint32_t)-1)
 	, _patch_port_out_index((uint32_t)-1)
 	, _uri_map(URIMap::instance())
 	, _no_sample_accurate_ctrl (false)
+	, _connect_all_audio_outputs (false)
 {
 	init(c_plugin, rate);
+	latency_compute_run();
 }
 
 LV2Plugin::LV2Plugin (const LV2Plugin& other)
@@ -377,17 +414,25 @@ LV2Plugin::LV2Plugin (const LV2Plugin& other)
 	, _worker(NULL)
 	, _state_worker(NULL)
 	, _insert_id(other._insert_id)
+	, _bpm_control_port_index((uint32_t)-1)
 	, _patch_port_in_index((uint32_t)-1)
 	, _patch_port_out_index((uint32_t)-1)
 	, _uri_map(URIMap::instance())
 	, _no_sample_accurate_ctrl (false)
+	, _connect_all_audio_outputs (false)
 {
 	init(other._impl->plugin, other._sample_rate);
+
+	XMLNode root (other.state_node_name ());
+	other.add_state (&root);
+	set_state (root, Stateful::loading_state_version);
 
 	for (uint32_t i = 0; i < parameter_count(); ++i) {
 		_control_data[i] = other._shadow_data[i];
 		_shadow_data[i]  = other._shadow_data[i];
 	}
+
+	latency_compute_run();
 }
 
 void
@@ -409,17 +454,24 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	_latency_control_port   = 0;
 	_next_cycle_start       = std::numeric_limits<samplepos_t>::max();
 	_next_cycle_speed       = 1.0;
+	_next_cycle_beat        = 0.0;
+	_current_bpm            = 0.0;
+	_prev_time_scale        = 0.0;
 	_seq_size               = _engine.raw_buffer_size(DataType::MIDI);
 	_state_version          = 0;
 	_was_activated          = false;
 	_has_state_interface    = false;
 	_can_write_automation   = false;
 #ifdef LV2_EXTENDED
+	_display_interface      = 0;
 	_inline_display_in_gui  = false;
 #endif
 	_max_latency            = 0;
 	_current_latency        = 0;
 	_impl->block_length     = _session.get_block_size();
+
+	_sample_rate = rate;
+	_fsample_rate = rate;
 
 	_instance_access_feature.URI = "http://lv2plug.in/ns/ext/instance-access";
 	_data_access_feature.URI     = "http://lv2plug.in/ns/ext/data-access";
@@ -446,15 +498,12 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	_features[0] = &_instance_access_feature;
 	_features[1] = &_data_access_feature;
 	_features[2] = &_make_path_feature;
-	_features[3] = _uri_map.uri_map_feature();
-	_features[4] = _uri_map.urid_map_feature();
-	_features[5] = _uri_map.urid_unmap_feature();
-	_features[6] = &_log_feature;
+	_features[3] = _uri_map.urid_map_feature();
+	_features[4] = _uri_map.urid_unmap_feature();
+	_features[5] = &_log_feature;
 
-	unsigned n_features = 7;
-#ifdef HAVE_LV2_1_2_0
+	unsigned n_features = 6;
 	_features[n_features++] = &_def_state_feature;
-#endif
 
 	lv2_atom_forge_init(&_impl->forge, _uri_map.urid_map());
 	lv2_atom_forge_init(&_impl->ui_forge, _uri_map.urid_map());
@@ -488,10 +537,15 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	_features[n_features++]  = &_bankpatch_feature;
 #endif
 
-#ifdef HAVE_LV2_1_2_0
-	LV2_URID atom_Int = _uri_map.uri_to_id(LV2_ATOM__Int);
+	LV2_URID atom_Int   = _uri_map.uri_to_id(LV2_ATOM__Int);
+	LV2_URID atom_Bool  = _uri_map.uri_to_id(LV2_ATOM__Bool);
+	LV2_URID atom_Long  = _uri_map.uri_to_id(LV2_ATOM__Long);
+	LV2_URID atom_Float = _uri_map.uri_to_id(LV2_ATOM__Float);
+
 	static const int32_t _min_block_length = 1;   // may happen during split-cycles
 	static const int32_t _max_block_length = 8192; // max possible (with all engines and during export)
+	static const int32_t rt_policy = PBD_SCHED_FIFO;
+	static const int32_t rt_priority = pbd_absolute_rt_priority (PBD_SCHED_FIFO, AudioEngine::instance()->client_real_time_priority () - 2);
 	/* Consider updating max-block-size whenever the buffersize changes.
 	 * It requires re-instantiating the plugin (which is a non-realtime operation),
 	 * so it should be done lightly and only for plugins that require it.
@@ -506,8 +560,28 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 		  sizeof(int32_t), atom_Int, &_max_block_length },
 		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id(LV2_BUF_SIZE__sequenceSize),
 		  sizeof(int32_t), atom_Int, &_seq_size },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id(LV2_PARAMETERS__sampleRate),
+		  sizeof(float), atom_Float, &_fsample_rate },
 		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"),
 		  sizeof(int32_t), atom_Int, &_impl->block_length },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/threads/#schedPolicy"),
+		  sizeof(int32_t), atom_Int, &rt_policy },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/threads/#schedPriority"),
+		  sizeof(int32_t), atom_Int, &rt_priority },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://lv2plug.in/ns/extensions/ui#backgroundColor"),
+		  sizeof(int32_t), atom_Int, &_ui_background_color },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://lv2plug.in/ns/extensions/ui#foregroundColor"),
+		  sizeof(int32_t), atom_Int, &_ui_foreground_color },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://lv2plug.in/ns/extensions/ui#contrastingColor"),
+		  sizeof(int32_t), atom_Int, &_ui_contrasting_color },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://lv2plug.in/ns/extensions/ui#scaleFactor"),
+		  sizeof(float), atom_Float, &_ui_scale_factor },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/theme/#styleBoxy"),
+		  sizeof(bool), atom_Bool, &_ui_style_boxy },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/theme/#styleFlat"),
+		  sizeof(bool), atom_Bool, &_ui_style_flat },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://kxstudio.sf.net/ns/lv2ext/props#TransientWindowId"),
+		  sizeof(int32_t), atom_Long, &_ui_transient_win_id },
 		{ LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, NULL }
 	};
 
@@ -517,7 +591,6 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	_options_feature.URI    = LV2_OPTIONS__options;
 	_options_feature.data   = _impl->options;
 	_features[n_features++] = &_options_feature;
-#endif
 
 #ifdef LV2_EXTENDED
 	seen_bankpatch = false;
@@ -576,20 +649,14 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	}
 	lilv_node_free(worker_iface_uri);
 
-
-#ifdef HAVE_LV2_1_2_0
 	LilvNode* options_iface_uri = lilv_new_uri(_world.world, LV2_OPTIONS__interface);
 	if (lilv_plugin_has_extension_data(plugin, options_iface_uri)) {
 		_impl->opts_iface = (const LV2_Options_Interface*)extension_data(
 			LV2_OPTIONS__interface);
 	}
 	lilv_node_free(options_iface_uri);
-#endif
 
 #ifdef LV2_EXTENDED
-	_display_interface = (const LV2_Inline_Display_Interface*)
-		extension_data (LV2_INLINEDISPLAY__interface);
-
 	_midname_interface = (const LV2_Midnam_Interface*)
 		extension_data (LV2_MIDNAM__interface);
 	if (_midname_interface) {
@@ -607,60 +674,39 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 		throw failed_constructor();
 	}
 
-#ifdef HAVE_LV2_1_2_0
-	LilvNodes *required_features = lilv_plugin_get_required_features (plugin);
-	if (lilv_nodes_contains (required_features, _world.bufz_powerOf2BlockLength) ||
-			lilv_nodes_contains (required_features, _world.bufz_fixedBlockLength)
-	   ) {
-		error << string_compose(
-		    _("LV2: \"%1\" buffer-size requirements cannot be satisfied."),
-		    lilv_node_as_string(_impl->name)) << endmsg;
-		lilv_node_free(_impl->name);
-		lilv_node_free(_impl->author);
-		lilv_nodes_free(required_features);
-		throw failed_constructor();
-	}
-	lilv_nodes_free(required_features);
-#endif
-
 	LilvNodes* optional_features = lilv_plugin_get_optional_features (plugin);
-#ifdef HAVE_LV2_1_2_0
 	if (lilv_nodes_contains (optional_features, _world.bufz_coarseBlockLength)) {
 		_no_sample_accurate_ctrl = true;
 	}
-#endif
+
 #ifdef LV2_EXTENDED
 	if (lilv_nodes_contains (optional_features, _world.lv2_noSampleAccurateCtrl)) {
 		/* deprecated 2016-Sep-18 in favor of bufz_coarseBlockLength */
 		_no_sample_accurate_ctrl = true;
 	}
+	if (lilv_nodes_contains (optional_features, _world.routing_connectAllOutputs)) {
+		_connect_all_audio_outputs = true;
+	}
 	if (lilv_nodes_contains (optional_features, _world.auto_can_write_automatation)) {
 		_can_write_automation = true;
 	}
+	if (lilv_plugin_has_extension_data(plugin, _world.inline_display_interface)) {
+		_display_interface = (const LV2_Inline_Display_Interface*) extension_data (LV2_INLINEDISPLAY__interface);
+	}
+#ifndef NDEBUG
+	else if (extension_data (LV2_INLINEDISPLAY__interface)) {
+		warning << string_compose(_("LV2: Plugin '%1' has inline-display extension without lv2:extensionData meta-data "), name ()) << endmsg;
+	}
+#endif
 	if (lilv_nodes_contains (optional_features, _world.inline_display_in_gui)) {
 		_inline_display_in_gui = true;
 	}
 	lilv_nodes_free(optional_features);
 #endif
 
-#ifdef HAVE_LILV_0_16_0
-	// Load default state
-	if (_worker) {
-		/* immediately schedule any work,
-		 * so that state restore later will not find a busy
-		 * worker.  latency_compute_run() flushes any replies
-		 */
-		_worker->set_synchronous(true);
-	}
+	/* Snapshot default state -- http://lv2plug.in/ns/ext/state/#loadDefaultState */
 	LilvState* state = lilv_state_new_from_world(
 		_world.world, _uri_map.urid_map(), lilv_plugin_get_uri(_impl->plugin));
-	if (state && _has_state_interface) {
-		lilv_state_restore(state, _impl->instance, NULL, NULL, 0, NULL);
-	}
-	lilv_state_free(state);
-#endif
-
-	_sample_rate = rate;
 
 	const uint32_t num_ports = this->num_ports();
 	for (uint32_t i = 0; i < num_ports; ++i) {
@@ -683,9 +729,6 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 			flags |= PORT_CONTROL;
 		} else if (lilv_port_is_a(_impl->plugin, port, _world.lv2_AudioPort)) {
 			flags |= PORT_AUDIO;
-		} else if (lilv_port_is_a(_impl->plugin, port, _world.ev_EventPort)) {
-			flags |= PORT_EVENT;
-			flags |= PORT_MIDI;  // We assume old event API ports are for MIDI
 		} else if (lilv_port_is_a(_impl->plugin, port, _world.atom_AtomPort)) {
 			LilvNodes* buffer_types = lilv_port_get_value(
 				_impl->plugin, port, _world.atom_bufferType);
@@ -777,6 +820,11 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	_impl->designated_input (LV2_TIME__beatsPerMinute, params, (void**)&_bpm_control_port);
 	_impl->designated_input (LV2_CORE__freeWheeling, params, (void**)&_freewheel_control_port);
 
+	const LilvPort* bpmport = lilv_plugin_get_port_by_designation(plugin, _world.lv2_InputPort, _world.time_beatsPerMin);
+	if (bpmport) {
+		_bpm_control_port_index = lilv_port_get_index (plugin, bpmport);
+	}
+
 	for (uint32_t i = 0; i < num_ports; ++i) {
 		const LilvPort* port = lilv_plugin_get_port_by_index(plugin, i);
 		const LilvNode* sym  = lilv_port_get_symbol(plugin, port);
@@ -809,7 +857,10 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 				if (params[i]) {
 					*params[i] = (void*)&_shadow_data[i];
 				}
+			} else {
+				_shadow_data[i] = 0;
 			}
+			_control_data[i] = _shadow_data[i];
 		} else {
 			_defaults[i] = 0.0f;
 		}
@@ -818,21 +869,42 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	delete[] params;
 
 	LilvUIs* uis = lilv_plugin_get_uis(plugin);
+
 	if (lilv_uis_size(uis) > 0) {
 #ifdef HAVE_SUIL
-		// Look for embeddable UI
-		LILV_FOREACH(uis, u, uis) {
-			const LilvUI*   this_ui      = lilv_uis_get(uis, u);
-			const LilvNode* this_ui_type = NULL;
-			if (lilv_ui_is_supported(this_ui,
-			                         suil_ui_supported,
-			                         _world.ui_GtkUI,
-			                         &this_ui_type)) {
-				// TODO: Multiple UI support
-				_impl->ui      = this_ui;
-				_impl->ui_type = this_ui_type;
+		const LilvUI*   this_ui      = NULL;
+		const LilvNode* this_ui_type = NULL;
+#if ! (defined(__APPLE__) || defined(PLATFORM_WINDOWS))
+		// Always prefer X11 UIs...
+		LILV_FOREACH(uis, i, uis) {
+			const LilvUI* ui = lilv_uis_get(uis, i);
+			if (lilv_ui_is_a(ui, _world.ui_X11UI) &&
+			    lilv_ui_is_supported (ui,
+			                          suil_ui_supported,
+			                          _world.ui_GtkUI,
+			                          &this_ui_type)) {
+				this_ui = ui;
 				break;
 			}
+		}
+#endif
+		// Then anything else...
+		if (this_ui == NULL) {
+			LILV_FOREACH(uis, i, uis) {
+				const LilvUI* ui = lilv_uis_get(uis, i);
+				if (lilv_ui_is_supported (ui,
+				                         suil_ui_supported,
+				                         _world.ui_GtkUI,
+				                         &this_ui_type)) {
+					this_ui = ui;
+					break;
+				}
+			}
+		}
+		// Found one that is supported by SUIL?...
+		if (this_ui != NULL) {
+			_impl->ui      = this_ui;
+			_impl->ui_type = this_ui_type;
 		}
 #else
 		// Look for Gtk native UI
@@ -865,23 +937,35 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 
 	load_supported_properties(_property_descriptors);
 	allocate_atom_event_buffers();
-	latency_compute_run();
+
+	/* Load default state */
+	if (_worker) {
+		/* immediately schedule any work,
+		 * so that state restore later will not find a busy
+		 * worker.  latency_compute_run() flushes any replies
+		 */
+		_worker->set_synchronous(true);
+	}
+	if (state) {
+		lilv_state_restore (state, _impl->instance, set_port_value, this, 0, _features);
+		lilv_state_free(state);
+	}
 }
 
 int
 LV2Plugin::set_block_size (pframes_t nframes)
 {
-#ifdef HAVE_LV2_1_2_0
 	if (_impl->opts_iface) {
 		LV2_URID atom_Int = _uri_map.uri_to_id(LV2_ATOM__Int);
 		_impl->block_length = nframes;
-		LV2_Options_Option block_size_option = {
-			LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id ("http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"),
-			sizeof(int32_t), atom_Int, (void*)&_impl->block_length
+		LV2_Options_Option block_size_option[] = {
+			{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id ("http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"),
+			  sizeof(int32_t), atom_Int, (void*)&_impl->block_length},
+			{ LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, NULL }
 		};
-		_impl->opts_iface->set (_impl->instance->lv2_handle, &block_size_option);
+		_impl->opts_iface->set (_impl->instance->lv2_handle, block_size_option);
 	}
-#endif
+
 	return 0;
 }
 
@@ -911,6 +995,12 @@ LV2Plugin::requires_fixed_sized_buffers () const
 	return _no_sample_accurate_ctrl;
 }
 
+bool
+LV2Plugin::connect_all_audio_outputs () const
+{
+	return _connect_all_audio_outputs;
+}
+
 LV2Plugin::~LV2Plugin ()
 {
 	DEBUG_TRACE(DEBUG::LV2, string_compose("%1 destroy\n", name()));
@@ -931,9 +1021,7 @@ LV2Plugin::~LV2Plugin ()
 	lilv_state_free(_impl->state);
 	lilv_node_free(_impl->name);
 	lilv_node_free(_impl->author);
-#ifdef HAVE_LV2_1_2_0
 	free(_impl->options);
-#endif
 #ifdef LV2_EXTENDED
 	free(_impl->queue_draw);
 	free(_impl->midnam);
@@ -969,19 +1057,14 @@ LV2Plugin::~LV2Plugin ()
 bool
 LV2Plugin::is_external_ui() const
 {
-	if (!_impl->ui) {
-		return false;
-	}
-	return lilv_ui_is_a(_impl->ui, _world.ui_external) || lilv_ui_is_a(_impl->ui, _world.ui_externalkx);
+	return _impl->ui && (lilv_ui_is_a(_impl->ui, _world.ui_external) ||
+	                     lilv_ui_is_a(_impl->ui, _world.ui_externalkx));
 }
 
 bool
 LV2Plugin::is_external_kx() const
 {
-	if (!_impl->ui) {
-		return false;
-	}
-	return lilv_ui_is_a(_impl->ui, _world.ui_externalkx);
+	return _impl->ui && lilv_ui_is_a(_impl->ui, _world.ui_externalkx);
 }
 
 bool
@@ -1038,10 +1121,7 @@ LV2Plugin::read_midnam () {
 	}
 	char* midnam = _midname_interface->midnam ((void*)_impl->instance->lv2_handle);
 	if (midnam) {
-		std::stringstream ss;
-		ss << (void*)this;
-		ss << unique_id();
-		rv = MIDI::Name::MidiPatchManager::instance().update_custom_midnam (ss.str(), midnam);
+		rv = MIDI::Name::MidiPatchManager::instance().update_custom_midnam (midnam_model(), midnam);
 	}
 #ifndef NDEBUG
 	if (rv) {
@@ -1146,7 +1226,7 @@ LV2Plugin::port_index (const char* symbol) const
 }
 
 void
-LV2Plugin::set_parameter(uint32_t which, float val)
+LV2Plugin::set_parameter(uint32_t which, float val, sampleoffset_t when)
 {
 	DEBUG_TRACE(DEBUG::LV2, string_compose(
 		            "%1 set parameter %2 to %3\n", name(), which, val));
@@ -1164,7 +1244,7 @@ LV2Plugin::set_parameter(uint32_t which, float val)
 		    name(), PROGRAM_NAME, unique_id()) << endmsg;
 	}
 
-	Plugin::set_parameter(which, val);
+	Plugin::set_parameter(which, val, when);
 }
 
 float
@@ -1378,13 +1458,20 @@ LV2Plugin::add_state(XMLNode* root) const
 		unsigned int saved_state = _state_version;;
 		g_mkdir_with_parents(new_dir.c_str(), 0744);
 
+		std::string xternal_dir = _session.externals_dir ();
+
+		if (!_plugin_state_dir.empty()) {
+			xternal_dir = Glib::build_filename (_plugin_state_dir, externals_dir_name);
+			g_mkdir_with_parents(xternal_dir.c_str(), 0744);
+		}
+
 		LilvState* state = lilv_state_new_from_instance(
 			_impl->plugin,
 			_impl->instance,
 			_uri_map.urid_map(),
 			scratch_dir().c_str(),
 			file_dir().c_str(),
-			_session.externals_dir().c_str(),
+			xternal_dir.c_str(),
 			new_dir.c_str(),
 			NULL,
 			const_cast<LV2Plugin*>(this),
@@ -1414,6 +1501,7 @@ LV2Plugin::add_state(XMLNode* root) const
 			} else {
 				// template save (dedicated state-dir)
 				lilv_state_free(state);
+				g_rmdir (xternal_dir.c_str()); // try remove unused dir
 				--_state_version;
 			}
 		} else {
@@ -1428,38 +1516,39 @@ LV2Plugin::add_state(XMLNode* root) const
 	}
 }
 
-// TODO: Once we can rely on lilv 0.16.0, lilv_world_get can replace this
 static LilvNode*
 get_value(LilvWorld* world, const LilvNode* subject, const LilvNode* predicate)
 {
-	LilvNodes* vs = lilv_world_find_nodes(world, subject, predicate, NULL);
-	if (vs) {
-		LilvNode* node = lilv_node_duplicate(lilv_nodes_get_first(vs));
-		lilv_nodes_free(vs);
-		return node;
-	}
-	return NULL;
+	return lilv_world_get(world, subject, predicate, NULL);
 }
 
 void
 LV2Plugin::find_presets()
 {
+	/* see also LV2PluginInfo::get_presets */
 	LilvNode* lv2_appliesTo = lilv_new_uri(_world.world, LV2_CORE__appliesTo);
 	LilvNode* pset_Preset   = lilv_new_uri(_world.world, LV2_PRESETS__Preset);
 	LilvNode* rdfs_label    = lilv_new_uri(_world.world, LILV_NS_RDFS "label");
+	LilvNode* rdfs_comment  = lilv_new_uri(_world.world, LILV_NS_RDFS "comment");
 
 	LilvNodes* presets = lilv_plugin_get_related(_impl->plugin, pset_Preset);
 	LILV_FOREACH(nodes, i, presets) {
 		const LilvNode* preset = lilv_nodes_get(presets, i);
 		lilv_world_load_resource(_world.world, preset);
 		LilvNode* name = get_value(_world.world, preset, rdfs_label);
-		bool userpreset = true; // TODO
+		LilvNode* comment = get_value(_world.world, preset, rdfs_comment);
+		/* TODO properly identify user vs factory presets.
+		 * here's an indirect condition: only factory presets can have comments
+		 */
+		bool userpreset = comment ? false : true;
 		if (name) {
 			_presets.insert(std::make_pair(lilv_node_as_string(preset),
 			                               Plugin::PresetRecord(
 				                               lilv_node_as_string(preset),
 				                               lilv_node_as_string(name),
-				                               userpreset)));
+				                               userpreset,
+				                               comment ? lilv_node_as_string (comment) : ""
+			                               )));
 			lilv_node_free(name);
 		} else {
 			warning << string_compose(
@@ -1467,31 +1556,16 @@ LV2Plugin::find_presets()
 			    lilv_node_as_string(lilv_plugin_get_uri(_impl->plugin)),
 			    lilv_node_as_string(preset)) << endmsg;
 		}
+		if (comment) {
+			lilv_node_free(comment);
+		}
 	}
 	lilv_nodes_free(presets);
 
+	lilv_node_free(rdfs_comment);
 	lilv_node_free(rdfs_label);
 	lilv_node_free(pset_Preset);
 	lilv_node_free(lv2_appliesTo);
-}
-
-static void
-set_port_value(const char* port_symbol,
-               void*       user_data,
-               const void* value,
-               uint32_t    /*size*/,
-               uint32_t    type)
-{
-	LV2Plugin* self = (LV2Plugin*)user_data;
-	if (type != 0 && type != URIMap::instance().urids.atom_Float) {
-		return;  // TODO: Support non-float ports
-	}
-
-	const uint32_t port_index = self->port_index(port_symbol);
-	if (port_index != (uint32_t)-1) {
-		self->set_parameter(port_index, *(const float*)value);
-		self->PresetPortSetValue (port_index, *(const float*)value); /* EMIT SIGNAL */
-	}
 }
 
 bool
@@ -1573,8 +1647,16 @@ LV2Plugin::do_save_preset(string name)
 		Glib::build_filename(".lv2", prefix + "_" + base_name + ".lv2"));
 #endif
 
-#ifdef HAVE_LILV_0_21_3
 	/* delete reference to old preset (if any) */
+#if 0 // prefer this when https://github.com/lv2/lilv/issues/37 is resolved
+	do_remove_preset (name);
+#else
+	/* this works around https://github.com/lv2/lilv/issues/37
+	 *
+	 * do_remove_preset() calls lilv_state_delete(); That
+	 * deletes all mapped files without re-creating them.
+	 * So for the time being we just leave them in place.
+	 */
 	const PresetRecord* r = preset_by_label(name);
 	if (r) {
 		LilvNode*  pset  = lilv_new_uri (_world.world, r->uri.c_str());
@@ -1615,10 +1697,8 @@ LV2Plugin::do_save_preset(string name)
 	std::string uri = Glib::filename_to_uri(Glib::build_filename(bundle, file_name));
 	LilvNode *node_bundle = lilv_new_uri(_world.world, Glib::filename_to_uri(Glib::build_filename(bundle, "/")).c_str());
 	LilvNode *node_preset = lilv_new_uri(_world.world, uri.c_str());
-#ifdef HAVE_LILV_0_21_3
 	lilv_world_unload_resource(_world.world, node_preset);
 	lilv_world_unload_bundle(_world.world, node_bundle);
-#endif
 	lilv_world_load_bundle(_world.world, node_bundle);
 	lilv_world_load_resource(_world.world, node_preset);
 	lilv_node_free(node_bundle);
@@ -1630,7 +1710,6 @@ LV2Plugin::do_save_preset(string name)
 void
 LV2Plugin::do_remove_preset(string name)
 {
-#ifdef HAVE_LILV_0_21_3
 	/* Look up preset record by label (FIXME: ick, label as ID) */
 	const PresetRecord* r = preset_by_label(name);
 	if (!r) {
@@ -1656,11 +1735,6 @@ LV2Plugin::do_remove_preset(string name)
 
 	lilv_state_free(state);
 	lilv_node_free(pset);
-#endif
-	/* Without lilv_state_delete(), we could delete the preset file, but this
-	   would leave a broken bundle/manifest around, so the preset would still
-	   be visible, but broken.  Naively deleting a bundle is too dangerous, so
-	   we simply do not support preset deletion with older Lilv */
 }
 
 bool
@@ -1729,7 +1803,7 @@ LV2Plugin::write_from_ui(uint32_t       index,
 	}
 
 	if (!write_to(_from_ui, index, protocol, size, body)) {
-		error << "Error writing from UI to plugin" << endmsg;
+		error << string_compose (_("LV2<%1>: Error writing from UI to plugin"), name()) << endmsg;
 		return false;
 	}
 	return true;
@@ -1742,7 +1816,7 @@ LV2Plugin::write_to_ui(uint32_t       index,
                        const uint8_t* body)
 {
 	if (!write_to(_to_ui, index, protocol, size, body)) {
-		error << "Error writing from plugin to UI" << endmsg;
+		error << string_compose (_("LV2<%1>: Error writing from plugin to UI"), name()) << endmsg;
 		return false;
 	}
 	return true;
@@ -1818,28 +1892,28 @@ void
 LV2Plugin::set_property(uint32_t key, const Variant& value)
 {
 	if (_patch_port_in_index == (uint32_t)-1) {
-		error << "LV2: set_property called with unset patch_port_in_index" << endmsg;
+		error << string_compose (_("LV2<1>: set_property called with unset patch_port_in_index"), name ()) << endmsg;
 		return;
 	} else if (value.type() == Variant::NOTHING) {
-		error << "LV2: set_property called with void value" << endmsg;
+		error << string_compose (_("LV2<1>: set_property called with void value"), name ()) << endmsg;
 		return;
 	}
 
 	// Set up forge to write to temporary buffer on the stack
 	LV2_Atom_Forge*      forge = &_impl->ui_forge;
-	LV2_Atom_Forge_Frame sample;
+	LV2_Atom_Forge_Frame frame;
 	uint8_t              buf[PATH_MAX];  // Ought to be enough for anyone...
 
 	lv2_atom_forge_set_buffer(forge, buf, sizeof(buf));
 
 	// Serialize patch:Set message to set property
 #ifdef HAVE_LV2_1_10_0
-	lv2_atom_forge_object(forge, &sample, 0, _uri_map.urids.patch_Set);
+	lv2_atom_forge_object(forge, &frame, 0, _uri_map.urids.patch_Set);
 	lv2_atom_forge_key(forge, _uri_map.urids.patch_property);
 	lv2_atom_forge_urid(forge, key);
 	lv2_atom_forge_key(forge, _uri_map.urids.patch_value);
 #else
-	lv2_atom_forge_blank(forge, &sample, 0, _uri_map.urids.patch_Set);
+	lv2_atom_forge_blank(forge, &frame, 0, _uri_map.urids.patch_Set);
 	lv2_atom_forge_property_head(forge, _uri_map.urids.patch_property, 0);
 	lv2_atom_forge_urid(forge, key);
 	lv2_atom_forge_property_head(forge, _uri_map.urids.patch_value, 0);
@@ -1956,16 +2030,16 @@ LV2Plugin::load_supported_properties(PropertyDescriptors& descs)
 		const LilvNode* prop  = lilv_nodes_get(properties, p);
 		LilvNode*       range = get_value(lworld, prop, _world.rdfs_range);
 		if (!range) {
-			warning << string_compose(_("LV2: property <%1> has no range datatype, ignoring"),
-			                          lilv_node_as_uri(prop)) << endmsg;
+			warning << string_compose(_("LV2<%1>: property <%2> has no range datatype, ignoring"),
+			                          name(), lilv_node_as_uri(prop)) << endmsg;
 			continue;
 		}
 
 		// Convert range to variant type (TODO: support for multiple range types)
 		Variant::Type datatype;
 		if (!uri_to_variant_type(lilv_node_as_uri(range), datatype)) {
-			error << string_compose(_("LV2: property <%1> has unsupported datatype <%1>"),
-			                        lilv_node_as_uri(prop), lilv_node_as_uri(range)) << endmsg;
+			error << string_compose(_("LV2<%1>: property <%2> has unsupported datatype <%3>"),
+			                        name(), lilv_node_as_uri(prop), lilv_node_as_uri(range)) << endmsg;
 			continue;
 		}
 
@@ -1976,9 +2050,21 @@ LV2Plugin::load_supported_properties(PropertyDescriptors& descs)
 		load_parameter_descriptor(_world, desc, datatype, prop);
 		descs.insert(std::make_pair(desc.key, desc));
 
+		_property_values[desc.key] = Variant();
+
 		lilv_node_free(range);
 	}
 	lilv_nodes_free(properties);
+}
+
+Variant
+LV2Plugin::get_property_value (uint32_t prop_id) const
+{
+	std::map<uint32_t, Variant>::const_iterator it;
+	if ((it = _property_values.find (prop_id)) == _property_values.end()) {
+		return Variant();
+	}
+	return it->second;
 }
 
 void
@@ -1990,16 +2076,16 @@ LV2Plugin::announce_property_values()
 
 	// Set up forge to write to temporary buffer on the stack
 	LV2_Atom_Forge*      forge = &_impl->ui_forge;
-	LV2_Atom_Forge_Frame sample;
+	LV2_Atom_Forge_Frame frame;
 	uint8_t              buf[PATH_MAX];  // Ought to be enough for anyone...
 
 	lv2_atom_forge_set_buffer(forge, buf, sizeof(buf));
 
 	// Serialize patch:Get message with no subject (implicitly plugin instance)
 #ifdef HAVE_LV2_1_10_0
-	lv2_atom_forge_object(forge, &sample, 0, _uri_map.urids.patch_Get);
+	lv2_atom_forge_object(forge, &frame, 0, _uri_map.urids.patch_Get);
 #else
-	lv2_atom_forge_blank(forge, &sample, 0, _uri_map.urids.patch_Get);
+	lv2_atom_forge_blank(forge, &frame, 0, _uri_map.urids.patch_Get);
 #endif
 
 	// Write message to UI=>Plugin ring
@@ -2036,12 +2122,12 @@ LV2Plugin::emit_to_ui(void* controller, UIMessageSink sink)
 	while (read_space > sizeof(UIMessage)) {
 		UIMessage msg;
 		if (_to_ui->read((uint8_t*)&msg, sizeof(msg)) != sizeof(msg)) {
-			error << "Error reading from Plugin=>UI RingBuffer" << endmsg;
+			error << string_compose (_("LV2<%1>: Error reading message header from Plugin => UI RingBuffer"), name()) << endmsg;
 			break;
 		}
 		vector<uint8_t> body(msg.size);
 		if (_to_ui->read(&body[0], msg.size) != msg.size) {
-			error << "Error reading from Plugin=>UI RingBuffer" << endmsg;
+			error << string_compose (_("LV2<%1>: Error reading message body from Plugin => UI RingBuffer"), name()) << endmsg;
 			break;
 		}
 
@@ -2093,11 +2179,9 @@ LV2Plugin::set_state(const XMLNode& node, int version)
 	LocaleGuard          lg;
 
 	if (node.name() != state_node_name()) {
-		error << _("Bad node sent to LV2Plugin::set_state") << endmsg;
+		error << string_compose (_("LV2<%1>: Bad node sent to LV2Plugin::set_state"), name()) << endmsg;
 		return -1;
 	}
-
-#ifndef NO_PLUGIN_STATE
 
 	if (version < 3000) {
 		nodes = node.children("port");
@@ -2111,7 +2195,7 @@ LV2Plugin::set_state(const XMLNode& node, int version)
 
 		std::string sym;
 		if (!child->get_property("symbol", sym)) {
-			warning << _("LV2: port has no symbol, ignored") << endmsg;
+			warning << string_compose (_("LV2<%1>: port has no symbol '%2', ignored"), name(), sym) << endmsg;
 			continue;
 		}
 
@@ -2122,17 +2206,17 @@ LV2Plugin::set_state(const XMLNode& node, int version)
 		if (i != _port_indices.end()) {
 			port_id = i->second;
 		} else {
-			warning << _("LV2: port has unknown index, ignored") << endmsg;
+			warning << string_compose (_("LV2<%1>: port '%2' has known index, ignored "), name(), sym) << endmsg;
 			continue;
 		}
 
 		float val;
 		if (!child->get_property("value", val)) {
-			warning << _("LV2: port has no value, ignored") << endmsg;
+			warning << string_compose (_("LV2<%1>: port no value, ignored "), name(), sym) << endmsg;
 			continue;
 		}
 
-		set_parameter(port_id, val);
+		set_parameter(port_id, val, 0);
 	}
 
 	std::string template_dir;
@@ -2168,8 +2252,17 @@ LV2Plugin::set_state(const XMLNode& node, int version)
 		set_state_dir ("");
 	}
 
-	latency_compute_run();
-#endif
+	/* Do not call latency_compute_run() concurrently with connect_and_run().
+	 * So far this can only guarnteed when the session is loading,
+	 * and the plugin has not been added to the processor chain.
+	 *
+	 * Ideally this would clso be called when copying a plugin from another track,
+	 * but NOT when copying the state from a plugin to another (active) plugin
+	 * instance.
+	 */
+	if (_session.loading ()) {
+		latency_compute_run();
+	}
 
 	return Plugin::set_state(node, version);
 }
@@ -2179,7 +2272,7 @@ LV2Plugin::get_parameter_descriptor(uint32_t which, ParameterDescriptor& desc) c
 {
 	const LilvPort* port = lilv_plugin_get_port_by_index(_impl->plugin, which);
 	if (!port) {
-		error << string_compose("LV2: get descriptor of non-existent port %1", which)
+		error << string_compose("LV2<%1>: get descriptor of non-existent port %2", name(), which)
 		      << endmsg;
 		return 1;
 	}
@@ -2189,7 +2282,8 @@ LV2Plugin::get_parameter_descriptor(uint32_t which, ParameterDescriptor& desc) c
 	lilv_port_get_range(_impl->plugin, port, &def, &min, &max);
 	portunits = lilv_port_get_value(_impl->plugin, port, _world.units_unit);
 
-	LilvNode* steps   = lilv_port_get(_impl->plugin, port, _world.ext_rangeSteps);
+	LilvNode* steps             = lilv_port_get(_impl->plugin, port, _world.ext_rangeSteps);
+	LilvNode* display_priority  = lilv_port_get(_impl->plugin, port, _world.ext_displayPriority);
 
 	// TODO: Once we can rely on lilv 0.18.0 being present,
 	// load_parameter_descriptor() can be used for ports as well
@@ -2203,6 +2297,7 @@ LV2Plugin::get_parameter_descriptor(uint32_t which, ParameterDescriptor& desc) c
 	desc.upper        = max ? lilv_node_as_float(max) : 1.0f;
 	load_parameter_descriptor_units(_world.world, desc, portunits);
 
+
 	if (desc.sr_dependent) {
 		desc.lower *= _session.sample_rate ();
 		desc.upper *= _session.sample_rate ();
@@ -2211,8 +2306,15 @@ LV2Plugin::get_parameter_descriptor(uint32_t which, ParameterDescriptor& desc) c
 	desc.enumeration = lilv_port_has_property(_impl->plugin, port, _world.lv2_enumeration);
 	desc.scale_points = get_scale_points(which);
 
+#ifdef LV2_EXTENDED
+	desc.inline_ctrl = lilv_port_has_property(_impl->plugin, port, _world.inline_mixer_control);
+#endif
+
 	if (steps) {
 		desc.rangesteps = lilv_node_as_float (steps);
+	}
+	if (display_priority) {
+		desc.display_priority = lilv_node_as_int (display_priority);
 	}
 
 	desc.update_steps();
@@ -2221,6 +2323,7 @@ LV2Plugin::get_parameter_descriptor(uint32_t which, ParameterDescriptor& desc) c
 	lilv_node_free(min);
 	lilv_node_free(max);
 	lilv_node_free(steps);
+	lilv_node_free(display_priority);
 	lilv_nodes_free(portunits);
 
 	return 0;
@@ -2235,7 +2338,7 @@ LV2Plugin::describe_io_port (ARDOUR::DataType dt, bool input, uint32_t id) const
 			match = PORT_AUDIO;
 			break;
 		case DataType::MIDI:
-			match = PORT_SEQUENCE | PORT_MIDI; // ignore old PORT_EVENT
+			match = PORT_SEQUENCE | PORT_MIDI;
 			break;
 		default:
 			return Plugin::IOPortDescription ("?");
@@ -2323,18 +2426,27 @@ LV2Plugin::describe_parameter(Evoral::Parameter which)
 {
 	if (( which.type() == PluginAutomation) && ( which.id() < parameter_count()) ) {
 
-		if (lilv_port_has_property(_impl->plugin,
-					lilv_plugin_get_port_by_index(_impl->plugin, which.id()), _world.ext_notOnGUI)) {
+		const LilvPort* port = lilv_plugin_get_port_by_index(_impl->plugin, which.id());
+
+		if (lilv_port_has_property(_impl->plugin, port, _world.ext_notOnGUI)) {
 			return X_("hidden");
 		}
 
-		if (lilv_port_has_property(_impl->plugin,
-					lilv_plugin_get_port_by_index(_impl->plugin, which.id()), _world.lv2_freewheeling)) {
+		const LilvPort* fwport = lilv_plugin_get_port_by_designation(_impl->plugin, _world.lv2_InputPort, _world.lv2_freewheeling);
+		if (fwport && fwport == port) {
 			return X_("hidden");
 		}
 
-		if (lilv_port_has_property(_impl->plugin,
-					lilv_plugin_get_port_by_index(_impl->plugin, which.id()), _world.lv2_reportsLatency)) {
+		const LilvPort* bpmport = lilv_plugin_get_port_by_designation(_impl->plugin, _world.lv2_InputPort, _world.time_beatsPerMin);
+		if (bpmport && bpmport == port) {
+			return X_("hidden");
+		}
+
+		if (lilv_port_has_property(_impl->plugin, port, _world.lv2_freewheeling)) {
+			return X_("hidden");
+		}
+
+		if (lilv_port_has_property(_impl->plugin, port, _world.lv2_reportsLatency)) {
 			return X_("latency");
 		}
 
@@ -2355,7 +2467,7 @@ LV2Plugin::max_latency () const
 }
 
 samplecnt_t
-LV2Plugin::signal_latency() const
+LV2Plugin::plugin_latency() const
 {
 	if (_latency_control_port) {
 		return (samplecnt_t)floor(*_latency_control_port);
@@ -2388,6 +2500,9 @@ LV2Plugin::set_automation_control (uint32_t i, boost::shared_ptr<AutomationContr
 {
 	if ((_port_flags[i] & (PORT_CTRLED | PORT_CTRLER))) {
 		DEBUG_TRACE(DEBUG::LV2Automate, string_compose ("Ctrl Port %1\n", i));
+		_ctrl_map [i] = AutomationCtrlPtr (new AutomationCtrl(c));
+	}
+	else if (i == _bpm_control_port_index) {
 		_ctrl_map [i] = AutomationCtrlPtr (new AutomationCtrl(c));
 	}
 }
@@ -2483,8 +2598,9 @@ LV2Plugin::allocate_atom_event_buffers()
 	DEBUG_TRACE(DEBUG::LV2, string_compose("allocate %1 atom_ev_buffers of %2 bytes\n", total_atom_buffers, minimumSize));
 	_atom_ev_buffers = (LV2_Evbuf**) malloc((total_atom_buffers + 1) * sizeof(LV2_Evbuf*));
 	for (int i = 0; i < total_atom_buffers; ++i ) {
-		_atom_ev_buffers[i] = lv2_evbuf_new(minimumSize, LV2_EVBUF_ATOM,
-				_uri_map.urids.atom_Chunk, _uri_map.urids.atom_Sequence);
+		_atom_ev_buffers[i] = lv2_evbuf_new(minimumSize,
+		                                    _uri_map.urids.atom_Chunk,
+		                                    _uri_map.urids.atom_Sequence);
 	}
 	_atom_ev_buffers[total_atom_buffers] = 0;
 	return;
@@ -2499,18 +2615,19 @@ write_position(LV2_Atom_Forge*     forge,
                const TempoMetric&  t,
                Timecode::BBT_Time& bbt,
                double              speed,
+               double              time_scale,
                double              bpm,
-               samplepos_t          position,
-               samplecnt_t          offset)
+               samplepos_t         position,
+               samplecnt_t         offset)
 {
 	const URIMap::URIDs& urids = URIMap::instance().urids;
 
 	uint8_t pos_buf[256];
 	lv2_atom_forge_set_buffer(forge, pos_buf, sizeof(pos_buf));
-	LV2_Atom_Forge_Frame sample;
+	LV2_Atom_Forge_Frame frame;
 #ifdef HAVE_LV2_1_10_0
-	lv2_atom_forge_object(forge, &sample, 0, urids.time_Position);
-	lv2_atom_forge_key(forge, urids.time_sample);
+	lv2_atom_forge_object(forge, &frame, 0, urids.time_Position);
+	lv2_atom_forge_key(forge, urids.time_frame);
 	lv2_atom_forge_long(forge, position);
 	lv2_atom_forge_key(forge, urids.time_speed);
 	lv2_atom_forge_float(forge, speed);
@@ -2525,9 +2642,11 @@ write_position(LV2_Atom_Forge*     forge,
 	lv2_atom_forge_float(forge, t.meter().divisions_per_bar());
 	lv2_atom_forge_key(forge, urids.time_beatsPerMinute);
 	lv2_atom_forge_float(forge, bpm);
+	lv2_atom_forge_key(forge, urids.time_scale);
+	lv2_atom_forge_float(forge, time_scale);
 #else
-	lv2_atom_forge_blank(forge, &sample, 1, urids.time_Position);
-	lv2_atom_forge_property_head(forge, urids.time_sample, 0);
+	lv2_atom_forge_blank(forge, &frame, 1, urids.time_Position);
+	lv2_atom_forge_property_head(forge, urids.time_frame, 0);
 	lv2_atom_forge_long(forge, position);
 	lv2_atom_forge_property_head(forge, urids.time_speed, 0);
 	lv2_atom_forge_float(forge, speed);
@@ -2542,6 +2661,8 @@ write_position(LV2_Atom_Forge*     forge,
 	lv2_atom_forge_float(forge, t.meter().divisions_per_bar());
 	lv2_atom_forge_property_head(forge, urids.time_beatsPerMinute, 0);
 	lv2_atom_forge_float(forge, bpm);
+	lv2_atom_forge_key(forge, urids.time_scale);
+	lv2_atom_forge_float(forge, time_scale);
 #endif
 
 	LV2_Evbuf_Iterator    end  = lv2_evbuf_end(buf);
@@ -2553,7 +2674,7 @@ write_position(LV2_Atom_Forge*     forge,
 int
 LV2Plugin::connect_and_run(BufferSet& bufs,
 		samplepos_t start, samplepos_t end, double speed,
-		ChanMapping in_map, ChanMapping out_map,
+		ChanMapping const& in_map, ChanMapping const& out_map,
 		pframes_t nframes, samplecnt_t offset)
 {
 	DEBUG_TRACE(DEBUG::LV2, string_compose("%1 run %2 offset %3\n", name(), nframes, offset));
@@ -2561,16 +2682,28 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 	cycles_t then = get_cycles();
 
+	/* remain at zero during pre-roll at zero */
+	speed = end > 0 ? speed : 0;
+	samplepos_t start0 = std::max (samplepos_t (0), start);
+
 	TempoMap&               tmap     = _session.tempo_map();
 	Metrics::const_iterator metric_i = tmap.metrics_end();
-	TempoMetric             tmetric  = tmap.metric_at(start, &metric_i);
+	TempoMetric             tmetric  = tmap.metric_at(start0, &metric_i);
 
 	if (_freewheel_control_port) {
 		*_freewheel_control_port = _session.engine().freewheeling() ? 1.f : 0.f;
 	}
 
 	if (_bpm_control_port) {
-		*_bpm_control_port = tmap.tempo_at_sample (start).note_types_per_minute();
+		float bpm = tmap.tempo_at_sample (start0).note_types_per_minute();
+		if (*_bpm_control_port != bpm) {
+			AutomationCtrlPtr c = get_automation_control (_bpm_control_port_index);
+			if (c && c->ac) {
+				/* may be NULL for replicated instances - only one custom UI/ctrl */
+				c->ac->Changed (false, Controllable::NoGroup); /* EMIT SIGNAL */
+			}
+		}
+		*_bpm_control_port = bpm;
 	}
 
 #ifdef LV2_EXTENDED
@@ -2612,7 +2745,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 					? bufs.get_audio(index).data(offset)
 					: scratch_bufs.get_audio(0).data(offset);
 			}
-		} else if (flags & (PORT_EVENT|PORT_SEQUENCE)) {
+		} else if (flags & PORT_SEQUENCE) {
 			/* FIXME: The checks here for bufs.count().n_midi() > index shouldn't
 			   be necessary, but the mapping is illegal in some cases.  Ideally
 			   that should be fixed, but this is easier...
@@ -2631,7 +2764,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 					 */
 					bufs.ensure_lv2_bufsize((flags & PORT_INPUT), index, _port_minimumSize[port_index]);
 					_ev_buffers[port_index] = bufs.get_lv2_midi(
-						(flags & PORT_INPUT), index, (flags & PORT_EVENT));
+						(flags & PORT_INPUT), index);
 				}
 			} else if ((flags & PORT_POSITION) && (flags & PORT_INPUT)) {
 				lv2_evbuf_reset(_atom_ev_buffers[atom_port_index], true);
@@ -2641,19 +2774,21 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 			if (valid && (flags & PORT_INPUT)) {
 				if ((flags & PORT_POSITION)) {
-					Timecode::BBT_Time bbt (tmap.bbt_at_sample (start));
-					double bpm = tmap.tempo_at_sample (start).note_types_per_minute();
+					Timecode::BBT_Time bbt (tmap.bbt_at_sample (start0));
+					double time_scale = Port::speed_ratio ();
+					double bpm = tmap.tempo_at_sample (start0).note_types_per_minute();
 					double beatpos = (bbt.bars - 1) * tmetric.meter().divisions_per_bar()
 					               + (bbt.beats - 1)
 					               + (bbt.ticks / Timecode::BBT_Time::ticks_per_beat);
 					beatpos *= tmetric.meter().note_divisor() / 4.0;
 					if (start != _next_cycle_start ||
 							speed != _next_cycle_speed ||
-							rint (1000 * beatpos) != rint(1000 * _next_cycle_beat) ||
+							time_scale != _prev_time_scale ||
+							rint (100 * beatpos) != rint(100 * _next_cycle_beat) ||
 							bpm != _current_bpm) {
 						// Transport or Tempo has changed, write position at cycle start
 						write_position(&_impl->forge, _ev_buffers[port_index],
-								tmetric, bbt, speed, bpm, start, 0);
+								tmetric, bbt, speed, time_scale, bpm, start, 0);
 					}
 				}
 
@@ -2667,7 +2802,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 				// Now merge MIDI and any transport events into the buffer
 				const uint32_t     type = _uri_map.urids.midi_MidiEvent;
-				const samplepos_t   tend = end;
+				const samplepos_t  tend = end;
 				++metric_i;
 				while (m != m_end || (metric_i != tmap.metrics_end() &&
 				                      (*metric_i)->sample() < tend)) {
@@ -2681,14 +2816,15 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 						}
 						++m;
 					} else {
+						assert (metric);
 						tmetric.set_metric(metric);
 						Timecode::BBT_Time bbt;
 						bbt = tmap.bbt_at_sample (metric->sample());
-						double bpm = tmap.tempo_at_sample (start/*XXX*/).note_types_per_minute();
+						double bpm = tmap.tempo_at_sample (start0 /*XXX metric->sample() */).note_types_per_minute();
 						write_position(&_impl->forge, _ev_buffers[port_index],
-						               tmetric, bbt, speed, bpm,
-						               metric->sample(),
-						               metric->sample() - start);
+						               tmetric, bbt, speed, Port::speed_ratio (),
+						               bpm, metric->sample(),
+						               metric->sample() - start0);
 						++metric_i;
 					}
 				}
@@ -2698,7 +2834,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 				scratch_bufs.ensure_lv2_bufsize((flags & PORT_INPUT),
 						0, _port_minimumSize[port_index]);
 				_ev_buffers[port_index] = scratch_bufs.get_lv2_midi(
-					(flags & PORT_INPUT), 0, (flags & PORT_EVENT));
+					(flags & PORT_INPUT), 0);
 			}
 
 			buf = lv2_evbuf_get_buffer(_ev_buffers[port_index]);
@@ -2714,12 +2850,12 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 		while (read_space > sizeof(UIMessage)) {
 			UIMessage msg;
 			if (_from_ui->read((uint8_t*)&msg, sizeof(msg)) != sizeof(msg)) {
-				error << "Error reading from UI=>Plugin RingBuffer" << endmsg;
+				error << string_compose (_("LV2<%1>: Error reading message header from UI => Plugin RingBuffer"), name()) << endmsg;
 				break;
 			}
 			vector<uint8_t> body(msg.size);
 			if (_from_ui->read(&body[0], msg.size) != msg.size) {
-				error << "Error reading from UI=>Plugin RingBuffer" << endmsg;
+				error << string_compose (_("LV2<%1>: Error reading message body from UI => Plugin RingBuffer"), name()) << endmsg;
 				break;
 			}
 			if (msg.protocol == URIMap::instance().urids.atom_eventTransfer) {
@@ -2730,8 +2866,31 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 				                (const uint8_t*)(atom + 1))) {
 					error << "Failed to write data to LV2 event buffer\n";
 				}
+				/* Intercept patch:Set messages from GUIs (custom,
+				 * or generic via LV2Plugin::set_property).
+				 */
+				else if (atom->type == _uri_map.urids.atom_Blank ||
+				         atom->type == _uri_map.urids.atom_Object) {
+					const LV2_Atom_Object* obj = (const LV2_Atom_Object*)atom;
+					if (obj->body.otype == _uri_map.urids.patch_Set) {
+						const LV2_Atom* property = NULL;
+						const LV2_Atom* value    = NULL;
+						lv2_atom_object_get(obj,
+						                    _uri_map.urids.patch_property, &property,
+						                    _uri_map.urids.patch_value,    &value,
+						                    0);
+
+						if (property && value && property->type == _uri_map.urids.atom_URID) {
+							/* check if it's a property we know or care about */
+							const uint32_t prop_id = ((const LV2_Atom_URID*)property)->body;
+							if (_property_values.find (prop_id) != _property_values.end()) {
+								Plugin::state_changed ();
+							}
+						}
+					}
+				}
 			} else {
-				error << "Received unknown message type from UI" << endmsg;
+				error << string_compose (_("LV2<%1>: Received unknown message type from UI"), name()) << endmsg;
 			}
 			read_space -= sizeof(UIMessage) + msg.size;
 		}
@@ -2757,7 +2916,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 		 *                            for quite a while at least ;)
 		 */
 		// copy output of LV2 plugin's MIDI port to Ardour MIDI buffers -- MIDI OUT
-		if ((flags & PORT_OUTPUT) && (flags & (PORT_EVENT|PORT_SEQUENCE|PORT_MIDI))) {
+		if ((flags & PORT_OUTPUT) && (flags & (PORT_SEQUENCE|PORT_MIDI))) {
 			const uint32_t buf_index = out_map.get(
 				DataType::MIDI, midi_out_index++, &valid);
 			if (valid) {
@@ -2765,7 +2924,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 			}
 		}
 		// Flush MIDI (write back to Ardour MIDI buffers) -- MIDI THRU
-		else if ((flags & PORT_OUTPUT) && (flags & (PORT_EVENT|PORT_SEQUENCE))) {
+		else if ((flags & PORT_OUTPUT) && (flags & PORT_SEQUENCE)) {
 			const uint32_t buf_index = out_map.get(
 				DataType::MIDI, midi_out_index++, &valid);
 			if (valid) {
@@ -2775,7 +2934,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 		// Write messages to UI
 		if ((_to_ui || _can_write_automation || _patch_port_out_index != (uint32_t)-1) &&
-		    (flags & PORT_OUTPUT) && (flags & (PORT_EVENT|PORT_SEQUENCE))) {
+		    (flags & PORT_OUTPUT) && (flags & PORT_SEQUENCE)) {
 			LV2_Evbuf* buf = _ev_buffers[port_index];
 			for (LV2_Evbuf_Iterator i = lv2_evbuf_begin(buf);
 			     lv2_evbuf_is_valid(i);
@@ -2901,7 +3060,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 					    atom->type == _uri_map.urids.atom_Object) {
 						LV2_Atom_Object* obj = (LV2_Atom_Object*)atom;
 						if (obj->body.otype == _uri_map.urids.state_StateChanged) {
-							_session.set_dirty ();
+							Plugin::state_changed ();
 						}
 					}
 				}
@@ -2920,17 +3079,26 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 							                    _uri_map.urids.patch_value,    &value,
 							                    0);
 
-							if (property && value &&
-							    property->type == _uri_map.urids.atom_URID &&
-							    value->type    == _uri_map.urids.atom_Path) {
-								const uint32_t prop_id = ((const LV2_Atom_URID*)property)->body;
-								const char*    path    = (const char*)LV2_ATOM_BODY_CONST(value);
+							if (property && value && property->type == _uri_map.urids.atom_URID) {
+								const uint32_t prop_id  = ((const LV2_Atom_URID*)property)->body;
+								if (_property_values.find (prop_id) != _property_values.end()) {
+									if (value->type == _uri_map.urids.atom_Path) {
+										const char* path          = (const char*)LV2_ATOM_BODY_CONST(value);
+										_property_values[prop_id] = Variant(Variant::PATH, path);
+									}
+									if (value->type == _uri_map.urids.atom_Float) {
+										const float* val          = (const float*)LV2_ATOM_BODY_CONST(value);
+										_property_values[prop_id] = Variant(Variant::FLOAT, *val);
+									}
+									// TODO add support for other props (Int, Bool, ..)
 
-								// Emit PropertyChanged signal for UI
-								// TODO: This should emit the control's Changed signal
-								PropertyChanged(prop_id, Variant(Variant::PATH, path));
+									// TODO: This should emit the control's Changed signal
+									PropertyChanged(prop_id, _property_values[prop_id]);
+								} else {
+									std::cerr << "warning: patch:Set for unknown property" << std::endl;
+								}
 							} else {
-								std::cerr << "warning: patch:Set for unknown property" << std::endl;
+								std::cerr << "warning: patch:Set for unsupported property" << std::endl;
 							}
 						}
 					}
@@ -2949,16 +3117,17 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 	// Update expected transport information for next cycle so we can detect changes
 	_next_cycle_speed = speed;
-	_next_cycle_start = end;
+	_next_cycle_start = end + (start - start0);
+	_prev_time_scale = Port::speed_ratio ();
 
 	{
 		/* keep track of lv2:timePosition like plugins can do.
 		 * Note: for no-midi plugins, we only ever send information at cycle-start,
 		 * so it needs to be realative to that.
 		 */
-		TempoMetric t = tmap.metric_at(start);
-		_current_bpm = tmap.tempo_at_sample (start).note_types_per_minute();
-		Timecode::BBT_Time bbt (tmap.bbt_at_sample (start));
+		TempoMetric t = tmap.metric_at (start0);
+		_current_bpm = tmap.tempo_at_sample (start0).note_types_per_minute();
+		Timecode::BBT_Time bbt (tmap.bbt_at_sample (start0));
 		double beatpos = (bbt.bars - 1) * t.meter().divisions_per_bar()
 		               + (bbt.beats - 1)
 		               + (bbt.ticks / Timecode::BBT_Time::ticks_per_beat);
@@ -2985,13 +3154,6 @@ LV2Plugin::parameter_is_audio(uint32_t param) const
 {
 	assert(param < _port_flags.size());
 	return _port_flags[param] & PORT_AUDIO;
-}
-
-bool
-LV2Plugin::parameter_is_event(uint32_t param) const
-{
-	assert(param < _port_flags.size());
-	return _port_flags[param] & PORT_EVENT;
 }
 
 bool
@@ -3030,18 +3192,6 @@ LV2Plugin::designated_bypass_port ()
 	}
 #endif
 	return UINT32_MAX;
-}
-
-void
-LV2Plugin::print_parameter(uint32_t param, char* buf, uint32_t len) const
-{
-	if (buf && len) {
-		if (param < parameter_count()) {
-			snprintf(buf, len, "%.3f", get_parameter(param));
-		} else {
-			strcat(buf, "0");
-		}
-	}
 }
 
 boost::shared_ptr<ScalePoints>
@@ -3123,7 +3273,7 @@ LV2Plugin::latency_compute_run()
 
 	// this is done in the main thread. non realtime.
 	const samplecnt_t bufsize = _engine.samples_per_cycle();
-	float            *buffer = (float*) malloc(_engine.samples_per_cycle() * sizeof(float));
+	float*            buffer  = (float*) malloc(_engine.samples_per_cycle() * sizeof(float));
 
 	memset(buffer, 0, sizeof(float) * bufsize);
 
@@ -3191,6 +3341,7 @@ LV2World::LV2World()
 	ext_causesArtifacts= lilv_new_uri(world, LV2_PORT_PROPS__causesArtifacts);
 	ext_notAutomatic   = lilv_new_uri(world, LV2_PORT_PROPS__notAutomatic);
 	ext_rangeSteps     = lilv_new_uri(world, LV2_PORT_PROPS__rangeSteps);
+	ext_displayPriority= lilv_new_uri(world, LV2_PORT_PROPS__displayPriority);
 	groups_group       = lilv_new_uri(world, LV2_PORT_GROUPS__group);
 	groups_element     = lilv_new_uri(world, LV2_PORT_GROUPS__element);
 	lv2_AudioPort      = lilv_new_uri(world, LILV_URI_AUDIO_PORT);
@@ -3216,7 +3367,9 @@ LV2World::LV2World()
 	rdfs_range         = lilv_new_uri(world, LILV_NS_RDFS "range");
 	rsz_minimumSize    = lilv_new_uri(world, LV2_RESIZE_PORT__minimumSize);
 	time_Position      = lilv_new_uri(world, LV2_TIME__Position);
+	time_beatsPerMin   = lilv_new_uri(world, LV2_TIME__beatsPerMinute);
 	ui_GtkUI           = lilv_new_uri(world, LV2_UI__GtkUI);
+	ui_X11UI           = lilv_new_uri(world, LV2_UI__X11UI);
 	ui_external        = lilv_new_uri(world, "http://lv2plug.in/ns/extensions/ui#external");
 	ui_externalkx      = lilv_new_uri(world, "http://kxstudio.sf.net/ns/lv2ext/external-ui#Widget");
 	units_unit         = lilv_new_uri(world, LV2_UNITS__unit);
@@ -3226,21 +3379,22 @@ LV2World::LV2World()
 	units_db           = lilv_new_uri(world, LV2_UNITS__db);
 	patch_writable     = lilv_new_uri(world, LV2_PATCH__writable);
 	patch_Message      = lilv_new_uri(world, LV2_PATCH__Message);
+	opts_requiredOptions = lilv_new_uri(world, LV2_OPTIONS__requiredOption);
 #ifdef LV2_EXTENDED
 	lv2_noSampleAccurateCtrl    = lilv_new_uri(world, "http://ardour.org/lv2/ext#noSampleAccurateControls"); // deprecated 2016-09-18
+	routing_connectAllOutputs   = lilv_new_uri(world, LV2_ROUTING__connectAllOutputs);
 	auto_can_write_automatation = lilv_new_uri(world, LV2_AUTOMATE_URI__can_write);
 	auto_automation_control     = lilv_new_uri(world, LV2_AUTOMATE_URI__control);
 	auto_automation_controlled  = lilv_new_uri(world, LV2_AUTOMATE_URI__controlled);
 	auto_automation_controller  = lilv_new_uri(world, LV2_AUTOMATE_URI__controller);
+	inline_display_interface    = lilv_new_uri(world, LV2_INLINEDISPLAY__interface);
 	inline_display_in_gui       = lilv_new_uri(world, LV2_INLINEDISPLAY__in_gui);
+	inline_mixer_control        = lilv_new_uri(world, "http://ardour.org/lv2/ext#inlineMixerControl");
 #endif
-#ifdef HAVE_LV2_1_2_0
 	bufz_powerOf2BlockLength = lilv_new_uri(world, LV2_BUF_SIZE__powerOf2BlockLength);
 	bufz_fixedBlockLength    = lilv_new_uri(world, LV2_BUF_SIZE__fixedBlockLength);
 	bufz_nominalBlockLength  = lilv_new_uri(world, "http://lv2plug.in/ns/ext/buf-size#nominalBlockLength");
 	bufz_coarseBlockLength   = lilv_new_uri(world, "http://lv2plug.in/ns/ext/buf-size#coarseBlockLength");
-#endif
-
 }
 
 LV2World::~LV2World()
@@ -3248,20 +3402,23 @@ LV2World::~LV2World()
 	if (!world) {
 		return;
 	}
-#ifdef HAVE_LV2_1_2_0
 	lilv_node_free(bufz_coarseBlockLength);
 	lilv_node_free(bufz_nominalBlockLength);
 	lilv_node_free(bufz_fixedBlockLength);
 	lilv_node_free(bufz_powerOf2BlockLength);
-#endif
 #ifdef LV2_EXTENDED
 	lilv_node_free(lv2_noSampleAccurateCtrl);
+	lilv_node_free(routing_connectAllOutputs);
 	lilv_node_free(auto_can_write_automatation);
 	lilv_node_free(auto_automation_control);
 	lilv_node_free(auto_automation_controlled);
 	lilv_node_free(auto_automation_controller);
+	lilv_node_free(inline_display_interface);
+	lilv_node_free(inline_display_in_gui);
+	lilv_node_free(inline_mixer_control);
 #endif
 	lilv_node_free(patch_Message);
+	lilv_node_free(opts_requiredOptions);
 	lilv_node_free(patch_writable);
 	lilv_node_free(units_hz);
 	lilv_node_free(units_midiNote);
@@ -3270,7 +3427,9 @@ LV2World::~LV2World()
 	lilv_node_free(units_render);
 	lilv_node_free(ui_externalkx);
 	lilv_node_free(ui_external);
+	lilv_node_free(ui_X11UI);
 	lilv_node_free(ui_GtkUI);
+	lilv_node_free(time_beatsPerMin);
 	lilv_node_free(time_Position);
 	lilv_node_free(rsz_minimumSize);
 	lilv_node_free(rdfs_comment);
@@ -3293,6 +3452,7 @@ LV2World::~LV2World()
 	lilv_node_free(lv2_AudioPort);
 	lilv_node_free(groups_group);
 	lilv_node_free(groups_element);
+	lilv_node_free(ext_displayPriority);
 	lilv_node_free(ext_rangeSteps);
 	lilv_node_free(ext_notAutomatic);
 	lilv_node_free(ext_causesArtifacts);
@@ -3373,7 +3533,7 @@ std::vector<Plugin::PresetRecord>
 LV2PluginInfo::get_presets (bool /*user_only*/) const
 {
 	std::vector<Plugin::PresetRecord> p;
-#ifndef NO_PLUGIN_STATE
+
 	const LilvPlugin* lp = NULL;
 	try {
 		PluginPtr plugin;
@@ -3391,49 +3551,33 @@ LV2PluginInfo::get_presets (bool /*user_only*/) const
 	LilvNode* lv2_appliesTo = lilv_new_uri(_world.world, LV2_CORE__appliesTo);
 	LilvNode* pset_Preset   = lilv_new_uri(_world.world, LV2_PRESETS__Preset);
 	LilvNode* rdfs_label    = lilv_new_uri(_world.world, LILV_NS_RDFS "label");
+	LilvNode* rdfs_comment  = lilv_new_uri(_world.world, LILV_NS_RDFS "comment");
 
 	LilvNodes* presets = lilv_plugin_get_related(lp, pset_Preset);
 	LILV_FOREACH(nodes, i, presets) {
 		const LilvNode* preset = lilv_nodes_get(presets, i);
 		lilv_world_load_resource(_world.world, preset);
 		LilvNode* name = get_value(_world.world, preset, rdfs_label);
-		bool userpreset = true; // TODO
+		LilvNode* comment = get_value(_world.world, preset, rdfs_comment);
+		/* TODO properly identify user vs factory presets.
+		 * here's an indirect condition: only factory presets can have comments
+		 */
+		bool userpreset = comment ? false : true;
 		if (name) {
-			p.push_back (Plugin::PresetRecord (lilv_node_as_string(preset), lilv_node_as_string(name), userpreset));
+			p.push_back (Plugin::PresetRecord (lilv_node_as_string(preset), lilv_node_as_string(name), userpreset, comment ? lilv_node_as_string (comment) : ""));
 			lilv_node_free(name);
+		}
+		if (comment) {
+			lilv_node_free(comment);
 		}
 	}
 	lilv_nodes_free(presets);
+	lilv_node_free(rdfs_comment);
 	lilv_node_free(rdfs_label);
 	lilv_node_free(pset_Preset);
 	lilv_node_free(lv2_appliesTo);
-#endif
+
 	return p;
-}
-
-bool
-LV2PluginInfo::in_category (const std::string &c) const
-{
-	// TODO use untranslated lilv_plugin_get_class()
-	// match gtk2_ardour/plugin_selector.cc
-	return category == c;
-}
-
-bool
-LV2PluginInfo::is_instrument () const
-{
-	if (category == "Instrument") {
-		return true;
-	}
-#if 1
-	/* until we make sure that category remains untranslated in the lv2.ttl spec
-	 * and until most instruments also classify themselves as such, there's a 2nd check:
-	 */
-	if (n_inputs.n_midi() > 0 && n_inputs.n_audio() == 0 && n_outputs.n_audio() > 0) {
-		return true;
-	}
-#endif
-	return false;
 }
 
 PluginInfoList*
@@ -3468,20 +3612,66 @@ LV2PluginInfo::discover()
 			continue;
 		}
 
-#ifdef HAVE_LV2_1_2_0
-		LilvNodes *required_features = lilv_plugin_get_required_features (p);
-		if (lilv_nodes_contains (required_features, world.bufz_powerOf2BlockLength) ||
-				lilv_nodes_contains (required_features, world.bufz_fixedBlockLength)
-		   ) {
-			warning << string_compose(
-			    _("Ignoring LV2 plugin \"%1\" because its buffer-size requirements cannot be satisfied."),
-			    lilv_node_as_string(name)) << endmsg;
-			lilv_nodes_free(required_features);
-			lilv_node_free(name);
+		int err = 0;
+		LilvNodes* required_features = lilv_plugin_get_required_features (p);
+		LILV_FOREACH(nodes, i, required_features) {
+				const char* rf = lilv_node_as_uri (lilv_nodes_get (required_features, i));
+				bool ok = false;
+				if (!strcmp (rf, "http://lv2plug.in/ns/lv2core#isLive")) { ok = true; }
+				if (!strcmp (rf, "http://lv2plug.in/ns/ext/instance-access")) { ok = true; }
+				if (!strcmp (rf, "http://lv2plug.in/ns/ext/data-access")) { ok = true; }
+				if (!strcmp (rf, LV2_STATE__makePath)) { ok = true; }
+				if (!strcmp (rf, LV2_STATE__mapPath)) { ok = true; }
+				if (!strcmp (rf, "http://lv2plug.in/ns/ext/state#threadSafeRestore")) { ok = true; }
+				if (!strcmp (rf, LV2_STATE_PREFIX "loadDefaultState")) { ok = true; }
+				if (!strcmp (rf, LV2_LOG__log)) { ok = true; }
+				if (!strcmp (rf, LV2_WORKER__schedule)) { ok = true; }
+				if (!strcmp (rf, LV2_URID_MAP_URI)) { ok = true; }
+				if (!strcmp (rf, LV2_URID_UNMAP_URI)) { ok = true; }
+				if (!strcmp (rf, LV2_BUF_SIZE__boundedBlockLength)) { ok = true; }
+				if (!strcmp (rf, "http://lv2plug.in/ns/ext/buf-size#coarseBlockLength" /*LV2_BUF_SIZE__coarseBlockLength*/)) { ok = true; }
+				if (!strcmp (rf, LV2_OPTIONS__options)) { ok = true; }
+#ifdef LV2_EXTENDED
+				if (!strcmp (rf, LV2_INLINEDISPLAY__queue_draw)) { ok = true; }
+				if (!strcmp (rf, LV2_MIDNAM__update)) { ok = true; }
+				if (!strcmp (rf, LV2_BANKPATCH__notify)) { ok = true; }
+#endif
+				if (!ok) {
+					warning << string_compose (
+							_("Unsupported required LV2 feature: '%1' in '%2'."),
+							rf, lilv_node_as_string(name)) << endmsg;
+					err = 1;
+				}
+		}
+
+		lilv_nodes_free (required_features);
+
+		if (err) {
 			continue;
 		}
-		lilv_nodes_free(required_features);
-#endif
+
+		LilvNodes* required_options = lilv_world_find_nodes (world.world, lilv_plugin_get_uri (p), world.opts_requiredOptions, NULL);
+		if (required_options) {
+			LILV_FOREACH(nodes, i, required_options) {
+				const char* ro = lilv_node_as_uri (lilv_nodes_get (required_options, i));
+				bool ok = false;
+				if (!strcmp (ro, LV2_PARAMETERS__sampleRate)) { ok = true; }
+				if (!strcmp (ro, LV2_BUF_SIZE__minBlockLength)) { ok = true; }
+				if (!strcmp (ro, LV2_BUF_SIZE__maxBlockLength)) { ok = true; }
+				if (!strcmp (ro, LV2_BUF_SIZE__sequenceSize)) { ok = true; }
+				if (!ok) {
+					warning << string_compose (
+							_("Unsupported required LV2 option: '%1' in '%2'."),
+							ro, lilv_node_as_string(name)) << endmsg;
+					err = 1;
+				}
+			}
+		}
+		lilv_nodes_free(required_options);
+
+		if (err) {
+			continue;
+		}
 
 		info->type = LV2;
 
@@ -3492,6 +3682,24 @@ LV2PluginInfo::discover()
 		const LilvPluginClass* pclass = lilv_plugin_get_class(p);
 		const LilvNode*        label  = lilv_plugin_class_get_label(pclass);
 		info->category = lilv_node_as_string(label);
+
+		/* check main category */
+		const char* pcat = lilv_node_as_uri (lilv_plugin_class_get_uri (pclass));
+		assert (pcat);
+		info->_is_instrument = 0 == strcmp (pcat, LV2_CORE__InstrumentPlugin);
+		info->_is_utility    = 0 == strcmp (pcat, LV2_CORE__UtilityPlugin);
+		info->_is_analyzer   = 0 == strcmp (pcat, LV2_CORE__AnalyserPlugin);
+
+		/* iterate over additional classes */
+		LilvPluginClasses* classes  = lilv_plugin_class_get_children (pclass);
+		LILV_FOREACH(plugin_classes, i, classes) {
+			const char* pc = lilv_node_as_uri (lilv_plugin_class_get_uri (lilv_plugin_classes_get (classes, i)));
+			assert (pc);
+			info->_is_instrument |= 0 == strcmp (pc, LV2_CORE__InstrumentPlugin);
+			info->_is_utility    |= 0 == strcmp (pc, LV2_CORE__UtilityPlugin);
+			info->_is_analyzer   |= 0 == strcmp (pc, LV2_CORE__AnalyserPlugin);
+		}
+		lilv_plugin_classes_free (classes);
 
 		LilvNode* author_name = lilv_plugin_get_author_name(p);
 		info->creator = author_name ? string(lilv_node_as_string(author_name)) : "Unknown";
@@ -3551,4 +3759,31 @@ LV2PluginInfo::discover()
 	}
 
 	return plugs;
+}
+
+bool
+LV2PluginInfo::is_instrument () const
+{
+	if (_is_instrument) {
+		return true;
+	}
+	return PluginInfo::is_instrument ();
+}
+
+bool
+LV2PluginInfo::is_utility () const
+{
+	if (_is_utility) {
+		return true;
+	}
+	return PluginInfo::is_utility ();
+}
+
+bool
+LV2PluginInfo::is_analyzer () const
+{
+	if (_is_analyzer) {
+		return true;
+	}
+	return PluginInfo::is_analyzer ();
 }

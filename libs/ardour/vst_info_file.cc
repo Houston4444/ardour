@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2012-2014 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2014-2016 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2017 John Emmas <john@creativepost.co.uk>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 /** @file libs/ardour/vst_info_file.cc
  *  @brief Code to manage info files containing cached information about a plugin.
@@ -25,8 +26,15 @@
 #include <cassert>
 
 #include <sys/types.h>
-#include <fcntl.h>
+
+#ifdef COMPILER_MSVC
+#include <sys/utime.h>
+#else
 #include <unistd.h>
+#include <utime.h>
+#endif
+
+#include <fcntl.h>
 #include <errno.h>
 
 #include <stdlib.h>
@@ -259,14 +267,14 @@ read_string (FILE *fp)
 		return 0;
 	}
 
-	if (strlen (buf) < MAX_STRING_LEN) {
-		if (strlen (buf)) {
-			buf[strlen (buf)-1] = 0;
-		}
+	if (strlen (buf)) {
+		/* strip lash char here: '\n',
+		 * since VST-params cannot be longer than 127 chars.
+		 */
+		buf[strlen (buf)-1] = 0;
 		return strdup (buf);
-	} else {
-		return 0;
 	}
+	return 0;
 }
 
 /** Read an integer value from a line in fp into n,
@@ -305,10 +313,11 @@ vstfx_load_info_block (FILE* fp, VSTInfo *info)
 		info->wantMidi = 1;
 	}
 
-	// TODO read isInstrument -- effFlagsIsSynth
-	info->isInstrument = info->numInputs == 0 && info->numOutputs > 0 && 1 == (info->wantMidi & 1);
-	if (!strcmp (info->Category, "Synth")) {
-		info->isInstrument = true;
+	info->isInstrument = (info->wantMidi & 4) ? 1 : 0;
+
+	info->isInstrument |= info->numInputs == 0 && info->numOutputs > 0 && 1 == (info->wantMidi & 1);
+	if (!strcmp (info->Category, "Instrument")) {
+		info->isInstrument = 1;
 	}
 
 	if ((info->numParams) == 0) {
@@ -389,10 +398,9 @@ vstfx_write_info_block (FILE* fp, VSTInfo *info)
 	fprintf (fp, "%d\n", info->numInputs);
 	fprintf (fp, "%d\n", info->numOutputs);
 	fprintf (fp, "%d\n", info->numParams);
-	fprintf (fp, "%d\n", info->wantMidi);
+	fprintf (fp, "%d\n", info->wantMidi | (info->isInstrument ? 4 : 0));
 	fprintf (fp, "%d\n", info->hasEditor);
 	fprintf (fp, "%d\n", info->canProcessReplacing);
-	// TODO write isInstrument in a backwards compat way
 
 	for (int i = 0; i < info->numParams; i++) {
 		fprintf (fp, "%s\n", info->ParamNames[i]);
@@ -523,17 +531,14 @@ bool vstfx_midi_input (VSTState* vstfx)
 {
 	AEffect* plugin = vstfx->plugin;
 
-	int const vst_version = plugin->dispatcher (plugin, effGetVstVersion, 0, 0, 0, 0.0f);
+	/* should we send it VST events (i.e. MIDI) */
 
-	if (vst_version >= 2) {
-		/* should we send it VST events (i.e. MIDI) */
-
-		if ((plugin->flags & effFlagsIsSynth)
-				|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstEvents"), 0.0f) > 0)
-				|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstMidiEvents"), 0.0f) > 0)
-				) {
-			return true;
-		}
+	if ((plugin->flags & effFlagsIsSynth)
+			|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstEvents"), 0.0f) > 0)
+			|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstMidiEvent"), 0.0f) > 0)
+			|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstMidiEvents"), 0.0f) > 0)
+		 ) {
+		return true;
 	}
 
 	return false;
@@ -551,6 +556,7 @@ bool vstfx_midi_output (VSTState* vstfx)
 
 		if (   (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("sendVstEvents"), 0.0f) > 0)
 		    || (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("sendVstMidiEvent"), 0.0f) > 0)
+		    || (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("sendVstMidiEvents"), 0.0f) > 0)
 		   ) {
 			return true;
 		}
@@ -574,7 +580,8 @@ simple_master_callback (AEffect *, int32_t opcode, int32_t, intptr_t, void *ptr,
 		"receiveVstMidiEvent",
 		"supportShell",
 		"shellCategory",
-		"shellCategorycurID"
+		"shellCategorycurID",
+		"sizeWindow"
 	};
 	const int vstfx_can_do_string_count = 9;
 
@@ -995,25 +1002,24 @@ vstfx_get_info (const char* dllpath, enum ARDOUR::PluginType type, enum VSTScanM
 		ARDOUR::SystemExec scanner (scanner_bin_path, argp);
 		PBD::ScopedConnectionList cons;
 		scanner.ReadStdout.connect_same_thread (cons, boost::bind (&parse_scanner_output, _1 ,_2));
-		if (scanner.start (2 /* send stderr&stdout via signal */)) {
+		if (scanner.start (ARDOUR::SystemExec::MergeWithStdin)) {
 			PBD::error << string_compose (_("Cannot launch VST scanner app '%1': %2"), scanner_bin_path, strerror (errno)) << endmsg;
 			close_error_log ();
 			return infos;
 		} else {
 			int timeout = PLUGIN_SCAN_TIMEOUT;
 			bool no_timeout = (timeout <= 0);
-			ARDOUR::PluginScanTimeout (timeout);
 			while (scanner.is_running () && (no_timeout || timeout > 0)) {
-				if (!no_timeout && !ARDOUR::PluginManager::instance ().no_timeout ()) {
-					if (timeout%5 == 0) {
-						ARDOUR::PluginScanTimeout (timeout);
-					}
-					--timeout;
+				if (!no_timeout && ARDOUR::PluginManager::instance().no_timeout()) {
+					no_timeout = true;
+					timeout = -1;
 				}
-				ARDOUR::GUIIdle ();
+
+				ARDOUR::PluginScanTimeout (timeout);
+				--timeout;
 				Glib::usleep (100000);
 
-				if (ARDOUR::PluginManager::instance ().cancelled ()) {
+				if (ARDOUR::PluginManager::instance ().cancelled () /*|| (!no_timeout && timeout == 0*)*/) {
 					// remove info file (might be incomplete)
 					vstfx_remove_infofile (dllpath);
 					// remove temporary blacklist file (scan incomplete)
@@ -1078,6 +1084,19 @@ vstfx_get_info (const char* dllpath, enum ARDOUR::PluginType type, enum VSTScanM
 	} else {
 		vstfx_write_info_file (infofile, infos);
 		fclose (infofile);
+
+		/* In some cases the .dll may have a modification time in the future,
+		 * (e.g. unzip a VST plugin: .zip files don't include timezones)
+		 */
+		string const fsipath = vstfx_infofile_path (dllpath);
+		GStatBuf dllstat;
+		GStatBuf fsistat;
+		if (g_stat (dllpath, &dllstat) == 0 && g_stat (fsipath.c_str (), &fsistat) == 0) {
+			struct utimbuf utb;
+			utb.actime = fsistat.st_atime;
+			utb.modtime = std::max (dllstat.st_mtime, fsistat.st_mtime);
+			g_utime (fsipath.c_str (), &utb);
+		}
 	}
 	return infos;
 }

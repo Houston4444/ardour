@@ -1,22 +1,27 @@
 /*
-    Copyright (C) 1999-2005 Paul Barton-Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-    $Id$
-*/
+ * Copyright (C) 1999-2019 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2006-2007 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2007-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2011 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cmath>
 #include <fcntl.h>
@@ -31,6 +36,7 @@
 #include "pbd/error.h"
 #include "pbd/touchable.h"
 #include "pbd/failed_constructor.h"
+#include "pbd/localtime_r.h"
 #include "pbd/pthread_utils.h"
 #include "pbd/replace_all.h"
 
@@ -75,7 +81,10 @@ UI::UI (string application_name, string thread_name, int *argc, char ***argv)
 {
 	theMain = new Main (argc, argv);
 
-	pthread_set_name ("gui");
+	char buf[18];
+	/* pthread public name has a 16 char limit */
+	snprintf (buf, sizeof (buf), "%.11sGUI", PROGRAM_NAME);
+	pthread_set_name (buf);
 
 	_active = false;
 
@@ -109,7 +118,7 @@ UI::UI (string application_name, string thread_name, int *argc, char ***argv)
 	errors = new TextViewer (800,600);
 	errors->text().set_editable (false);
 	errors->text().set_name ("ErrorText");
-	errors->signal_unmap().connect (sigc::bind (sigc::ptr_fun (&ActionManager::uncheck_toggleaction), X_("<Actions>/Editor/toggle-log-window")));
+	errors->signal_unmap().connect (sigc::bind (sigc::ptr_fun (&ActionManager::uncheck_toggleaction), X_("Editor/toggle-log-window")));
 
 	Glib::set_application_name (application_name);
 
@@ -153,6 +162,7 @@ UI::load_rcfile (string path, bool themechange)
 	static Glib::RefPtr<Style>* error_style   = 0;
 	static Glib::RefPtr<Style>* warning_style = 0;
 	static Glib::RefPtr<Style>* info_style    = 0;
+	static Glib::RefPtr<Style>* debug_style    = 0;
 
 	if (path.length() == 0) {
 		return -1;
@@ -187,6 +197,7 @@ UI::load_rcfile (string path, bool themechange)
 	Label error_widget;
 	Label warning_widget;
 	Label info_widget;
+	Label debug_widget;
 	RefPtr<Gtk::Style> style;
 	RefPtr<TextBuffer> buffer (errors->text().get_buffer());
 
@@ -194,15 +205,18 @@ UI::load_rcfile (string path, bool themechange)
 	box.pack_start (error_widget);
 	box.pack_start (warning_widget);
 	box.pack_start (info_widget);
+	box.pack_start (debug_widget);
 
-	error_ptag = buffer->create_tag();
-	error_mtag = buffer->create_tag();
 	fatal_ptag = buffer->create_tag();
 	fatal_mtag = buffer->create_tag();
+	error_ptag = buffer->create_tag();
+	error_mtag = buffer->create_tag();
 	warning_ptag = buffer->create_tag();
 	warning_mtag = buffer->create_tag();
 	info_ptag = buffer->create_tag();
 	info_mtag = buffer->create_tag();
+	debug_ptag = buffer->create_tag();
+	debug_mtag = buffer->create_tag();
 
 	fatal_widget.set_name ("FatalMessage");
 	delete fatal_style;
@@ -261,15 +275,27 @@ UI::load_rcfile (string path, bool themechange)
 	info_mtag->property_foreground_gdk().set_value((*info_style)->get_fg(STATE_NORMAL));
 	info_mtag->property_background_gdk().set_value((*info_style)->get_bg(STATE_NORMAL));
 
+	debug_widget.set_name ("DebugMessage");
+	delete debug_style;
+	debug_style = new Glib::RefPtr<Style> (Glib::wrap (gtk_rc_get_style (reinterpret_cast<GtkWidget*> (debug_widget.gobj())), true));
+
+	debug_ptag->property_font_desc().set_value((*debug_style)->get_font());
+	debug_ptag->property_foreground_gdk().set_value((*debug_style)->get_fg(STATE_ACTIVE));
+	debug_ptag->property_background_gdk().set_value((*debug_style)->get_bg(STATE_ACTIVE));
+	debug_mtag->property_font_desc().set_value((*debug_style)->get_font());
+	debug_mtag->property_foreground_gdk().set_value((*debug_style)->get_fg(STATE_NORMAL));
+	debug_mtag->property_background_gdk().set_value((*debug_style)->get_bg(STATE_NORMAL));
+
 	return 0;
 }
 
 void
 UI::run (Receiver &old_receiver)
 {
-	_receiver.listen_to (error);
+	_receiver.listen_to (debug);
 	_receiver.listen_to (info);
 	_receiver.listen_to (warning);
+	_receiver.listen_to (error);
 	_receiver.listen_to (fatal);
 
 	/* stop the old receiver (text/console) once we hit the first idle */
@@ -483,7 +509,14 @@ UI::do_request (UIRequest* req)
 
 	} else if (req->type == SetTip) {
 
-		gtk_widget_set_tooltip_markup (req->widget->gobj(), req->msg);
+		gchar* old = gtk_widget_get_tooltip_markup (req->widget->gobj());
+		if (
+				(old && req->msg && strcmp (old, req->msg))
+				||
+				((old == NULL) != (req->msg == NULL || req->msg[0] == '\0'))
+			 ) {
+			gtk_widget_set_tooltip_markup (req->widget->gobj(), req->msg);
+		}
 
 	} else {
 
@@ -498,12 +531,42 @@ UI::do_request (UIRequest* req)
   ======================================================================*/
 
 void
-UI::dump_errors (std::ostream& ostr)
+UI::dump_errors (std::ostream& ostr, size_t limit)
 {
 	Glib::Threads::Mutex::Lock lm (error_lock);
-	ostr << endl << X_("Errors/Messages:") << endl;
-	for (list<string>::const_iterator i = error_stack.begin(); i != error_stack.end(); ++i) {
-		ostr << *i << endl;
+	bool first = true;
+
+	if (limit > 0) {
+		/* reverse listing, Errors only */
+		for (list<string>::reverse_iterator i = error_stack.rbegin(); i != error_stack.rend(); ++i) {
+			if ((*i).substr (0, 9) == X_("WARNING: ") || (*i).substr (0, 6) == X_("INFO: ")) {
+				continue;
+			}
+			if (first) {
+				first = false;
+			}
+			ostr << *i << endl;
+			if (--limit == 0) {
+				ostr << "..." << endl;
+				break;
+			}
+		}
+	}
+
+	if (first) {
+		for (list<string>::const_iterator i = error_stack.begin(); i != error_stack.end(); ++i) {
+			if (first) {
+				ostr << endl << X_("Log Messages:") << endl;
+				first = false;
+			}
+			ostr << *i << endl;
+			if (limit > 0) {
+				if (--limit == 0) {
+					ostr << "..." << endl;
+					break;
+				}
+			}
+		}
 	}
 	ostr << endl;
 }
@@ -525,6 +588,9 @@ UI::receive (Transmitter::Channel chn, const char *str)
 			break;
 		case Transmitter::Info:
 			error_stack.push_back (string (X_("INFO: ")) + str);
+			break;
+		case Transmitter::Debug:
+			error_stack.push_back (string (X_("Debug: ")) + str);
 			break;
 		case Transmitter::Throw:
 			error_stack.push_back (string (X_("THROW: ")) + str);
@@ -572,22 +638,28 @@ UI::process_error_message (Transmitter::Channel chn, const char *str)
 		mtag = error_mtag;
 		prefix_len = 9;
 		break;
-	case Transmitter::Info:
-		prefix = "[INFO]: ";
-		ptag = info_ptag;
-		mtag = info_mtag;
-		prefix_len = 8;
-		break;
 	case Transmitter::Warning:
 		prefix = "[WARNING]: ";
 		ptag = warning_ptag;
 		mtag = warning_mtag;
 		prefix_len = 11;
 		break;
+	case Transmitter::Info:
+		prefix = "[INFO]: ";
+		ptag = info_ptag;
+		mtag = info_mtag;
+		prefix_len = 8;
+		break;
+	case Transmitter::Debug:
+		prefix = "[DEBUG]: ";
+		ptag = debug_ptag;
+		mtag = debug_mtag;
+		prefix_len = 9;
+		break;
 	default:
 		/* no choice but to use text/console output here */
 		cerr << "programmer error in UI::check_error_messages (channel = " << chn << ")\n";
-		::exit (1);
+		::exit (EXIT_FAILURE);
 	}
 
 	errors->text().get_buffer()->begin_user_action();
@@ -610,27 +682,14 @@ UI::process_error_message (Transmitter::Channel chn, const char *str)
 void
 UI::show_errors ()
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("toggle-log-window"));
-	if (!act) {
-		return;
-	}
-
-	Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic (act);
-        if (tact) {
-                tact->set_active ();
-        }
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("toggle-log-window"));
+	tact->set_active ();
 }
 
 void
 UI::toggle_errors ()
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("toggle-log-window"));
-	if (!act) {
-		return;
-	}
-
-	Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic (act);
-
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("toggle-log-window"));
 	if (tact->get_active()) {
 		errors->set_position (WIN_POS_MOUSE);
 		errors->show ();
@@ -643,7 +702,9 @@ void
 UI::display_message (const char *prefix, gint /*prefix_len*/, RefPtr<TextBuffer::Tag> ptag, RefPtr<TextBuffer::Tag> mtag, const char *msg)
 {
 	RefPtr<TextBuffer> buffer (errors->text().get_buffer());
+	Glib::DateTime tm (g_date_time_new_now_local ());
 
+	buffer->insert_with_tag(buffer->end(), tm.format ("%FT%H:%M:%S "), ptag);
 	buffer->insert_with_tag(buffer->end(), prefix, ptag);
 	buffer->insert_with_tag(buffer->end(), msg, mtag);
 	buffer->insert_with_tag(buffer->end(), "\n", mtag);

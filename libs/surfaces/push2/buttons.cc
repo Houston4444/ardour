@@ -1,20 +1,20 @@
 /*
-  Copyright (C) 2016 Paul Davis
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2016-2018 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <algorithm>
 
@@ -37,10 +37,10 @@ Push2::build_maps ()
 {
 	/* Pads */
 
-	Pad* pad;
+	boost::shared_ptr<Pad> pad;
 
 #define MAKE_PAD(x,y,nn) \
-	pad = new Pad ((x), (y), (nn)); \
+	pad.reset (new Pad ((x), (y), (nn))); \
 	nn_pad_map.insert (std::make_pair (pad->extra(), pad));
 
 	MAKE_PAD (0, 0, 92);
@@ -110,18 +110,18 @@ Push2::build_maps ()
 
 	/* Now color buttons */
 
-	Button *button;
+	boost::shared_ptr<Button> button;
 
 #define MAKE_COLOR_BUTTON(i,cc) \
-	button = new ColorButton ((i), (cc)); \
+	button.reset (new ColorButton ((i), (cc))); \
 	cc_button_map.insert (std::make_pair (button->controller_number(), button)); \
 	id_button_map.insert (std::make_pair (button->id, button));
 #define MAKE_COLOR_BUTTON_PRESS(i,cc,p)\
-	button = new ColorButton ((i), (cc), (p)); \
+	button.reset (new ColorButton ((i), (cc), (p))); \
 	cc_button_map.insert (std::make_pair (button->controller_number(), button)); \
 	id_button_map.insert (std::make_pair (button->id, button))
 #define MAKE_COLOR_BUTTON_PRESS_RELEASE_LONG(i,cc,p,r,l)                      \
-	button = new ColorButton ((i), (cc), (p), (r), (l)); \
+	button.reset (new ColorButton ((i), (cc), (p), (r), (l))); \
 	cc_button_map.insert (std::make_pair (button->controller_number(), button)); \
 	id_button_map.insert (std::make_pair (button->id, button))
 
@@ -158,19 +158,19 @@ Push2::build_maps ()
 	MAKE_COLOR_BUTTON_PRESS (Play, 85, &Push2::button_play);
 
 #define MAKE_WHITE_BUTTON(i,cc)\
-	button = new WhiteButton ((i), (cc)); \
+	button.reset (new WhiteButton ((i), (cc))); \
 	cc_button_map.insert (std::make_pair (button->controller_number(), button)); \
 	id_button_map.insert (std::make_pair (button->id, button))
 #define MAKE_WHITE_BUTTON_PRESS(i,cc,p)\
-	button = new WhiteButton ((i), (cc), (p)); \
+	button.reset (new WhiteButton ((i), (cc), (p))); \
 	cc_button_map.insert (std::make_pair (button->controller_number(), button)); \
 	id_button_map.insert (std::make_pair (button->id, button))
 #define MAKE_WHITE_BUTTON_PRESS_RELEASE(i,cc,p,r)                                \
-	button = new WhiteButton ((i), (cc), (p), (r)); \
+	button.reset (new WhiteButton ((i), (cc), (p), (r))); \
 	cc_button_map.insert (std::make_pair (button->controller_number(), button)); \
 	id_button_map.insert (std::make_pair (button->id, button))
 #define MAKE_WHITE_BUTTON_PRESS_RELEASE_LONG(i,cc,p,r,l)                      \
-	button = new WhiteButton ((i), (cc), (p), (r), (l)); \
+	button.reset (new WhiteButton ((i), (cc), (p), (r), (l))); \
 	cc_button_map.insert (std::make_pair (button->controller_number(), button)); \
 	id_button_map.insert (std::make_pair (button->id, button))
 
@@ -615,7 +615,7 @@ Push2::button_select_press ()
 {
 	cerr << "start select\n";
 	_modifier_state = ModifierState (_modifier_state | ModSelect);
-	Button* b = id_button_map[Select];
+	boost::shared_ptr<Button> b = id_button_map[Select];
 	b->set_color (Push2::LED::White);
 	b->set_state (Push2::LED::Blinking16th);
 	write (b->state_msg());
@@ -629,7 +629,7 @@ Push2::button_select_release ()
 	if (_modifier_state & ModSelect) {
 		cerr << "end select\n";
 		_modifier_state = ModifierState (_modifier_state & ~(ModSelect));
-		Button* b = id_button_map[Select];
+		boost::shared_ptr<Button> b = id_button_map[Select];
 		b->timeout_connection.disconnect ();
 		b->set_color (Push2::LED::White);
 		b->set_state (Push2::LED::OneShot24th);
@@ -650,7 +650,7 @@ Push2::button_long_press_timeout (ButtonID id)
 {
 	if (buttons_down.find (id) != buttons_down.end()) {
 		DEBUG_TRACE (DEBUG::Push2, string_compose ("long press timeout for %1, invoking method\n", id));
-		Button* button = id_button_map[id];
+		boost::shared_ptr<Button> button = id_button_map[id];
 		(this->*button->long_press_method) ();
 	} else {
 		DEBUG_TRACE (DEBUG::Push2, string_compose ("long press timeout for %1, expired/cancelled\n", id));
@@ -666,10 +666,11 @@ Push2::button_long_press_timeout (ButtonID id)
 }
 
 void
-Push2::start_press_timeout (Button& button, ButtonID id)
+Push2::start_press_timeout (boost::shared_ptr<Button> button, ButtonID id)
 {
+	assert (button);
 	Glib::RefPtr<Glib::TimeoutSource> timeout = Glib::TimeoutSource::create (500); // milliseconds
-	button.timeout_connection = timeout->connect (sigc::bind (sigc::mem_fun (*this, &Push2::button_long_press_timeout), id));
+	button->timeout_connection = timeout->connect (sigc::bind (sigc::mem_fun (*this, &Push2::button_long_press_timeout), id));
 	timeout->attach (main_loop()->get_context());
 }
 
@@ -681,7 +682,7 @@ Push2::button_octave_down ()
 		return;
 	}
 
-	int os = (max (-4, octave_shift - 1));
+	int os = (std::max (-4, octave_shift - 1));
 	if (os != octave_shift) {
 		octave_shift = os;
 	}
@@ -695,7 +696,7 @@ Push2::button_octave_up ()
 		return;
 	}
 
-	int os = (min (4, octave_shift + 1));
+	int os = (std::min (4, octave_shift + 1));
 	if (os != octave_shift) {
 		octave_shift = os;
 	}
@@ -745,7 +746,7 @@ Push2::button_master ()
 	}
 
 	if (_current_layout != track_mix_layout) {
-		ControlProtocol::SetStripableSelection (main_out);
+		ControlProtocol::set_stripable_selection (main_out);
 		set_current_layout (track_mix_layout);
 	} else {
 		TrackMixLayout* tml = dynamic_cast<TrackMixLayout*> (_current_layout);
@@ -753,7 +754,7 @@ Push2::button_master ()
 			/* back to previous layout */
 			set_current_layout (_previous_layout);
 		} else {
-			ControlProtocol::SetStripableSelection (main_out);
+			ControlProtocol::set_stripable_selection (main_out);
 		}
 	}
 }

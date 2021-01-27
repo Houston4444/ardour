@@ -1,27 +1,38 @@
 /*
-    Copyright (C) 2005-2006 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2006 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2006 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2007-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2012-2017 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2012-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013-2015 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2013 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2019-2018 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "gtk2ardour-config.h"
 #endif
 
-#include "pbd/i18n.h"
+#ifdef PLATFORM_WINDOWS
+#include <windows.h>
+#endif
 
 #include <map>
 #include <cerrno>
@@ -30,22 +41,24 @@
 #include <unistd.h>
 #include <limits.h>
 
+#include <glib.h>
+#include "pbd/gstdio_compat.h"
+#include <glibmm/fileutils.h>
+
 #include <gtkmm/box.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/stock.h>
 
-#include "pbd/gstdio_compat.h"
-#include <glibmm/fileutils.h>
-
 #include "pbd/tokenizer.h"
 #include "pbd/enumwriter.h"
+#include "pbd/file_utils.h"
 #include "pbd/pthread_utils.h"
 #include "pbd/string_convert.h"
 #include "pbd/xml++.h"
 
 #include <gtkmm2ext/utils.h>
 
-#include "evoral/SMF.hpp"
+#include "evoral/SMF.h"
 
 #include "ardour/audio_library.h"
 #include "ardour/auditioner.h"
@@ -72,6 +85,8 @@
 #include "ui_config.h"
 
 #include "sfdb_freesound_mootcher.h"
+
+#include "pbd/i18n.h"
 
 using namespace ARDOUR;
 using namespace PBD;
@@ -108,10 +123,8 @@ string2importmode (string const & str)
 		return ImportAsTrack;
 	} else if (str == _("to selected tracks")) {
 		return ImportToTrack;
-	} else if (str == _("to region list")) {
+	} else if (str == _("to source list")) {
 		return ImportAsRegion;
-	} else if (str == _("as new tape tracks")) {
-		return ImportAsTapeTrack;
 	}
 
 	warning << string_compose (_("programming error: unknown import mode string %1"), str) << endmsg;
@@ -128,9 +141,7 @@ importmode2string (ImportMode mode)
 	case ImportToTrack:
 		return _("to selected tracks");
 	case ImportAsRegion:
-		return _("to region list");
-	case ImportAsTapeTrack:
-		return _("as new tape tracks");
+		return _("to source list");
 	}
 	abort(); /*NOTREACHED*/
 	return _("as new tracks");
@@ -199,7 +210,7 @@ SoundFileBox::SoundFileBox (bool /*persistent*/)
 	table.attach (timecode_clock, 1, 2, 5, 6, FILL, FILL);
 	table.attach (tempomap_value, 1, 2, 6, 7, FILL, FILL);
 
-	length_clock.set_mode (ARDOUR_UI::instance()->secondary_clock->mode());
+	length_clock.set_mode (ARDOUR_UI::instance()->primary_clock->mode());
 	timecode_clock.set_mode (AudioClock::Timecode);
 
 	main_box.pack_start (table, false, false);
@@ -338,7 +349,7 @@ SoundFileBox::setup_labels (const string& filename)
 					channels_value.set_text (to_string(ms->num_tracks()));
 				}
 			}
-			length_clock.set (ms->length(ms->timeline_position()));
+			length_clock.set (ms->length(ms->natural_position()));
 			switch (ms->num_tempos()) {
 			case 0:
 				tempomap_value.set_text (_("No tempo data"));
@@ -493,7 +504,7 @@ SoundFileBox::audition ()
 		PropertyList plist;
 
 		plist.add (ARDOUR::Properties::start, 0);
-		plist.add (ARDOUR::Properties::length, ms->length(ms->timeline_position()));
+		plist.add (ARDOUR::Properties::length, ms->length(ms->natural_position()));
 		plist.add (ARDOUR::Properties::name, rname);
 		plist.add (ARDOUR::Properties::layer, 0);
 
@@ -542,7 +553,7 @@ SoundFileBox::audition ()
 		PropertyList plist;
 
 		plist.add (ARDOUR::Properties::start, 0);
-		plist.add (ARDOUR::Properties::length, srclist[0]->length(srclist[0]->timeline_position()));
+		plist.add (ARDOUR::Properties::length, srclist[0]->length(srclist[0]->natural_position()));
 		plist.add (ARDOUR::Properties::name, rname);
 		plist.add (ARDOUR::Properties::layer, 0);
 
@@ -855,6 +866,7 @@ void
 SoundFileBrowser::on_show ()
 {
 	ArdourWindow::on_show ();
+	reset_options ();
 	start_metering ();
 }
 
@@ -1195,7 +1207,7 @@ SoundFileBrowser::freesound_search()
 void
 SoundFileBrowser::handle_freesound_results(std::string theString) {
 	XMLTree doc;
-	doc.read_buffer( theString );
+	doc.read_buffer (theString.c_str());
 	XMLNode *root = doc.root();
 
 	if (!root) {
@@ -1410,15 +1422,12 @@ SoundFileOmega::reset_options ()
 		   to do embedding (or if we are importing a MIDI file).
 		*/
 
-		if (UIConfiguration::instance().get_only_copy_imported_files()) {
-			copy_files_btn.set_sensitive (false);
-		} else {
-			copy_files_btn.set_sensitive (false);
-		}
+		copy_files_btn.set_sensitive (false);
 	}
 
 	bool same_size;
 	bool src_needed;
+	bool must_copy;
 	bool selection_includes_multichannel;
 	bool selection_can_be_embedded_with_links = check_link_status (_session, paths);
 	ImportMode mode;
@@ -1430,7 +1439,7 @@ SoundFileOmega::reset_options ()
 	}
 	bool const have_a_midi_file = (i != paths.end ());
 
-	if (check_info (paths, same_size, src_needed, selection_includes_multichannel)) {
+	if (check_info (paths, same_size, src_needed, selection_includes_multichannel, must_copy)) {
 		Glib::signal_idle().connect (sigc::mem_fun (*this, &SoundFileOmega::bad_file_message));
 		return false;
 	}
@@ -1486,9 +1495,6 @@ SoundFileOmega::reset_options ()
 
 	action_strings.push_back (importmode2string (ImportAsTrack));
 	action_strings.push_back (importmode2string (ImportAsRegion));
-	if (!Profile->get_mixbus()) {
-		action_strings.push_back (importmode2string (ImportAsTapeTrack));
-	}
 
 	existing_choice = action_combo.get_active_text();
 
@@ -1522,21 +1528,19 @@ SoundFileOmega::reset_options ()
 
 	vector<string> channel_strings;
 
-	if (mode == ImportAsTrack || mode == ImportAsTapeTrack || mode == ImportToTrack) {
+	if (mode == ImportAsTrack || mode == ImportToTrack) {
+
+		channel_strings.push_back (_("one track per file"));
 
 		if (selection_includes_multichannel) {
 			channel_strings.push_back (_("one track per channel"));
 		}
 
-		channel_strings.push_back (_("one track per file"));
-
 		if (paths.size() > 1) {
 			/* tape tracks are a single region per track, so we cannot
 			   sequence multiple files.
 			*/
-			if (mode != ImportAsTapeTrack) {
-				channel_strings.push_back (_("sequence files"));
-			}
+			channel_strings.push_back (_("sequence files"));
 			if (same_size) {
 				channel_strings.push_back (_("all files in one track"));
 				channel_strings.push_back (_("merge files"));
@@ -1591,30 +1595,15 @@ SoundFileOmega::reset_options ()
 
 	/* We must copy MIDI files or those from Freesound
 	 * or any file if we are under nsm control */
-	bool const must_copy = _session->get_nsm_state() || have_a_midi_file || notebook.get_current_page() == 2;
+	must_copy |= _session->get_nsm_state() || have_a_midi_file || notebook.get_current_page() == 2;
 
-	if (UIConfiguration::instance().get_only_copy_imported_files()) {
-
-		if (selection_can_be_embedded_with_links && !must_copy) {
-			copy_files_btn.set_sensitive (true);
-		} else {
-			if (must_copy) {
-				copy_files_btn.set_active (true);
-			}
-			copy_files_btn.set_sensitive (false);
-		}
-
-	}  else {
-
-		if (must_copy) {
-			copy_files_btn.set_active (true);
-		}
-		copy_files_btn.set_sensitive (!must_copy);
+	if (must_copy || !selection_can_be_embedded_with_links) {
+		copy_files_btn.set_active (true);
 	}
+	copy_files_btn.set_sensitive (!must_copy && selection_can_be_embedded_with_links);
 
 	return true;
 }
-
 
 bool
 SoundFileOmega::bad_file_message()
@@ -1633,7 +1622,7 @@ SoundFileOmega::bad_file_message()
 }
 
 bool
-SoundFileOmega::check_info (const vector<string>& paths, bool& same_size, bool& src_needed, bool& multichannel)
+SoundFileOmega::check_info (const vector<string>& paths, bool& same_size, bool& src_needed, bool& multichannel, bool& must_copy)
 {
 	SoundFileInfo info;
 	samplepos_t sz = 0;
@@ -1643,6 +1632,7 @@ SoundFileOmega::check_info (const vector<string>& paths, bool& same_size, bool& 
 	same_size = true;
 	src_needed = false;
 	multichannel = false;
+	must_copy = false;
 
 	for (vector<string>::const_iterator i = paths.begin(); i != paths.end(); ++i) {
 
@@ -1660,6 +1650,9 @@ SoundFileOmega::check_info (const vector<string>& paths, bool& same_size, bool& 
 
 			if (info.samplerate != _session->sample_rate()) {
 				src_needed = true;
+			}
+			if (!info.seekable) {
+				must_copy = true;
 			}
 
 		} else if (SMFSource::valid_midi_file (*i)) {
@@ -1695,11 +1688,7 @@ SoundFileOmega::check_info (const vector<string>& paths, bool& same_size, bool& 
 bool
 SoundFileOmega::check_link_status (const Session* s, const vector<string>& paths)
 {
-#ifdef PLATFORM_WINDOWS
-	return false;
-#else
 	std::string tmpdir(Glib::build_filename (s->session_directory().sound_path(), "linktest"));
-	bool ret = false;
 
 	if (g_mkdir (tmpdir.c_str(), 0744)) {
 		if (errno != EEXIST) {
@@ -1710,24 +1699,17 @@ SoundFileOmega::check_link_status (const Session* s, const vector<string>& paths
 	for (vector<string>::const_iterator i = paths.begin(); i != paths.end(); ++i) {
 
 		char tmpc[PATH_MAX+1];
-
 		snprintf (tmpc, sizeof(tmpc), "%s/%s", tmpdir.c_str(), Glib::path_get_basename (*i).c_str());
 
 		/* can we link ? */
-
-		if (link ((*i).c_str(), tmpc)) {
-			goto out;
+		if (PBD::hard_link (/*existing file*/(*i).c_str(), tmpc)) {
+			::g_unlink (tmpc);
 		}
-
-		::g_unlink (tmpc);
 	}
 
-	ret = true;
-
-  out:
 	g_rmdir (tmpdir.c_str());
-	return ret;
-#endif
+
+	return true;
 }
 
 SoundFileChooser::SoundFileChooser (string title, ARDOUR::Session* s)
@@ -1796,6 +1778,9 @@ SoundFileOmega::SoundFileOmega (string title, ARDOUR::Session* s,
 	set_popdown_strings (where_combo, str);
 	where_combo.set_active_text (str.back());
 	where_combo.signal_changed().connect (sigc::mem_fun (*this, &SoundFileOmega::where_combo_changed));
+
+	instrument_combo_changed();
+	instrument_combo.signal_changed().connect(sigc::mem_fun(*this, &SoundFileOmega::instrument_combo_changed) );
 
 	Label* l = manage (new Label);
 	l->set_markup (_("<b>Add files ...</b>"));
@@ -1909,7 +1894,6 @@ SoundFileOmega::SoundFileOmega (string title, ARDOUR::Session* s,
 	str.push_back (importmode2string (ImportAsTrack));
 	str.push_back (importmode2string (ImportToTrack));
 	str.push_back (importmode2string (ImportAsRegion));
-	str.push_back (importmode2string (ImportAsTapeTrack));
 	set_popdown_strings (action_combo, str);
 	action_combo.set_active_text (importmode2string(mode_hint));
 
@@ -1983,6 +1967,12 @@ SoundFileOmega::where_combo_changed()
 	preview.set_import_position(get_position());
 }
 
+void
+SoundFileOmega::instrument_combo_changed()
+{
+	_session->the_auditioner()->set_audition_synth_info( instrument_combo.selected_instrument() );
+}
+
 MidiTrackNameSource
 SoundFileOmega::get_midi_track_name_source () const
 {
@@ -2028,13 +2018,15 @@ SoundFileOmega::reset (uint32_t selected_audio_tracks, uint32_t selected_midi_tr
 		chooser.set_filter (audio_and_midi_filter);
 	}
 
-	reset_options ();
+	if (is_visible()) {
+		reset_options ();
+	}
 }
 
 void
 SoundFileOmega::file_selection_changed ()
 {
-	if (resetting_ourselves) {
+	if (resetting_ourselves || !is_visible ()) {
 		return;
 	}
 
@@ -2054,7 +2046,7 @@ SoundFileOmega::do_something (int action)
 {
 	SoundFileBrowser::do_something (action);
 
-	if (action == RESPONSE_CLOSE) {
+	if (action == RESPONSE_CLOSE || !ARDOUR_UI_UTILS::engine_is_running ()) {
 		hide ();
 		return;
 	}

@@ -1,19 +1,19 @@
 /*
- * Copyright (C) 2016 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2018 Robin Gareus <robin@gareus.org>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #ifndef __gtk_ardour_http_h__
@@ -40,10 +40,10 @@ class HttpGet {
 		std::map<std::string, std::string> h;
 	};
 
-	char* get (const char* url);
+	char* get (const char* url, bool with_error_logging = false);
 
-	std::string get (const std::string& url) {
-		char *rv = get (url.c_str ());
+	std::string get (const std::string& url, bool with_error_logging = false) {
+		char *rv = get (url.c_str (), with_error_logging);
 		return rv ? std::string (rv) : std::string ("");
 	}
 
@@ -89,9 +89,10 @@ class HttpGet {
 	static const char* ca_info;
 };
 
-char* http_get (const char* url, int* status);
+char* http_get (const char* url, int* status, bool with_error_logging);
+std::string http_get (const std::string& url, bool with_error_logging);
 
-std::string http_get (const std::string& url);
+
 
 } // namespace
 

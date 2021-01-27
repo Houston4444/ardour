@@ -1,21 +1,20 @@
 /*
-    Copyright (C) 2016 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2016-2017 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <vector>
 
@@ -25,13 +24,14 @@
 
 #include "pbd/compose.h"
 #include "pbd/error.h"
-#include "pbd/i18n.h"
 
 #include "ardour/debug.h"
 
 #include "canvas.h"
 #include "layout.h"
 #include "push2.h"
+
+#include "pbd/i18n.h"
 
 #ifdef __APPLE__
 #define Rect ArdourCanvas::Rect
@@ -242,13 +242,14 @@ Glib::RefPtr<Pango::Context>
 Push2Canvas::get_pango_context ()
 {
 	if (!pango_context) {
-		PangoFontMap* map = pango_cairo_font_map_get_default ();
+		PangoFontMap* map = pango_cairo_font_map_new ();
 		if (!map) {
 			error << _("Default Cairo font map is null!") << endmsg;
 			return Glib::RefPtr<Pango::Context> ();
 		}
 
 		PangoContext* context = pango_font_map_create_context (map);
+		pango_cairo_context_set_resolution (context, 96);
 
 		if (!context) {
 			error << _("cannot create new PangoContext from cairo font map") << endmsg;

@@ -1,21 +1,24 @@
 /*
-   Copyright (C) 2009 Paul Davis
-
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2009-2015 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2010-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2018 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <gtkmm/stock.h>
 #include <gtkmm/table.h>
@@ -33,32 +36,35 @@ using namespace Gtkmm2ext;
 using namespace ARDOUR;
 
 static const gchar *_grid_strings[] = {
-	N_("main grid"),
-	N_("Beats/128"),
-	N_("Beats/64"),
-	N_("Beats/32"),
-	N_("Beats/28"),
-	N_("Beats/24"),
-	N_("Beats/20"),
-	N_("Beats/16"),
-	N_("Beats/14"),
-	N_("Beats/12"),
-	N_("Beats/10"),
-	N_("Beats/8"),
-	N_("Beats/7"),
-	N_("Beats/6"),
-	N_("Beats/5"),
-	N_("Beats/4"),
-	N_("Beats/3"),
-	N_("Beats/2"),
-	N_("Beats"),
+	N_("Main Grid"),
+	N_("1/4 Note"),
+	N_("1/8 Note"),
+	N_("1/16 Note"),
+	N_("1/32 Note"),
+	N_("1/64 Note"),
+	N_("1/128 Note"),
+	
+	N_("1/3 (8th triplet)"),
+	N_("1/6 (16th triplet)"),
+	N_("1/12 (32nd triplet)"),
+
+	N_("1/5 (8th quintuplet)"),
+	N_("1/10 (16th quintuplet)"),
+	N_("1/20 (32nd quintuplet)"),
+
+	N_("1/7 (8th septuplet)"),
+	N_("1/14 (16th septuplet)"),
+	N_("1/28 (32nd septuplet)"),
+
 	0
 };
 
 static const int _grid_beats[] = {
 	0,
-	128, 64, 32, 28, 24, 20, 16, 14,
-	12, 10, 8, 7, 6, 5, 4, 3, 2, 1,
+	1, 2, 4, 8, 16, 32,
+	3, 6, 12,
+	5, 10, 20,
+	7, 14, 28,
 	0
 };
 
@@ -144,7 +150,7 @@ QuantizeDialog::end_grid_size () const
 double
 QuantizeDialog::grid_size_to_musical_time (const string& txt) const
 {
-	if (txt == _("main grid")) {
+	if ( txt == _grid_strings[0] ) {  //"Main Grid"
 		bool success;
 
 		Temporal::Beats b = editor.get_grid_type_as_beats (success, 0);

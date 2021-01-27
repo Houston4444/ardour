@@ -1,21 +1,26 @@
 /*
-    Copyright (C) 2000 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2019 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2006-2015 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2007-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2018 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2018 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "gtk2ardour-config.h"
@@ -30,10 +35,12 @@
 #include "pbd/error.h"
 
 #include "ardour/session.h"
+#include "ardour/lv2_plugin.h"
 
 #include "gtkmm2ext/bindings.h"
 
 #include "actions.h"
+#include "ardour_message.h"
 #include "ardour_ui.h"
 #include "public_editor.h"
 #include "meterbridge.h"
@@ -46,8 +53,13 @@
 #include "rc_option_editor.h"
 #include "route_params_ui.h"
 #include "time_info_box.h"
+#include "step_entry.h"
 #include "opts.h"
 #include "utils.h"
+
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
 
 #include "pbd/i18n.h"
 
@@ -60,14 +72,22 @@ namespace ARDOUR {
 }
 
 using namespace ARDOUR;
+using namespace Gtkmm2ext;
 
 void
 ARDOUR_UI::we_have_dependents ()
 {
-	install_actions ();
-	load_bindings ();
+	install_dependent_actions ();
 
+	/* The monitor section relies on at least 1 action defined by us. Since that
+	 * action now exists, give it a chance to use it.
+	 */
+	mixer->monitor_section().use_others_actions ();
+
+	/* Create "static" actions that apply to all ProcessorBoxes
+	 */
 	ProcessorBox::register_actions ();
+	StepEntry::setup_actions_and_bindings ();
 
 	/* Global, editor, mixer, processor box actions are defined now. Link
 	   them with any bindings, so that GTK does not get a chance to define
@@ -132,7 +152,7 @@ ARDOUR_UI::connect_dependents_to_session (ARDOUR::Session *s)
 gint
 ARDOUR_UI::exit_on_main_window_close (GdkEventAny * /*ev*/)
 {
-#ifdef TOP_MENUBAR
+#ifdef __APPLE__
 	/* just hide the window, and return - the top menu stays up */
 	editor->hide ();
 	return TRUE;
@@ -187,11 +207,11 @@ ARDOUR_UI::idle_ask_about_quit ()
 	} else {
 		/* no session or session not dirty, but still ask anyway */
 
-		Gtk::MessageDialog msg (string_compose (_("Quit %1?"), PROGRAM_NAME),
-		                        false, /* no markup */
-		                        Gtk::MESSAGE_INFO,
-		                        Gtk::BUTTONS_YES_NO,
-		                        true); /* modal */
+		ArdourMessageDialog msg (string_compose (_("Quit %1?"), PROGRAM_NAME),
+		                         false, /* no markup */
+		                         Gtk::MESSAGE_INFO,
+		                         Gtk::BUTTONS_YES_NO,
+		                         true); /* modal */
 		msg.set_default_response (Gtk::RESPONSE_YES);
 
 		if (msg.run() == Gtk::RESPONSE_YES) {
@@ -230,13 +250,6 @@ tab_window_root_drop (GtkNotebook* src,
 int
 ARDOUR_UI::setup_windows ()
 {
-	/* actions do not need to be defined when we load keybindings. They
-	 * will be lazily discovered. But bindings do need to exist when we
-	 * create windows/tabs with their own binding sets.
-	 */
-
-	keyboard->setup_keybindings ();
-
 	_tabs.set_show_border(false);
 	_tabs.signal_switch_page().connect (sigc::mem_fun (*this, &ARDOUR_UI::tabs_switch));
 	_tabs.signal_page_added().connect (sigc::mem_fun (*this, &ARDOUR_UI::tabs_page_added));
@@ -265,53 +278,39 @@ ARDOUR_UI::setup_windows ()
 		return -1;
 	}
 
+	time_info_box = new TimeInfoBox ("ToolbarTimeInfo", false);
+	/* all other dialogs are created conditionally */
+
+	we_have_dependents ();
+
 	/* order of addition affects order seen in initial window display */
 
 	rc_option_editor->add_to_notebook (_tabs, _("Preferences"));
 	mixer->add_to_notebook (_tabs, _("Mixer"));
 	editor->add_to_notebook (_tabs, _("Editor"));
 
-	time_info_box = new TimeInfoBox ("ToolbarTimeInfo", false);
-	/* all other dialogs are created conditionally */
-
-	we_have_dependents ();
-
-#ifdef TOP_MENUBAR
-	EventBox* status_bar_event_box = manage (new EventBox);
-
-	status_bar_event_box->add (status_bar_label);
-	status_bar_event_box->add_events (Gdk::BUTTON_PRESS_MASK|Gdk::BUTTON_RELEASE_MASK);
-	status_bar_label.set_size_request (300, -1);
-
-	status_bar_label.show ();
-	status_bar_event_box->show ();
-
-	status_bar_event_box->signal_button_press_event().connect (mem_fun (*this, &ARDOUR_UI::status_bar_button_press));
-
-	status_bar_hpacker.pack_start (*status_bar_event_box, true, true, 6);
-	status_bar_hpacker.pack_start (menu_bar_base, false, false, 2);
-#else
 	top_packer.pack_start (menu_bar_base, false, false);
-#endif
 
 	main_vpacker.pack_start (top_packer, false, false);
 
+	ArdourWidgets::ArdourDropShadow *spacer = manage (new (ArdourWidgets::ArdourDropShadow));
+	spacer->set_size_request( -1, 4 );
+	spacer->show();
+
 	/* now add the transport sample to the top of main window */
 
+	main_vpacker.pack_start ( *spacer, false, false);
 	main_vpacker.pack_start (transport_frame, false, false);
 	main_vpacker.pack_start (_tabs, true, true);
 
-#ifdef TOP_MENUBAR
-	main_vpacker.pack_start (status_bar_hpacker, false, false);
-#endif
+	LuaInstance::instance()->ActionChanged.connect (sigc::mem_fun (*this, &ARDOUR_UI::action_script_changed));
 
-	LuaInstance::instance()->ActionChanged.connect (sigc::mem_fun (*this, &ARDOUR_UI::update_action_script_btn));
-
-	for (int i = 0; i < 9; ++i) {
-		std::string const a = string_compose (X_("script-action-%1"), i + 1);
-		Glib::RefPtr<Action> act = ActionManager::get_action(X_("Editor"), a.c_str());
+	for (int i = 0; i < MAX_LUA_ACTION_BUTTONS; ++i) {
+		std::string const a = string_compose (X_("script-%1"), i + 1);
+		Glib::RefPtr<Action> act = ActionManager::get_action(X_("LuaAction"), a.c_str());
 		assert (act);
-		action_script_call_btn[i].set_text (string_compose ("%1", i+1));
+		action_script_call_btn[i].set_name ("lua action button");
+		action_script_call_btn[i].set_text (string_compose ("%1%2", std::hex, i+1));
 		action_script_call_btn[i].set_related_action (act);
 		action_script_call_btn[i].signal_button_press_event().connect (sigc::bind (sigc::mem_fun(*this, &ARDOUR_UI::bind_lua_action_script), i), false);
 		if (act->get_sensitive ()) {
@@ -319,12 +318,9 @@ ARDOUR_UI::setup_windows ()
 		} else {
 			action_script_call_btn[i].set_visual_state (Gtkmm2ext::VisualState (action_script_call_btn[i].visual_state() | Gtkmm2ext::Insensitive));
 		}
-		const int row = i % 2;
-		const int col = i / 2;
-		action_script_table.attach (action_script_call_btn[i], col, col + 1, row, row + 1, EXPAND, EXPAND, 1, 0);
+		action_script_call_btn[i].set_sizing_text ("88");
 		action_script_call_btn[i].set_no_show_all ();
 	}
-	action_script_table.show ();
 
 	setup_transport();
 	build_menu_bar ();
@@ -401,16 +397,25 @@ ARDOUR_UI::setup_windows ()
 	 */
 	g_signal_connect (_tabs.gobj(), "create-window", (GCallback) ::tab_window_root_drop, this);
 
+#ifdef GDK_WINDOWING_X11
+	/* allow externalUIs to be transient, on top of the main window */
+	LV2Plugin::set_main_window_id (GDK_DRAWABLE_XID(_main_window.get_window()->gobj()));
+#endif
+
 	return 0;
 }
 
 bool
 ARDOUR_UI::bind_lua_action_script (GdkEventButton*ev, int i)
 {
-	if (ev->button != 3) {
+	if (!_session) {
 		return false;
 	}
 	LuaInstance *li = LuaInstance::instance();
+	std::string name;
+	if (ev->button != 3 && !(ev->button == 1 && !li->lua_action_name (i, name))) {
+		return false;
+	}
 	if (Gtkmm2ext::Keyboard::modifier_state_equals (ev->state, Gtkmm2ext::Keyboard::TertiaryModifier)) {
 		li->remove_lua_action (i);
 	} else {
@@ -420,17 +425,28 @@ ARDOUR_UI::bind_lua_action_script (GdkEventButton*ev, int i)
 }
 
 void
-ARDOUR_UI::update_action_script_btn (int i, const std::string& n)
+ARDOUR_UI::action_script_changed (int i, const std::string& n)
 {
-	if (LuaInstance::instance()->lua_action_has_icon (i)) {
-		uintptr_t ii = i;
-		action_script_call_btn[i].set_icon (&LuaInstance::render_action_icon, (void*)ii);
-	} else {
-		action_script_call_btn[i].set_icon (0, 0);
+	if (i < 0 || i >= MAX_LUA_ACTION_SCRIPTS) {
+		return;
 	}
 
-	std::string const a = string_compose (X_("script-action-%1"), i + 1);
-	Glib::RefPtr<Action> act = ActionManager::get_action(X_("Editor"), a.c_str());
+	if (i < MAX_LUA_ACTION_BUTTONS) {
+		if (LuaInstance::instance()->lua_action_has_icon (i)) {
+			uintptr_t ii = i;
+			action_script_call_btn[i].set_icon (&LuaInstance::render_action_icon, (void*)ii);
+		} else {
+			action_script_call_btn[i].set_icon (0, 0);
+		}
+		if (n.empty ()) {
+			action_script_call_btn[i].set_text (string_compose ("%1%2", std::hex, i+1));
+		} else {
+			action_script_call_btn[i].set_text (n.substr(0,1));
+		}
+	}
+
+	std::string const a = string_compose (X_("script-%1"), i + 1);
+	Glib::RefPtr<Action> act = ActionManager::get_action(X_("LuaAction"), a.c_str());
 	assert (act);
 	if (n.empty ()) {
 		act->set_label (string_compose (_("Unset #%1"), i + 1));

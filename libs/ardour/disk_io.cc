@@ -1,24 +1,25 @@
 /*
-    Copyright (C) 2009-2016 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2017-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2017-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include "pbd/debug.h"
 #include "pbd/error.h"
+#include "pbd/playback_buffer.h"
 
 #include "ardour/audioplaylist.h"
 #include "ardour/butler.h"
@@ -34,6 +35,7 @@
 #include "ardour/rc_configuration.h"
 #include "ardour/session.h"
 #include "ardour/session_playlists.h"
+#include "ardour/track.h"
 
 #include "pbd/i18n.h"
 
@@ -49,19 +51,41 @@ const string DiskIOProcessor::state_node_name = X_("DiskIOProcessor");
 DiskIOProcessor::DiskIOProcessor (Session& s, string const & str, Flag f)
 	: Processor (s, str)
 	, _flags (f)
-	, i_am_the_modifier (false)
-	, _seek_required (false)
 	, _slaved (false)
 	, in_set_state (false)
 	, playback_sample (0)
 	, _need_butler (false)
 	, channels (new ChannelList)
-	, _midi_buf (new MidiRingBuffer<samplepos_t> (s.butler()->midi_diskstream_buffer_size()))
+	, _midi_buf (0)
 	, _samples_written_to_ringbuffer (0)
 	, _samples_read_from_ringbuffer (0)
 {
 	set_display_to_user (false);
 }
+
+DiskIOProcessor::~DiskIOProcessor ()
+{
+	{
+		RCUWriter<ChannelList> writer (channels);
+		boost::shared_ptr<ChannelList> c = writer.get_copy();
+
+		for (ChannelList::iterator chan = c->begin(); chan != c->end(); ++chan) {
+			delete *chan;
+		}
+
+		c->clear();
+	}
+
+	channels.flush ();
+	delete _midi_buf;
+
+	for (uint32_t n = 0; n < DataType::num_types; ++n) {
+		if (_playlists[n]) {
+			_playlists[n]->release ();
+		}
+	}
+}
+
 
 void
 DiskIOProcessor::init ()
@@ -163,13 +187,13 @@ DiskIOProcessor::configure_io (ChanCount in, ChanCount out)
 	}
 
 	if (in.n_midi() > 0 && !_midi_buf) {
-		const size_t size = _session.butler()->midi_diskstream_buffer_size();
+		const size_t size = _session.butler()->midi_buffer_size();
 		_midi_buf = new MidiRingBuffer<samplepos_t>(size);
 		changed = true;
 	}
 
 	if (changed) {
-		seek (_session.transport_sample());
+		configuration_changed ();
 	}
 
 	return Processor::configure_io (in, out);
@@ -189,21 +213,6 @@ DiskIOProcessor::non_realtime_locate (samplepos_t location)
 	seek (location, true);
 }
 
-void
-DiskIOProcessor::non_realtime_speed_change ()
-{
-	if (_seek_required) {
-		seek (_session.transport_sample(), true);
-		_seek_required = false;
-	}
-}
-
-bool
-DiskIOProcessor::realtime_speed_change ()
-{
-	return true;
-}
-
 int
 DiskIOProcessor::set_state (const XMLNode& node, int version)
 {
@@ -213,21 +222,6 @@ DiskIOProcessor::set_state (const XMLNode& node, int version)
 
 	if ((prop = node.property ("flags")) != 0) {
 		_flags = Flag (string_2_enum (prop->value(), _flags));
-	}
-
-	return 0;
-}
-
-int
-DiskIOProcessor::add_channel_to (boost::shared_ptr<ChannelList> c, uint32_t how_many)
-{
-	while (how_many--) {
-		c->push_back (new ChannelInfo (_session.butler()->audio_diskstream_playback_buffer_size()));
-		interpolation.add_channel ();
-		DEBUG_TRACE (DEBUG::DiskIO, string_compose ("%1: new channel, write space = %2 read = %3\n",
-		                                            name(),
-		                                            c->back()->buf->write_space(),
-		                                            c->back()->buf->read_space()));
 	}
 
 	return 0;
@@ -248,7 +242,6 @@ DiskIOProcessor::remove_channel_from (boost::shared_ptr<ChannelList> c, uint32_t
 	while (how_many-- && !c->empty()) {
 		delete c->back();
 		c->pop_back();
-		interpolation.remove_channel ();
 	}
 
 	return 0;
@@ -331,48 +324,36 @@ DiskIOProcessor::use_playlist (DataType dt, boost::shared_ptr<Playlist> playlist
 }
 
 DiskIOProcessor::ChannelInfo::ChannelInfo (samplecnt_t bufsize)
-	: buf (new RingBufferNPT<Sample> (bufsize))
+	: rbuf (0)
+	, wbuf (0)
+	, capture_transition_buf (0)
+	, curr_capture_cnt (0)
 {
-	/* touch the ringbuffer buffer, which will cause
-	   them to be mapped into locked physical RAM if
-	   we're running with mlockall(). this doesn't do
-	   much if we're not.
-	*/
-
-	memset (buf->buffer(), 0, sizeof (Sample) * buf->bufsize());
-	capture_transition_buf = new RingBufferNPT<CaptureTransition> (256);
-}
-
-void
-DiskIOProcessor::ChannelInfo::resize (samplecnt_t bufsize)
-{
-	delete buf;
-	buf = new RingBufferNPT<Sample> (bufsize);
-	memset (buf->buffer(), 0, sizeof (Sample) * buf->bufsize());
 }
 
 DiskIOProcessor::ChannelInfo::~ChannelInfo ()
 {
-	delete buf;
-	buf = 0;
-
+	delete rbuf;
+	delete wbuf;
 	delete capture_transition_buf;
+	rbuf = 0;
+	wbuf = 0;
 	capture_transition_buf = 0;
 }
 
 void
-DiskIOProcessor::drop_route ()
+DiskIOProcessor::drop_track ()
 {
-	_route.reset ();
+	_track.reset ();
 }
 
 void
-DiskIOProcessor::set_route (boost::shared_ptr<Route> r)
+DiskIOProcessor::set_track (boost::shared_ptr<Track> t)
 {
-	_route = r;
+	_track = t;
 
-	if (_route) {
-		_route->DropReferences.connect_same_thread (*this, boost::bind (&DiskIOProcessor::drop_route, this));
+	if (_track) {
+		_track->DropReferences.connect_same_thread (*this, boost::bind (&DiskIOProcessor::drop_track, this));
 	}
 }
 

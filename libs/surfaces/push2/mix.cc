@@ -1,20 +1,21 @@
 /*
-  Copyright (C) 2016 Paul Davis
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2016-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2018 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cairomm/region.h>
 #include <pangomm/layout.h>
@@ -39,6 +40,7 @@
 #include "ardour/midiport_manager.h"
 #include "ardour/midi_track.h"
 #include "ardour/midi_port.h"
+#include "ardour/selection.h"
 #include "ardour/session.h"
 #include "ardour/tempo.h"
 #include "ardour/utils.h"
@@ -175,7 +177,7 @@ MixLayout::show ()
 
 
 	for (size_t n = 0; n < sizeof (upper_buttons) / sizeof (upper_buttons[0]); ++n) {
-		Push2::Button* b = p2.button_by_id (upper_buttons[n]);
+		boost::shared_ptr<Push2::Button> b = p2.button_by_id (upper_buttons[n]);
 
 		if (b != mode_button) {
 			b->set_color (Push2::LED::DarkGray);
@@ -200,7 +202,7 @@ MixLayout::render (Rect const& area, Cairo::RefPtr<Cairo::Context> context) cons
 void
 MixLayout::button_upper (uint32_t n)
 {
-	Push2::Button* b;
+	boost::shared_ptr<Push2::Button> b;
 	switch (n) {
 	case 0:
 		vpot_mode = Volume;
@@ -267,7 +269,7 @@ MixLayout::show_vpot_mode ()
 		for (int s = 0; s < 8; ++s) {
 			if (stripable[s]) {
 				gain_meter[s]->knob->set_controllable (stripable[s]->gain_control());
-				boost::shared_ptr<PeakMeter> pm = stripable[s]->peak_meter(); 
+				boost::shared_ptr<PeakMeter> pm = stripable[s]->peak_meter();
 				if (pm) {
 					gain_meter[s]->meter->set_meter (pm.get());
 				} else {
@@ -386,7 +388,7 @@ MixLayout::show_vpot_mode ()
 void
 MixLayout::button_mute ()
 {
-	boost::shared_ptr<Stripable> s = ControlProtocol::first_selected_stripable();
+	boost::shared_ptr<Stripable> s = session.selection().first_selected_stripable();
 	if (s) {
 		boost::shared_ptr<AutomationControl> ac = s->mute_control();
 		if (ac) {
@@ -398,7 +400,7 @@ MixLayout::button_mute ()
 void
 MixLayout::button_solo ()
 {
-	boost::shared_ptr<Stripable> s = ControlProtocol::first_selected_stripable();
+	boost::shared_ptr<Stripable> s = session.selection().first_selected_stripable();
 	if (s) {
 		boost::shared_ptr<AutomationControl> ac = s->solo_control();
 		if (ac) {
@@ -414,7 +416,7 @@ MixLayout::button_lower (uint32_t n)
 		return;
 	}
 
-	ControlProtocol::SetStripableSelection (stripable[n]);
+	session.selection().set (stripable[n], boost::shared_ptr<AutomationControl>());
 }
 
 void
@@ -601,7 +603,7 @@ MixLayout::switch_bank (uint32_t base)
 		}
 
 
-		Push2::Button* b;
+		boost::shared_ptr<Push2::Button> b;
 
 		switch (n) {
 		case 0:
@@ -685,7 +687,7 @@ MixLayout::button_select_release ()
 		/* no visible track selected, select first (if any) */
 
 		if (stripable[0]) {
-			ControlProtocol::SetStripableSelection (stripable[0]);
+			session.selection().set (stripable[0], boost::shared_ptr<AutomationControl>());
 		}
 
 	} else {
@@ -698,10 +700,10 @@ MixLayout::button_select_release ()
 				   switch banks by one, and select leftmost
 				*/
 				if (bank_start != 0) {
-					ControlProtocol::ClearStripableSelection ();
+					session.selection().clear_stripables ();
 					switch_bank (bank_start-1);
 					if (stripable[0]) {
-						ControlProtocol::SetStripableSelection (stripable[0]);
+						session.selection().set (stripable[0], boost::shared_ptr<AutomationControl>());
 					}
 				}
 			} else {
@@ -711,7 +713,7 @@ MixLayout::button_select_release ()
 					--n;
 				}
 				if (n >= 0) {
-					ControlProtocol::SetStripableSelection (stripable[n]);
+					session.selection().set (stripable[n], boost::shared_ptr<AutomationControl>());
 				}
 			}
 
@@ -723,10 +725,10 @@ MixLayout::button_select_release ()
 				/* current selected is rightmost ... cancel selection,
 				   switch banks by one, and select righmost
 				*/
-				ControlProtocol::ToggleStripableSelection (stripable[selected]);
+				session.selection().toggle (stripable[selected], boost::shared_ptr<AutomationControl>());
 				switch_bank (bank_start+1);
 				if (stripable[7]) {
-					ControlProtocol::SetStripableSelection (stripable[7]);
+					session.selection().set (stripable[7], boost::shared_ptr<AutomationControl>());
 				}
 			} else {
 				/* select next, if any */
@@ -736,7 +738,7 @@ MixLayout::button_select_release ()
 				}
 
 				if (n != 8) {
-					ControlProtocol::SetStripableSelection (stripable[n]);
+					session.selection().set (stripable[n], boost::shared_ptr<AutomationControl>());
 				}
 			}
 		}
@@ -777,6 +779,8 @@ MixLayout::update_meters ()
 MixLayout::GainMeter::GainMeter (Item* parent, Push2& p2)
 	: Container (parent)
 {
+	/* knob and meter become owned by their parent on the canvas */
+
 	knob = new Push2Knob (p2, this);
 	knob->set_radius (25);
 	/* leave position at (0,0) */
@@ -784,3 +788,4 @@ MixLayout::GainMeter::GainMeter (Item* parent, Push2& p2)
 	meter = new LevelMeter (p2, this, 90, ArdourCanvas::Meter::Vertical);
 	meter->set_position (Duple (40, -60));
 }
+

@@ -1,21 +1,26 @@
 /*
-    Copyright (C) 2000-2003 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2000-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2015-2018 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <iostream>
 #include <cmath>
@@ -24,8 +29,9 @@
 #include <sstream>
 
 #include <glibmm/threads.h>
-#include "pbd/xml++.h"
+
 #include "pbd/types_convert.h"
+#include "pbd/xml++.h"
 
 #include "ardour/debug.h"
 #include "ardour/filter.h"
@@ -75,6 +81,8 @@ namespace ARDOUR {
 		PBD::PropertyDescriptor<float> shift;
 		PBD::PropertyDescriptor<PositionLockStyle> position_lock_style;
 		PBD::PropertyDescriptor<uint64_t> layering_index;
+		PBD::PropertyDescriptor<std::string> tags;
+		PBD::PropertyDescriptor<bool> contents;
 	}
 }
 
@@ -84,57 +92,61 @@ void
 Region::make_property_quarks ()
 {
 	Properties::muted.property_id = g_quark_from_static_string (X_("muted"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for muted = %1\n",	Properties::muted.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for muted = %1\n", Properties::muted.property_id));
 	Properties::opaque.property_id = g_quark_from_static_string (X_("opaque"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for opaque = %1\n",	Properties::opaque.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for opaque = %1\n", Properties::opaque.property_id));
 	Properties::locked.property_id = g_quark_from_static_string (X_("locked"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for locked = %1\n",	Properties::locked.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for locked = %1\n", Properties::locked.property_id));
 	Properties::video_locked.property_id = g_quark_from_static_string (X_("video-locked"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for video-locked = %1\n",	Properties::video_locked.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for video-locked = %1\n", Properties::video_locked.property_id));
 	Properties::automatic.property_id = g_quark_from_static_string (X_("automatic"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for automatic = %1\n",	Properties::automatic.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for automatic = %1\n", Properties::automatic.property_id));
 	Properties::whole_file.property_id = g_quark_from_static_string (X_("whole-file"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for whole-file = %1\n",	Properties::whole_file.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for whole-file = %1\n", Properties::whole_file.property_id));
 	Properties::import.property_id = g_quark_from_static_string (X_("import"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for import = %1\n",	Properties::import.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for import = %1\n", Properties::import.property_id));
 	Properties::external.property_id = g_quark_from_static_string (X_("external"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for external = %1\n",	Properties::external.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for external = %1\n", Properties::external.property_id));
 	Properties::sync_marked.property_id = g_quark_from_static_string (X_("sync-marked"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for sync-marked = %1\n",		Properties::sync_marked.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for sync-marked = %1\n", Properties::sync_marked.property_id));
 	Properties::left_of_split.property_id = g_quark_from_static_string (X_("left-of-split"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for left-of-split = %1\n",	Properties::left_of_split.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for left-of-split = %1\n", Properties::left_of_split.property_id));
 	Properties::right_of_split.property_id = g_quark_from_static_string (X_("right-of-split"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for right-of-split = %1\n",	Properties::right_of_split.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for right-of-split = %1\n", Properties::right_of_split.property_id));
 	Properties::hidden.property_id = g_quark_from_static_string (X_("hidden"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for hidden = %1\n",	Properties::hidden.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for hidden = %1\n", Properties::hidden.property_id));
 	Properties::position_locked.property_id = g_quark_from_static_string (X_("position-locked"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for position-locked = %1\n",	Properties::position_locked.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for position-locked = %1\n", Properties::position_locked.property_id));
 	Properties::valid_transients.property_id = g_quark_from_static_string (X_("valid-transients"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for valid-transients = %1\n",	Properties::valid_transients.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for valid-transients = %1\n", Properties::valid_transients.property_id));
 	Properties::start.property_id = g_quark_from_static_string (X_("start"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for start = %1\n",	Properties::start.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for start = %1\n", Properties::start.property_id));
 	Properties::length.property_id = g_quark_from_static_string (X_("length"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for length = %1\n",	Properties::length.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for length = %1\n", Properties::length.property_id));
 	Properties::position.property_id = g_quark_from_static_string (X_("position"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for position = %1\n",	Properties::position.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for position = %1\n", Properties::position.property_id));
 	Properties::beat.property_id = g_quark_from_static_string (X_("beat"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for beat = %1\n",	Properties::beat.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for beat = %1\n", Properties::beat.property_id));
 	Properties::sync_position.property_id = g_quark_from_static_string (X_("sync-position"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for sync-position = %1\n",	Properties::sync_position.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for sync-position = %1\n", Properties::sync_position.property_id));
 	Properties::layer.property_id = g_quark_from_static_string (X_("layer"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for layer = %1\n",	Properties::layer.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for layer = %1\n", Properties::layer.property_id));
 	Properties::ancestral_start.property_id = g_quark_from_static_string (X_("ancestral-start"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for ancestral-start = %1\n",	Properties::ancestral_start.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for ancestral-start = %1\n", Properties::ancestral_start.property_id));
 	Properties::ancestral_length.property_id = g_quark_from_static_string (X_("ancestral-length"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for ancestral-length = %1\n",	Properties::ancestral_length.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for ancestral-length = %1\n", Properties::ancestral_length.property_id));
 	Properties::stretch.property_id = g_quark_from_static_string (X_("stretch"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for stretch = %1\n",	Properties::stretch.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for stretch = %1\n", Properties::stretch.property_id));
 	Properties::shift.property_id = g_quark_from_static_string (X_("shift"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for shift = %1\n",	Properties::shift.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for shift = %1\n", Properties::shift.property_id));
 	Properties::position_lock_style.property_id = g_quark_from_static_string (X_("positional-lock-style"));
-	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for position_lock_style = %1\n",		Properties::position_lock_style.property_id));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for position_lock_style = %1\n", Properties::position_lock_style.property_id));
 	Properties::layering_index.property_id = g_quark_from_static_string (X_("layering-index"));
 	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for layering_index = %1\n",	Properties::layering_index.property_id));
+	Properties::tags.property_id = g_quark_from_static_string (X_("tags"));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for tags = %1\n",	Properties::tags.property_id));
+	Properties::contents.property_id = g_quark_from_static_string (X_("contents"));
+	DEBUG_TRACE (DEBUG::Properties, string_compose ("quark for contents = %1\n",	Properties::contents.property_id));
 }
 
 void
@@ -167,6 +179,8 @@ Region::register_properties ()
 	add_property (_shift);
 	add_property (_position_lock_style);
 	add_property (_layering_index);
+	add_property (_tags);
+	add_property (_contents);
 }
 
 #define REGION_DEFAULT_STATE(s,l) \
@@ -174,8 +188,8 @@ Region::register_properties ()
 	, _left_of_split (Properties::left_of_split, false) \
 	, _right_of_split (Properties::right_of_split, false) \
 	, _valid_transients (Properties::valid_transients, false) \
-	, _start (Properties::start, (s))	\
-	, _length (Properties::length, (l))	\
+	, _start (Properties::start, (s)) \
+	, _length (Properties::length, (l)) \
 	, _position (Properties::position, 0) \
 	, _beat (Properties::beat, 0.0) \
 	, _sync_position (Properties::sync_position, (s)) \
@@ -183,10 +197,11 @@ Region::register_properties ()
 	, _transient_user_start (0) \
 	, _transient_analysis_start (0) \
 	, _transient_analysis_end (0) \
+	, _soloSelected (false) \
 	, _muted (Properties::muted, false) \
 	, _opaque (Properties::opaque, true) \
 	, _locked (Properties::locked, false) \
-  , _video_locked (Properties::video_locked, false) \
+	, _video_locked (Properties::video_locked, false) \
 	, _automatic (Properties::automatic, false) \
 	, _whole_file (Properties::whole_file, false) \
 	, _import (Properties::import, false) \
@@ -198,40 +213,45 @@ Region::register_properties ()
 	, _stretch (Properties::stretch, 1.0) \
 	, _shift (Properties::shift, 1.0) \
 	, _position_lock_style (Properties::position_lock_style, _type == DataType::AUDIO ? AudioTime : MusicTime) \
-	, _layering_index (Properties::layering_index, 0)
+	, _layering_index (Properties::layering_index, 0) \
+	, _tags (Properties::tags, "") \
+	, _contents (Properties::contents, false)
 
 #define REGION_COPY_STATE(other) \
 	  _sync_marked (Properties::sync_marked, other->_sync_marked) \
 	, _left_of_split (Properties::left_of_split, other->_left_of_split) \
 	, _right_of_split (Properties::right_of_split, other->_right_of_split) \
 	, _valid_transients (Properties::valid_transients, other->_valid_transients) \
-	, _start(Properties::start, other->_start)		\
-	, _length(Properties::length, other->_length)		\
-	, _position(Properties::position, other->_position)	\
-	, _beat (Properties::beat, other->_beat)                \
+	, _start(Properties::start, other->_start) \
+	, _length(Properties::length, other->_length) \
+	, _position(Properties::position, other->_position) \
+	, _beat (Properties::beat, other->_beat) \
 	, _sync_position(Properties::sync_position, other->_sync_position) \
-	, _quarter_note (other->_quarter_note)                                \
+	, _quarter_note (other->_quarter_note) \
 	, _user_transients (other->_user_transients) \
 	, _transient_user_start (other->_transient_user_start) \
 	, _transients (other->_transients) \
 	, _transient_analysis_start (other->_transient_analysis_start) \
 	, _transient_analysis_end (other->_transient_analysis_end) \
-	, _muted (Properties::muted, other->_muted)	        \
-	, _opaque (Properties::opaque, other->_opaque)		\
-	, _locked (Properties::locked, other->_locked)		\
-  , _video_locked (Properties::video_locked, other->_video_locked) \
-	, _automatic (Properties::automatic, other->_automatic)	\
+	, _soloSelected (false) \
+	, _muted (Properties::muted, other->_muted) \
+	, _opaque (Properties::opaque, other->_opaque) \
+	, _locked (Properties::locked, other->_locked) \
+	, _video_locked (Properties::video_locked, other->_video_locked) \
+	, _automatic (Properties::automatic, other->_automatic) \
 	, _whole_file (Properties::whole_file, other->_whole_file) \
-	, _import (Properties::import, other->_import)		\
-	, _external (Properties::external, other->_external)	\
-	, _hidden (Properties::hidden, other->_hidden)		\
+	, _import (Properties::import, other->_import) \
+	, _external (Properties::external, other->_external) \
+	, _hidden (Properties::hidden, other->_hidden) \
 	, _position_locked (Properties::position_locked, other->_position_locked) \
 	, _ancestral_start (Properties::ancestral_start, other->_ancestral_start) \
 	, _ancestral_length (Properties::ancestral_length, other->_ancestral_length) \
-	, _stretch (Properties::stretch, other->_stretch)	\
-	, _shift (Properties::shift, other->_shift)		\
+	, _stretch (Properties::stretch, other->_stretch) \
+	, _shift (Properties::shift, other->_shift) \
 	, _position_lock_style (Properties::position_lock_style, other->_position_lock_style) \
-	, _layering_index (Properties::layering_index, other->_layering_index)
+	, _layering_index (Properties::layering_index, other->_layering_index) \
+	, _tags (Properties::tags, other->_tags) \
+	, _contents (Properties::contents, other->_contents)
 
 /* derived-from-derived constructor (no sources in constructor) */
 Region::Region (Session& s, samplepos_t start, samplecnt_t length, const string& name, DataType type)
@@ -291,7 +311,7 @@ Region::Region (boost::shared_ptr<const Region> other)
 	use_sources (other->_sources);
 	set_master_sources (other->_master_sources);
 
-	_position_lock_style = other->_position_lock_style;
+	_position_lock_style = other->_position_lock_style.val();
 	_first_edit = other->_first_edit;
 
 	_start = other->_start;
@@ -299,15 +319,15 @@ Region::Region (boost::shared_ptr<const Region> other)
 	_quarter_note = other->_quarter_note;
 
 	/* sync pos is relative to start of file. our start-in-file is now zero,
-	   so set our sync position to whatever the the difference between
-	   _start and _sync_pos was in the other region.
-
-	   result is that our new sync pos points to the same point in our source(s)
-	   as the sync in the other region did in its source(s).
-
-	   since we start at zero in our source(s), it is not possible to use a sync point that
-	   is before the start. reset it to _start if that was true in the other region.
-	*/
+	 * so set our sync position to whatever the the difference between
+	 * _start and _sync_pos was in the other region.
+	 *
+	 * result is that our new sync pos points to the same point in our source(s)
+	 * as the sync in the other region did in its source(s).
+	 *
+	 * since we start at zero in our source(s), it is not possible to use a sync point that
+	 * is before the start. reset it to _start if that was true in the other region.
+	 */
 
 	if (other->sync_marked()) {
 		if (other->_start < other->_sync_position) {
@@ -327,10 +347,10 @@ Region::Region (boost::shared_ptr<const Region> other)
 }
 
 /** Create a new Region from part of an existing one.
-
-    the start within \a other is given by \a offset
-    (i.e. relative to the start of \a other's sources, the start is \a offset + \a other.start()
-*/
+ *
+ * the start within \a other is given by \a offset
+ * (i.e. relative to the start of \a other's sources, the start is \a offset + \a other.start()
+ */
 Region::Region (boost::shared_ptr<const Region> other, MusicSample offset)
 	: SessionObject(other->session(), other->name())
 	, _type (other->data_type())
@@ -367,9 +387,9 @@ Region::Region (boost::shared_ptr<const Region> other, MusicSample offset)
 	}
 
 	/* if the other region had a distinct sync point
-	   set, then continue to use it as best we can.
-	   otherwise, reset sync point back to start.
-	*/
+	 * set, then continue to use it as best we can.
+	 * otherwise, reset sync point back to start.
+	 */
 
 	if (other->sync_marked()) {
 		if (other->_sync_position < _start) {
@@ -416,7 +436,7 @@ Region::Region (boost::shared_ptr<const Region> other, const SourceList& srcs)
 Region::~Region ()
 {
 	DEBUG_TRACE (DEBUG::Destruction, string_compose ("Region %1 destructor @ %2\n", _name, this));
-        drop_sources ();
+	drop_sources ();
 }
 
 void
@@ -428,14 +448,32 @@ Region::set_playlist (boost::weak_ptr<Playlist> wpl)
 bool
 Region::set_name (const std::string& str)
 {
-	if (_name != str) {
-		SessionObject::set_name(str); // EMIT SIGNAL NameChanged()
-		assert(_name == str);
-
-		send_change (Properties::name);
+	if (_name == str) {
+		return true;
 	}
 
+	SessionObject::set_name (str); // EMIT SIGNAL NameChanged()
+	assert (_name == str);
+	send_change (Properties::name);
 	return true;
+}
+
+void
+Region::set_selected_for_solo(bool yn)
+{
+	if (_soloSelected != yn) {
+
+		boost::shared_ptr<Playlist> pl (playlist());
+		if (pl){
+			if (yn) {
+				pl->AddToSoloSelectedList(this);
+			} else {
+				pl->RemoveFromSoloSelectedList(this);
+			}
+		}
+
+		_soloSelected = yn;
+	}
 }
 
 void
@@ -449,8 +487,8 @@ Region::set_length (samplecnt_t len, const int32_t sub_num)
 	if (_length != len && len != 0) {
 
 		/* check that the current _position wouldn't make the new
-		   length impossible.
-		*/
+		 * length impossible.
+		 */
 
 		if (max_samplepos - len < _position) {
 			return;
@@ -544,10 +582,9 @@ void
 Region::special_set_position (samplepos_t pos)
 {
 	/* this is used when creating a whole file region as
-	   a way to store its "natural" or "captured" position.
-	*/
+	 * a way to store its "natural" or "captured" position.
+	 */
 
-	_position = _position;
 	_position = pos;
 }
 
@@ -585,8 +622,8 @@ Region::update_after_tempo_map_change (bool send)
 	set_position_internal (pos, false, 0);
 
 	/* do this even if the position is the same. this helps out
-	   a GUI that has moved its representation already.
-	*/
+	 * a GUI that has moved its representation already.
+	 */
 
 	if (send) {
 		send_change (Properties::position);
@@ -601,8 +638,8 @@ Region::set_position (samplepos_t pos, int32_t sub_num)
 	}
 
 	/* do this even if the position is the same. this helps out
-	   a GUI that has moved its representation already.
-	*/
+	 * a GUI that has moved its representation already.
+	 */
 	PropertyChange p_and_l;
 
 	p_and_l.add (Properties::position);
@@ -630,9 +667,9 @@ void
 Region::set_position_internal (samplepos_t pos, bool allow_bbt_recompute, const int32_t sub_num)
 {
 	/* We emit a change of Properties::position even if the position hasn't changed
-	   (see Region::set_position), so we must always set this up so that
-	   e.g. Playlist::notify_region_moved doesn't use an out-of-date last_position.
-	*/
+	 * (see Region::set_position), so we must always set this up so that
+	 * e.g. Playlist::notify_region_moved doesn't use an out-of-date last_position.
+	 */
 	_last_position = _position;
 
 	if (_position != pos) {
@@ -646,10 +683,10 @@ Region::set_position_internal (samplepos_t pos, bool allow_bbt_recompute, const 
 		}
 
 		/* check that the new _position wouldn't make the current
-		   length impossible - if so, change the length.
-
-		   XXX is this the right thing to do?
-		*/
+		 * length impossible - if so, change the length.
+		 *
+		 * XXX is this the right thing to do?
+		 */
 		if (max_samplepos - _length < _position) {
 			_last_length = _length;
 			_length = max_samplepos - _position;
@@ -665,8 +702,8 @@ Region::set_position_music (double qn)
 	}
 
 	/* do this even if the position is the same. this helps out
-	   a GUI that has moved its representation already.
-	*/
+	 * a GUI that has moved its representation already.
+	 */
 	PropertyChange p_and_l;
 
 	p_and_l.add (Properties::position);
@@ -689,9 +726,9 @@ void
 Region::set_position_music_internal (double qn)
 {
 	/* We emit a change of Properties::position even if the position hasn't changed
-	   (see Region::set_position), so we must always set this up so that
-	   e.g. Playlist::notify_region_moved doesn't use an out-of-date last_position.
-	*/
+	 * (see Region::set_position), so we must always set this up so that
+	 * e.g. Playlist::notify_region_moved doesn't use an out-of-date last_position.
+	 */
 	_last_position = _position;
 
 	if (_quarter_note != qn) {
@@ -699,10 +736,10 @@ Region::set_position_music_internal (double qn)
 		_quarter_note = qn;
 
 		/* check that the new _position wouldn't make the current
-		   length impossible - if so, change the length.
-
-		   XXX is this the right thing to do?
-		*/
+		 * length impossible - if so, change the length.
+		 *
+		 * XXX is this the right thing to do?
+		 */
 		if (max_samplepos - _length < _position) {
 			_last_length = _length;
 			_length = max_samplepos - _position;
@@ -711,9 +748,9 @@ Region::set_position_music_internal (double qn)
 }
 
 /** A gui may need to create a region, then place it in an initial
- *  position determined by the user.
- *  When this takes place within one gui operation, we have to reset
- *  _last_position to prevent an implied move.
+ * position determined by the user.
+ * When this takes place within one gui operation, we have to reset
+ * _last_position to prevent an implied move.
  */
 void
 Region::set_initial_position (samplepos_t pos)
@@ -726,10 +763,10 @@ Region::set_initial_position (samplepos_t pos)
 		_position = pos;
 
 		/* check that the new _position wouldn't make the current
-		   length impossible - if so, change the length.
-
-		   XXX is this the right thing to do?
-		*/
+		 * length impossible - if so, change the length.
+		 *
+		 * XXX is this the right thing to do?
+		 */
 
 		if (max_samplepos - _length < _position) {
 			_last_length = _length;
@@ -743,8 +780,8 @@ Region::set_initial_position (samplepos_t pos)
 
 
 	/* do this even if the position is the same. this helps out
-	   a GUI that has moved its representation already.
-	*/
+	 * a GUI that has moved its representation already.
+	 */
 	send_change (Properties::position);
 }
 
@@ -803,9 +840,9 @@ Region::set_start (samplepos_t pos)
 		return;
 	}
 	/* This just sets the start, nothing else. It effectively shifts
-	   the contents of the Region within the overall extent of the Source,
-	   without changing the Region's position or length
-	*/
+	 * the contents of the Region within the overall extent of the Source,
+	 * without changing the Region's position or length
+	 */
 
 	if (_start != pos) {
 
@@ -949,9 +986,8 @@ Region::modify_end (samplepos_t new_endpoint, bool reset_fade, const int32_t sub
 }
 
 /** @param new_endpoint New region end point, such that, for example,
- *  a region at 0 of length 10 has an endpoint of 9.
+ * a region at 0 of length 10 has an endpoint of 9.
  */
-
 void
 Region::trim_end (samplepos_t new_endpoint, const int32_t sub_num)
 {
@@ -1357,6 +1393,22 @@ Region::_set_state (const XMLNode& node, int /*version*/, PropertyChange& what_c
 
 	what_changed = set_values (node);
 
+	/* Regions derived from "Destructive/Tape" mode tracks in earlier
+	 * versions will have their length set to an extremely large value
+	 * (essentially the maximum possible length of a file). Detect this
+	 * here and reset to the actual source length (using the first source
+	 * as a proxy for all of them). For "previously destructive" sources,
+	 * this will correspond to the full extent of the data actually written
+	 * to the file (though this may include blank space if discontiguous
+	 * punches/capture passes were carried out.
+	 */
+
+	if (!_sources.empty() && _type == DataType::AUDIO) {
+		if (_length > _sources.front()->length(_position)) {
+			_length = _sources.front()->length(_position) - _start;
+		}
+	}
+
 	set_id (node);
 
 	if (_position_lock_style == MusicTime) {
@@ -1457,7 +1509,22 @@ Region::overlap_equivalent (boost::shared_ptr<const Region> other) const
 }
 
 bool
-Region::equivalent (boost::shared_ptr<const Region> other) const
+Region::enclosed_equivalent (boost::shared_ptr<const Region> other) const
+{
+	return (first_sample() >= other->first_sample() && last_sample() <= other->last_sample()) ||
+	       (first_sample() <= other->first_sample() && last_sample() >= other->last_sample()) ;
+}
+
+bool
+Region::layer_and_time_equivalent (boost::shared_ptr<const Region> other) const
+{
+	return _layer == other->_layer &&
+		_position == other->_position &&
+		_length == other->_length;
+}
+
+bool
+Region::exact_equivalent (boost::shared_ptr<const Region> other) const
 {
 	return _start == other->_start &&
 		_position == other->_position &&
@@ -1520,6 +1587,7 @@ Region::set_master_sources (const SourceList& srcs)
 
 	for (SourceList::const_iterator i = _master_sources.begin (); i != _master_sources.end(); ++i) {
 		(*i)->inc_use_count ();
+//		Source::SourcePropertyChanged( *i );
 	}
 }
 
@@ -1679,7 +1747,7 @@ Region::source_length(uint32_t n) const
 bool
 Region::verify_length (samplecnt_t& len)
 {
-	if (source() && (source()->destructive() || source()->length_mutable())) {
+	if (source() && source()->length_mutable()) {
 		return true;
 	}
 
@@ -1697,7 +1765,7 @@ Region::verify_length (samplecnt_t& len)
 bool
 Region::verify_start_and_length (samplepos_t new_start, samplecnt_t& new_length)
 {
-	if (source() && (source()->destructive() || source()->length_mutable())) {
+	if (source() && source()->length_mutable()) {
 		return true;
 	}
 
@@ -1715,7 +1783,7 @@ Region::verify_start_and_length (samplepos_t new_start, samplecnt_t& new_length)
 bool
 Region::verify_start (samplepos_t pos)
 {
-	if (source() && (source()->destructive() || source()->length_mutable())) {
+	if (source() && source()->length_mutable()) {
 		return true;
 	}
 
@@ -1730,7 +1798,7 @@ Region::verify_start (samplepos_t pos)
 bool
 Region::verify_start_mutable (samplepos_t& new_start)
 {
-	if (source() && (source()->destructive() || source()->length_mutable())) {
+	if (source() && source()->length_mutable()) {
 		return true;
 	}
 
@@ -1791,7 +1859,7 @@ Region::transients (AnalysisFeatureList& afl)
 	if (!_user_transients.empty ()) {
 		++cnt;
 	}
-	if (cnt > 1 ) {
+	if (cnt > 1) {
 		afl.sort ();
 		// remove exact duplicates
 		TransientDetector::cleanup_transients (afl, _session.sample_rate(), 0);

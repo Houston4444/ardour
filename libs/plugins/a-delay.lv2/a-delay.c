@@ -1,15 +1,20 @@
-/* a-delay
+/*
+ * Copyright (C) 2016-2017 Robin Gareus <robin@gareus.org>
  * Copyright (C) 2016 Damien Zammit <damien@zamaudio.com>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <math.h>
@@ -54,6 +59,7 @@ typedef enum {
 	ADELAY_GAIN,
 	ADELAY_DELAYTIME,
 	ADELAY_ENABLE,
+	ADELAY_DOTTED,
 } PortIndex;
 
 
@@ -77,6 +83,7 @@ typedef struct {
 	const LV2_Atom_Sequence* atombpm;
 
 	float* inv;
+	float* dotted;
 	float* sync;
 	float* time;
 	float* divisor;
@@ -103,6 +110,7 @@ typedef struct {
 	float feedbackold;
 	float divisorold;
 	float gainold;
+	float dottedold;
 	float invertold;
 	float timeold;
 	float delaytimeold;
@@ -196,6 +204,9 @@ connect_port(LV2_Handle instance,
 	case ADELAY_DIVISOR:
 		adelay->divisor = (float*)data;
 		break;
+	case ADELAY_DOTTED:
+		adelay->dotted = (float*)data;
+		break;
 	case ADELAY_WETDRY:
 		adelay->wetdry = (float*)data;
 		break;
@@ -278,6 +289,7 @@ activate(LV2_Handle instance)
 	adelay->divisorold = 0.f;
 	adelay->gainold = 0.f;
 	adelay->invertold = 0.f;
+	adelay->dottedold = 0.f;
 	adelay->timeold = 0.f;
 	adelay->delaytimeold = 0.f;
 	adelay->syncold = 0.f;
@@ -412,6 +424,9 @@ run(LV2_Handle instance, uint32_t n_samples)
 	if (*(adelay->inv) != adelay->invertold) {
 		recalc = true;
 	}
+	if (*(adelay->dotted) != adelay->dottedold) {
+		recalc = true;
+	}
 	if (*(adelay->sync) != adelay->syncold) {
 		recalc = true;
 	}
@@ -436,6 +451,9 @@ run(LV2_Handle instance, uint32_t n_samples)
 		lpfRbj(adelay, adelay->lpfold, srate);
 		if (*(adelay->sync) > 0.5f && adelay->bpmvalid) {
 			*(adelay->delaytime) = adelay->beatunit * 1000.f * 60.f / (adelay->bpm * *(adelay->divisor));
+			if (*(adelay->dotted) > 0.5f) {
+				*(adelay->delaytime) *= 1.5;
+			}
 		} else {
 			*(adelay->delaytime) = *(adelay->time);
 		}
@@ -479,6 +497,7 @@ run(LV2_Handle instance, uint32_t n_samples)
 	adelay->feedbackold = *(adelay->feedback);
 	adelay->divisorold = *(adelay->divisor);
 	adelay->invertold = *(adelay->inv);
+	adelay->dottedold = *(adelay->dotted);
 	adelay->timeold = *(adelay->time);
 	adelay->syncold = *(adelay->sync);
 	adelay->wetdryold = wetdry;

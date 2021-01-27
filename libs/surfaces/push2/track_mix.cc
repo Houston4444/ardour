@@ -1,20 +1,21 @@
 /*
-  Copyright (C) 2016 Paul Davis
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2016-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2016-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cairomm/region.h>
 #include <pangomm/layout.h>
@@ -24,7 +25,6 @@
 #include "pbd/debug.h"
 #include "pbd/failed_constructor.h"
 #include "pbd/file_utils.h"
-#include "pbd/i18n.h"
 #include "pbd/search_path.h"
 #include "pbd/enumwriter.h"
 
@@ -65,6 +65,8 @@
 #include "push2.h"
 #include "track_mix.h"
 #include "utils.h"
+
+#include "pbd/i18n.h"
 
 #ifdef __APPLE__
 #define Rect ArdourCanvas::Rect
@@ -177,7 +179,7 @@ TrackMixLayout::show ()
 	                                    Push2::Lower5, Push2::Lower6, Push2::Lower7, Push2::Lower8 };
 
 	for (size_t n = 0; n < sizeof (lower_buttons) / sizeof (lower_buttons[0]); ++n) {
-		Push2::Button* b = p2.button_by_id (lower_buttons[n]);
+		boost::shared_ptr<Push2::Button> b = p2.button_by_id (lower_buttons[n]);
 		b->set_color (Push2::LED::DarkGray);
 		b->set_state (Push2::LED::OneShot24th);
 		p2.write (b->state_msg());
@@ -222,7 +224,7 @@ TrackMixLayout::button_lower (uint32_t n)
 		break;
 	case 1:
 		if (stripable->solo_control()) {
-			stripable->solo_control()->set_value (!stripable->solo_control()->get_value(), PBD::Controllable::UseGroup);
+			session.set_control (stripable->solo_control(), !stripable->solo_control()->self_soloed(), PBD::Controllable::UseGroup);
 		}
 		break;
 	case 2:
@@ -289,7 +291,7 @@ TrackMixLayout::simple_control_change (boost::shared_ptr<AutomationControl> ac, 
 		return;
 	}
 
-	Push2::Button* b = p2.button_by_id (bid);
+	boost::shared_ptr<Push2::Button> b = p2.button_by_id (bid);
 
 	if (!b) {
 		return;
@@ -311,7 +313,7 @@ TrackMixLayout::solo_mute_change ()
 		return;
 	}
 
-	Push2::Button* b = p2.button_by_id (Push2::Lower2);
+	boost::shared_ptr<Push2::Button> b = p2.button_by_id (Push2::Lower2);
 
 	if (b) {
 		boost::shared_ptr<SoloControl> sc = stripable->solo_control();
@@ -402,8 +404,8 @@ TrackMixLayout::monitoring_change ()
 		return;
 	}
 
-	Push2::Button* b1 = p2.button_by_id (Push2::Lower4);
-	Push2::Button* b2 = p2.button_by_id (Push2::Lower5);
+	boost::shared_ptr<Push2::Button> b1 = p2.button_by_id (Push2::Lower4);
+	boost::shared_ptr<Push2::Button> b2 = p2.button_by_id (Push2::Lower5);
 	uint8_t b1_color;
 	uint8_t b2_color;
 

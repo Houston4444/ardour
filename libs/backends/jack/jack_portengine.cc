@@ -1,21 +1,21 @@
 /*
-    Copyright (C) 2013 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2014-2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <string.h>
 #include <stdint.h>
@@ -109,19 +109,25 @@ JACKAudioBackend::set_port_name (PortHandle port, const std::string& name)
 #if HAVE_JACK_PORT_RENAME
 	jack_client_t* client = _jack_connection->jack();
 	if (client) {
-		return jack_port_rename (client, (jack_port_t*) port, name.c_str());
+		return jack_port_rename (client, boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr, name.c_str());
 	} else {
 		return -1;
 	}
 #else
-	return jack_port_set_name ((jack_port_t*) port, name.c_str());
+	return jack_port_set_name (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr, name.c_str());
 #endif
 }
 
 string
 JACKAudioBackend::get_port_name (PortHandle port) const
 {
-	return jack_port_name ((jack_port_t*) port);
+	return jack_port_name (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr);
+}
+
+PortFlags
+JACKAudioBackend::get_port_flags (PortHandle port) const
+{
+	return PortFlags (jack_port_flags (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr));
 }
 
 int
@@ -132,8 +138,8 @@ JACKAudioBackend::get_port_property (PortHandle port, const std::string& key, st
 	char *cvalue = NULL;
 	char *ctype = NULL;
 
-	jack_uuid_t uuid = jack_port_uuid((jack_port_t*) port);
-	rv = jack_get_property(uuid, key.c_str(), &cvalue, &ctype);
+	jack_uuid_t uuid = jack_port_uuid (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr);
+	rv = jack_get_property (uuid, key.c_str(), &cvalue, &ctype);
 
 	if (0 == rv && cvalue) {
 		value = cvalue;
@@ -158,7 +164,7 @@ JACKAudioBackend::set_port_property (PortHandle port, const std::string& key, co
 #ifdef HAVE_JACK_METADATA // really everyone ought to have this by now.
 	int rv = -1;
 	jack_client_t* client = _jack_connection->jack();
-	jack_uuid_t uuid = jack_port_uuid((jack_port_t*) port);
+	jack_uuid_t uuid = jack_port_uuid (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr);
 	return jack_set_property(client, uuid, key.c_str(), value.c_str(), type.c_str());
 	return rv;
 #else
@@ -166,17 +172,44 @@ JACKAudioBackend::set_port_property (PortHandle port, const std::string& key, co
 #endif
 }
 
-PortEngine::PortHandle
-JACKAudioBackend:: get_port_by_name (const std::string& name) const
+PortEngine::PortPtr
+JACKAudioBackend::get_port_by_name (const std::string& name) const
 {
-	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, 0);
-	return (PortHandle) jack_port_by_name (_priv_jack, name.c_str());
+	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, PortEngine::PortPtr());
+	jack_port_t * jack_port = jack_port_by_name (_priv_jack, name.c_str());
+
+	if (!jack_port) {
+		return PortEngine::PortPtr();
+	}
+
+	boost::shared_ptr<JackPorts> ports = _jack_ports.reader ();
+
+	JackPorts::const_iterator i =  ports->find (jack_port);
+
+	if (i != ports->end()) {
+		return i->second;
+	}
+
+	boost::shared_ptr<JackPort> jp;
+
+	{
+		RCUWriter<JackPorts> writer (_jack_ports);
+		boost::shared_ptr<JackPorts> ports = writer.get_copy();
+		jp.reset (new JackPort (jack_port));
+		ports->insert (std::make_pair (jack_port, jp));
+	}
+
+	_jack_ports.flush ();
+
+	return jp;
 }
 
 void
 JACKAudioBackend::_registration_callback (jack_port_id_t /*id*/, int /*reg*/, void* arg)
 {
 	static_cast<JACKAudioBackend*> (arg)->manager.registration_callback ();
+	static_cast<JACKAudioBackend*> (arg)->engine.latency_callback (false);
+	static_cast<JACKAudioBackend*> (arg)->engine.latency_callback (true);
 }
 
 int
@@ -207,17 +240,17 @@ JACKAudioBackend::connect_callback (jack_port_id_t id_a, jack_port_id_t id_b, in
 }
 
 bool
-JACKAudioBackend::connected (PortHandle port, bool process_callback_safe)
+JACKAudioBackend::connected (PortHandle p, bool process_callback_safe)
 {
 	bool ret = false;
-
+	jack_port_t* port = boost::dynamic_pointer_cast<JackPort>(p)->jack_ptr;
 	const char** ports;
 
 	if (process_callback_safe) {
-		ports = jack_port_get_connections ((jack_port_t*)port);
+		ports = jack_port_get_connections (port);
 	} else {
 		GET_PRIVATE_JACK_POINTER_RET (_priv_jack, false);
-		ports = jack_port_get_all_connections (_priv_jack, (jack_port_t*)port);
+		ports = jack_port_get_all_connections (_priv_jack, port);
 	}
 
 	if (ports) {
@@ -230,16 +263,17 @@ JACKAudioBackend::connected (PortHandle port, bool process_callback_safe)
 }
 
 bool
-JACKAudioBackend::connected_to (PortHandle port, const std::string& other, bool process_callback_safe)
+JACKAudioBackend::connected_to (PortHandle p, const std::string& other, bool process_callback_safe)
 {
 	bool ret = false;
 	const char** ports;
+	jack_port_t* port = boost::dynamic_pointer_cast<JackPort>(p)->jack_ptr;
 
 	if (process_callback_safe) {
-		ports = jack_port_get_connections ((jack_port_t*)port);
+		ports = jack_port_get_connections (port);
 	} else {
 		GET_PRIVATE_JACK_POINTER_RET (_priv_jack, false);
-		ports = jack_port_get_all_connections (_priv_jack, (jack_port_t*)port);
+		ports = jack_port_get_all_connections (_priv_jack, port);
 	}
 
 	if (ports) {
@@ -258,7 +292,7 @@ bool
 JACKAudioBackend::physically_connected (PortHandle p, bool process_callback_safe)
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, false);
-	jack_port_t* port = (jack_port_t*) p;
+	jack_port_t* port = boost::dynamic_pointer_cast<JackPort>(p)->jack_ptr;
 
 	const char** ports;
 
@@ -289,7 +323,7 @@ bool
 JACKAudioBackend::externally_connected (PortHandle p, bool process_callback_safe)
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, false);
-	jack_port_t* port = (jack_port_t*) p;
+	jack_port_t* port = boost::dynamic_pointer_cast<JackPort>(p)->jack_ptr;
 
 	const char** ports;
 
@@ -319,15 +353,16 @@ JACKAudioBackend::externally_connected (PortHandle p, bool process_callback_safe
 }
 
 int
-JACKAudioBackend::get_connections (PortHandle port, vector<string>& s, bool process_callback_safe)
+JACKAudioBackend::get_connections (PortHandle p, vector<string>& s, bool process_callback_safe)
 {
 	const char** ports;
+	jack_port_t* port = boost::dynamic_pointer_cast<JackPort>(p)->jack_ptr;
 
 	if (process_callback_safe) {
-		ports = jack_port_get_connections ((jack_port_t*)port);
+		ports = jack_port_get_connections (port);
 	} else {
 		GET_PRIVATE_JACK_POINTER_RET (_priv_jack, 0);
-		ports = jack_port_get_all_connections (_priv_jack, (jack_port_t*)port);
+		ports = jack_port_get_all_connections (_priv_jack, port);
 	}
 
 	if (ports) {
@@ -341,9 +376,9 @@ JACKAudioBackend::get_connections (PortHandle port, vector<string>& s, bool proc
 }
 
 DataType
-JACKAudioBackend::port_data_type (PortHandle p) const
+JACKAudioBackend::port_data_type (PortHandle port) const
 {
-	return jack_port_type_to_ardour_data_type (jack_port_type ((jack_port_t*) p));
+	return jack_port_type_to_ardour_data_type (jack_port_type (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr));
 }
 
 const string&
@@ -353,13 +388,13 @@ JACKAudioBackend::my_name() const
 }
 
 bool
-JACKAudioBackend::port_is_physical (PortHandle ph) const
+JACKAudioBackend::port_is_physical (PortHandle port) const
 {
-	if (!ph) {
+	if (!port) {
                 return false;
         }
 
-        return jack_port_flags ((jack_port_t*) ph) & JackPortIsPhysical;
+	return jack_port_flags (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr) & JackPortIsPhysical;
 }
 
 int
@@ -455,41 +490,70 @@ JACKAudioBackend::can_monitor_input () const
 int
 JACKAudioBackend::request_input_monitoring (PortHandle port, bool yn)
 {
-	return jack_port_request_monitor ((jack_port_t*) port, yn);
+	return jack_port_request_monitor (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr, yn);
 }
 int
 JACKAudioBackend::ensure_input_monitoring (PortHandle port, bool yn)
 {
-	return jack_port_ensure_monitor ((jack_port_t*) port, yn);
+	return jack_port_ensure_monitor (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr, yn);
 }
 bool
 JACKAudioBackend::monitoring_input (PortHandle port)
 {
-	return jack_port_monitoring_input ((jack_port_t*) port);
+	return jack_port_monitoring_input (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr);
 }
 
-PortEngine::PortHandle
+PortEngine::PortPtr
 JACKAudioBackend::register_port (const std::string& shortname, ARDOUR::DataType type, ARDOUR::PortFlags flags)
 {
-	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, 0);
-	return jack_port_register (_priv_jack, shortname.c_str(),
-				   ardour_data_type_to_jack_port_type (type),
-				   ardour_port_flags_to_jack_flags (flags),
-				   0);
+	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, PortEngine::PortPtr());
+	jack_port_t* jack_port = jack_port_register (_priv_jack, shortname.c_str(),
+	                                             ardour_data_type_to_jack_port_type (type),
+	                                             ardour_port_flags_to_jack_flags (flags),
+	                                             0);
+	if (!jack_port) {
+		return PortEngine::PortPtr();
+	}
+
+	boost::shared_ptr<JackPort> jp;
+
+	{
+		RCUWriter<JackPorts> writer (_jack_ports);
+		boost::shared_ptr<JackPorts> ports = writer.get_copy();
+
+		jp.reset (new JackPort (jack_port));
+
+		ports->insert (std::make_pair (jack_port, jp));
+	}
+
+	_jack_ports.flush();
+
+	 return jp;
 }
 
 void
 JACKAudioBackend::unregister_port (PortHandle port)
 {
 	GET_PRIVATE_JACK_POINTER (_priv_jack);
-	(void) jack_port_unregister (_priv_jack, (jack_port_t*) port);
+	boost::shared_ptr<JackPort> jp = boost::dynamic_pointer_cast<JackPort>(port);
+
+	{
+		RCUWriter<JackPorts> writer (_jack_ports);
+		boost::shared_ptr<JackPorts> ports = writer.get_copy();
+
+		ports->erase (jp->jack_ptr);
+	}
+
+	_jack_ports.flush ();
+
+	(void) jack_port_unregister (_priv_jack, jp->jack_ptr);
 }
 
 int
 JACKAudioBackend::connect (PortHandle port, const std::string& other)
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, -1);
-	return jack_connect (_priv_jack, jack_port_name ((jack_port_t*) port), other.c_str());
+	return jack_connect (_priv_jack, jack_port_name (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr), other.c_str());
 }
 int
 JACKAudioBackend::connect (const std::string& src, const std::string& dst)
@@ -504,7 +568,7 @@ int
 JACKAudioBackend::disconnect (PortHandle port, const std::string& other)
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, -1);
-	return jack_disconnect (_priv_jack, jack_port_name ((jack_port_t*) port), other.c_str());
+	return jack_disconnect (_priv_jack, jack_port_name (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr), other.c_str());
 }
 
 int
@@ -518,7 +582,7 @@ int
 JACKAudioBackend::disconnect_all (PortHandle port)
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, -1);
-	return jack_port_disconnect (_priv_jack, (jack_port_t*) port);
+	return jack_port_disconnect (_priv_jack, boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr);
 }
 
 int
@@ -562,7 +626,7 @@ JACKAudioBackend::set_latency_range (PortHandle port, bool for_playback, Latency
 	range.min = r.min;
 	range.max = r.max;
 
-	jack_port_set_latency_range ((jack_port_t*) port, for_playback ? JackPlaybackLatency : JackCaptureLatency, &range);
+	jack_port_set_latency_range (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr, for_playback ? JackPlaybackLatency : JackCaptureLatency, &range);
 }
 
 LatencyRange
@@ -571,7 +635,7 @@ JACKAudioBackend::get_latency_range (PortHandle port, bool for_playback)
 	jack_latency_range_t range;
 	LatencyRange ret;
 
-	jack_port_get_latency_range ((jack_port_t*) port, for_playback ? JackPlaybackLatency : JackCaptureLatency, &range);
+	jack_port_get_latency_range (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr, for_playback ? JackPlaybackLatency : JackCaptureLatency, &range);
 
 	ret.min = range.min;
 	ret.max = range.max;
@@ -582,7 +646,7 @@ JACKAudioBackend::get_latency_range (PortHandle port, bool for_playback)
 void*
 JACKAudioBackend::get_buffer (PortHandle port, pframes_t nframes)
 {
-	return jack_port_get_buffer ((jack_port_t*) port, nframes);
+	return jack_port_get_buffer (boost::dynamic_pointer_cast<JackPort>(port)->jack_ptr, nframes);
 }
 
 uint32_t

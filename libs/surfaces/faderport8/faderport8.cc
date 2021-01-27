@@ -1,20 +1,21 @@
 /*
- * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
- * Copyright (C) 2015 Paul Davis
+ * Copyright (C) 2017-2018 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2017-2018 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2017 Paul Davis <paul@linuxaudiosystems.com>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <cstdlib>
@@ -37,8 +38,10 @@
 #include "ardour/debug.h"
 #include "ardour/midi_track.h"
 #include "ardour/midiport_manager.h"
+#include "ardour/panner_shell.h"
 #include "ardour/plugin.h"
 #include "ardour/plugin_insert.h"
+#include "ardour/plugin_manager.h"
 #include "ardour/processor.h"
 #include "ardour/rc_configuration.h"
 #include "ardour/route.h"
@@ -50,11 +53,11 @@
 #include "faderport8.h"
 
 using namespace ARDOUR;
-using namespace ArdourSurface;
 using namespace PBD;
 using namespace Glib;
 using namespace std;
-using namespace ArdourSurface::FP8Types;
+using namespace ArdourSurface::FP_NAMESPACE;
+using namespace ArdourSurface::FP_NAMESPACE::FP8Types;
 
 #include "pbd/i18n.h"
 
@@ -85,8 +88,25 @@ debug_2byte_msg (std::string const& msg, int b0, int b1)
 #endif
 }
 
+bool
+FaderPort8::ProcessorCtrl::operator< (const FaderPort8::ProcessorCtrl& other) const
+{
+	if (ac->desc().display_priority == other.ac->desc().display_priority) {
+		return ac->parameter () < other.ac->parameter ();
+	}
+	/* sort higher priority first */
+	return ac->desc().display_priority > other.ac->desc().display_priority;
+}
+
+
 FaderPort8::FaderPort8 (Session& s)
+#ifdef FADERPORT16
+	: ControlProtocol (s, _("PreSonus FaderPort16"))
+#elif defined FADERPORT2
+	: ControlProtocol (s, _("PreSonus FaderPort2"))
+#else
 	: ControlProtocol (s, _("PreSonus FaderPort8"))
+#endif
 	, AbstractUI<FaderPort8Request> (name())
 	, _connection_state (ConnectionState (0))
 	, _device_active (false)
@@ -95,12 +115,14 @@ FaderPort8::FaderPort8 (Session& s)
 	, _parameter_off (0)
 	, _show_presets (false)
 	, _showing_well_known (0)
+	, _timer_divider (0)
 	, _blink_onoff (false)
 	, _shift_lock (false)
 	, _shift_pressed (0)
 	, gui (0)
 	, _link_enabled (false)
 	, _link_locked (false)
+	, _chan_locked (false)
 	, _clock_mode (1)
 	, _scribble_mode (2)
 	, _two_line_text (false)
@@ -109,8 +131,16 @@ FaderPort8::FaderPort8 (Session& s)
 	boost::shared_ptr<ARDOUR::Port> inp;
 	boost::shared_ptr<ARDOUR::Port> outp;
 
+#ifdef FADERPORT16
+	inp  = AudioEngine::instance()->register_input_port (DataType::MIDI, "FaderPort16 Recv", true);
+	outp = AudioEngine::instance()->register_output_port (DataType::MIDI, "FaderPort16 Send", true);
+#elif defined FADERPORT2
+	inp  = AudioEngine::instance()->register_input_port (DataType::MIDI, "FaderPort2 Recv", true);
+	outp = AudioEngine::instance()->register_output_port (DataType::MIDI, "FaderPort2 Send", true);
+#else
 	inp  = AudioEngine::instance()->register_input_port (DataType::MIDI, "FaderPort8 Recv", true);
 	outp = AudioEngine::instance()->register_output_port (DataType::MIDI, "FaderPort8 Send", true);
+#endif
 	_input_port = boost::dynamic_pointer_cast<AsyncMIDIPort>(inp);
 	_output_port = boost::dynamic_pointer_cast<AsyncMIDIPort>(outp);
 
@@ -118,8 +148,16 @@ FaderPort8::FaderPort8 (Session& s)
 		throw failed_constructor();
 	}
 
+#ifdef FADERPORT16
+	_input_bundle.reset (new ARDOUR::Bundle (_("FaderPort16 (Receive)"), true));
+	_output_bundle.reset (new ARDOUR::Bundle (_("FaderPort16 (Send)"), false));
+#elif defined FADERPORT2
+	_input_bundle.reset (new ARDOUR::Bundle (_("FaderPort2 (Receive)"), true));
+	_output_bundle.reset (new ARDOUR::Bundle (_("FaderPort2 (Send)"), false));
+#else
 	_input_bundle.reset (new ARDOUR::Bundle (_("FaderPort8 (Receive)"), true));
-	_output_bundle.reset (new ARDOUR::Bundle (_("FaderPort8 (Send) "), false));
+	_output_bundle.reset (new ARDOUR::Bundle (_("FaderPort8 (Send)"), false));
+#endif
 
 	_input_bundle->add_channel (
 		inp->name(),
@@ -134,6 +172,7 @@ FaderPort8::FaderPort8 (Session& s)
 		);
 
 	ARDOUR::AudioEngine::instance()->PortConnectedOrDisconnected.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::connection_handler, this, _2, _4), this);
+	ARDOUR::AudioEngine::instance()->PortPrettyNameChanged.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::ConnectionChange, this), this); /* notify GUI */
 	ARDOUR::AudioEngine::instance()->Stopped.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::engine_reset, this), this);
 	ARDOUR::Port::PortDrop.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::engine_reset, this), this);
 
@@ -241,6 +280,14 @@ FaderPort8::periodic ()
 		_musical_time.clear ();
 	}
 
+#ifdef FADERPORT16
+	/* every second, send "running" */
+	if (++_timer_divider == 10) {
+		_timer_divider = 0;
+		tx_midi3 (0xa0, 0x00, 0x00);
+	}
+#endif
+
 	/* update stripables */
 	Periodic ();
 	return true;
@@ -285,7 +332,7 @@ FaderPort8::close ()
 	DEBUG_TRACE (DEBUG::FaderPort8, "FaderPort8::close\n");
 	stop_midi_handling ();
 	session_connections.drop_connections ();
-	automation_state_connections.drop_connections ();
+	route_state_connections.drop_connections ();
 	assigned_stripable_connections.drop_connections ();
 	_assigned_strips.clear ();
 	drop_ctrl_connections ();
@@ -322,6 +369,7 @@ FaderPort8::connected ()
 	_blink_onoff = false;
 	_shift_lock = false;
 	_shift_pressed = 0;
+	_timer_divider = 0;
 
 	start_midi_handling ();
 	_ctrls.initialize ();
@@ -553,13 +601,30 @@ void
 FaderPort8::controller_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 {
 	debug_2byte_msg ("CC", tb->controller_number, tb->value);
-	// encoder
-	// val Bit 7 = direction, Bits 0-6 = number of steps
+	/* encoder
+	 *  val Bit 6 = direction, Bits 0-5 = number of steps
+	 */
+	static const uint8_t dir_mask = 0x40;
+	static const uint8_t step_mask = 0x3f;
+
 	if (tb->controller_number == 0x3c) {
-		encoder_navigate (tb->value & 0x40 ? true : false, tb->value & 0x3f);
+		encoder_navigate (tb->value & dir_mask ? true : false, tb->value & step_mask);
 	}
 	if (tb->controller_number == 0x10) {
-		encoder_parameter (tb->value & 0x40 ? true : false, tb->value & 0x3f);
+#ifdef FADERPORT2
+		if (_ctrls.nav_mode() == NavPan) {
+			encoder_parameter (tb->value & dir_mask ? true : false, tb->value & step_mask);
+		} else {
+			encoder_navigate (tb->value & dir_mask ? true : false, tb->value & step_mask);
+		}
+#else
+		encoder_parameter (tb->value & dir_mask ? true : false, tb->value & step_mask);
+#endif
+		/* if Shift key is held while turning Pan/Param, don't lock shift. */
+		if (_shift_pressed > 0 && !_shift_lock) {
+			_shift_connection.disconnect ();
+			_shift_lock = false;
+		}
 	}
 }
 
@@ -569,7 +634,12 @@ FaderPort8::note_on_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 	debug_2byte_msg ("ON", tb->note_number, tb->velocity);
 
 	/* fader touch */
-	if (tb->note_number >= 0x68 && tb->note_number <= 0x6f) {
+#ifdef FADERPORT16
+	static const uint8_t touch_id_uppper = 0x77;
+#else
+	static const uint8_t touch_id_uppper = 0x6f;
+#endif
+	if (tb->note_number >= 0x68 && tb->note_number <= touch_id_uppper) {
 		_ctrls.midi_touch (tb->note_number - 0x68, tb->velocity);
 		return;
 	}
@@ -608,7 +678,12 @@ FaderPort8::note_off_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 {
 	debug_2byte_msg ("OF", tb->note_number, tb->velocity);
 
-	if (tb->note_number >= 0x68 && tb->note_number <= 0x6f) {
+#ifdef FADERPORT16
+	static const uint8_t touch_id_uppper = 0x77;
+#else
+	static const uint8_t touch_id_uppper = 0x6f;
+#endif
+	if (tb->note_number >= 0x68 && tb->note_number <= touch_id_uppper) {
 		// fader touch
 		_ctrls.midi_touch (tb->note_number - 0x68, tb->velocity);
 		return;
@@ -701,9 +776,11 @@ FaderPort8::get_state ()
 	child->add_child_nocopy (boost::shared_ptr<ARDOUR::Port>(_output_port)->get_state());
 	node.add_child_nocopy (*child);
 
+#ifndef FADERPORT2
 	node.set_property (X_("clock-mode"), _clock_mode);
 	node.set_property (X_("scribble-mode"), _scribble_mode);
 	node.set_property (X_("two-line-text"), _two_line_text);
+#endif
 
 	for (UserActionMap::const_iterator i = _user_action_map.begin (); i != _user_action_map.end (); ++i) {
 		if (i->second.empty()) {
@@ -900,7 +977,7 @@ FaderPort8::filter_stripables (StripableList& strips) const
 			break;
 		default:
 			assert (0);
-			// fall through
+			/* fallthrough */
 		case MixAll:
 			allow_master = true;
 			flt = &flt_all;
@@ -935,6 +1012,16 @@ FaderPort8::assign_stripables (bool select_only)
 		set_periodic_display_mode (FP8Strip::Stripables);
 	}
 
+#ifdef FADERPORT2
+	boost::shared_ptr<Stripable> s = first_selected_stripable();
+	if (s) {
+		_ctrls.strip(0).set_stripable (s, _ctrls.fader_mode() == ModePan);
+	} else {
+		_ctrls.strip(0).unset_controllables ( FP8Strip::CTRL_ALL );
+	}
+	return;
+#endif
+
 	int n_strips = strips.size();
 	int channel_off = get_channel_off (_ctrls.mix_mode ());
 	channel_off = std::min (channel_off, n_strips - N_STRIPS);
@@ -958,10 +1045,17 @@ FaderPort8::assign_stripables (bool select_only)
 		(*s)->presentation_info ().PropertyChanged.connect (assigned_stripable_connections, MISSING_INVALIDATOR,
 				boost::bind (&FaderPort8::notify_stripable_property_changed, this, boost::weak_ptr<Stripable> (*s), _1), this);
 
+		if (boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route>(*s)) {
+			if (r->panner_shell()) {
+				r->panner_shell()->Changed.connect (assigned_stripable_connections, MISSING_INVALIDATOR,
+				boost::bind (&FaderPort8::notify_stripable_property_changed, this, boost::weak_ptr<Stripable> (*s), PropertyChange()), this);
+			}
+		}
+
 		if (select_only) {
 			/* used in send mode */
 			_ctrls.strip(id).set_text_line (3, (*s)->name (), true);
-			_ctrls.strip(id).select_button ().set_color ((*s)->presentation_info ().color());
+			_ctrls.strip(id).set_select_button_color ((*s)->presentation_info ().color());
 			/* update selection lights */
 			_ctrls.strip(id).select_button ().set_active ((*s)->is_selected ());
 			_ctrls.strip(id).select_button ().set_blinking (*s == first_selected_stripable ());
@@ -1096,7 +1190,7 @@ FaderPort8::assign_processor_ctrls ()
 	std::vector <ProcessorCtrl*> toggle_params;
 	std::vector <ProcessorCtrl*> slider_params;
 
-	for ( std::list <ProcessorCtrl>::iterator i = _proc_params.begin(); i != _proc_params.end(); ++i) {
+	for (std::list<ProcessorCtrl>::iterator i = _proc_params.begin(); i != _proc_params.end(); ++i) {
 		if ((*i).ac->toggled()) {
 			toggle_params.push_back (&(*i));
 		} else {
@@ -1229,6 +1323,7 @@ FaderPort8::build_well_known_processor_ctrls (boost::shared_ptr<Stripable> s, bo
 	} else {
 		PUSH_BACK_NON_NULL ("Comp In", s->comp_enable_controllable ());
 		PUSH_BACK_NON_NULL ("Threshold", s->comp_threshold_controllable ());
+		PUSH_BACK_NON_NULL ("Makeup", s->comp_makeup_controllable ());
 		PUSH_BACK_NON_NULL ("Speed", s->comp_speed_controllable ());
 		PUSH_BACK_NON_NULL ("Mode", s->comp_mode_controllable ());
 	}
@@ -1315,8 +1410,12 @@ FaderPort8::select_plugin (int num)
 		if (n == "hidden") {
 			continue;
 		}
+
 		_proc_params.push_back (ProcessorCtrl (n, proc->automation_control (*i)));
 	}
+
+	/* sort by display priority */
+	_proc_params.sort ();
 
 	// TODO: open plugin GUI  if (_proc_params.size() > 0)
 
@@ -1346,27 +1445,6 @@ FaderPort8::select_plugin_preset (size_t num)
 	assign_processor_ctrls ();
 }
 
-/* short 4 chars at most */
-static std::string plugintype (ARDOUR::PluginType t) {
-	switch (t) {
-		case AudioUnit:
-			return "AU";
-		case LADSPA:
-			return "LV1";
-		case LV2:
-			return "LV2";
-		case Windows_VST:
-		case LXVST:
-		case MacVST:
-			return "VST";
-		case Lua:
-			return "Lua";
-		default:
-			break;
-	}
-	return enum_2_string (t);
-}
-
 void
 FaderPort8::spill_plugins ()
 {
@@ -1392,12 +1470,14 @@ FaderPort8::spill_plugins ()
 
 	for (uint32_t i = 0; 0 != (proc = r->nth_plugin (i)); ++i) {
 		if (!proc->display_to_user ()) {
-#ifdef MIXBUS
-			boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (proc);
-			if (pi->is_channelstrip ()) // don't skip MB PRE
-#endif
 			continue;
 		}
+#ifdef MIXBUS
+		/* don't show channelstrip plugins, use "well known" */
+		if (boost::dynamic_pointer_cast<PluginInsert> (proc)->is_channelstrip ()) {
+			continue;
+		}
+#endif
 		int n_controls = 0;
 		set<Evoral::Parameter> p = proc->what_can_be_automated ();
 		for (set<Evoral::Parameter>::iterator j = p.begin(); j != p.end(); ++j) {
@@ -1456,7 +1536,7 @@ FaderPort8::spill_plugins ()
 		_ctrls.strip(id).select_button ().set_blinking (false);
 		_ctrls.strip(id).set_text_line (0, proc->name());
 		_ctrls.strip(id).set_text_line (1, pi->plugin()->maker());
-		_ctrls.strip(id).set_text_line (2, plugintype (pi->type()));
+		_ctrls.strip(id).set_text_line (2, PluginManager::plugin_type_name (pi->type()));
 		_ctrls.strip(id).set_text_line (3, "");
 
 		pi->ActiveChanged.connect (processor_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::spill_plugins, this), this);
@@ -1646,9 +1726,9 @@ FaderPort8::select_strip (boost::weak_ptr<Stripable> ws)
 # endif
 
 	if (shift_mod ()) {
-		ToggleStripableSelection (s);
+		toggle_stripable_selection (s);
 	} else {
-		SetStripableSelection (s);
+		set_stripable_selection (s);
 	}
 #else
 	/* tri-state selection: This allows to set the "first selected"
@@ -1657,9 +1737,9 @@ FaderPort8::select_strip (boost::weak_ptr<Stripable> ws)
 	 */
 	if (shift_mod ()) {
 		if (s->is_selected ()) {
-			RemoveStripableFromSelection (s);
+			remove_stripable_from_selection (s);
 		} else {
-			SetStripableSelection (s);
+			set_stripable_selection (s);
 		}
 		return;
 	}
@@ -1667,7 +1747,7 @@ FaderPort8::select_strip (boost::weak_ptr<Stripable> ws)
 		set_first_selected_stripable (s);
 		stripable_selection_changed ();
 	} else {
-		ToggleStripableSelection (s);
+		toggle_stripable_selection (s);
 	}
 #endif
 }
@@ -1704,7 +1784,7 @@ FaderPort8::notify_fader_mode_changed ()
 			break;
 	}
 	assign_strips ();
-	notify_automation_mode_changed ();
+	notify_route_state_changed ();
 }
 
 void
@@ -1757,7 +1837,11 @@ FaderPort8::notify_stripable_property_changed (boost::weak_ptr<Stripable> ws, co
 	uint8_t id = _assigned_strips[s];
 
 	if (what_changed.contains (Properties::color)) {
-		_ctrls.strip(id).select_button ().set_color (s->presentation_info ().color());
+		_ctrls.strip(id).set_select_button_color (s->presentation_info ().color());
+	}
+
+	if (what_changed.empty ()) {
+		_ctrls.strip(id).set_stripable (s, _ctrls.fader_mode() == ModePan);
 	}
 
 	if (what_changed.contains (Properties::name)) {
@@ -1776,6 +1860,20 @@ FaderPort8::notify_stripable_property_changed (boost::weak_ptr<Stripable> ws, co
 	}
 }
 
+#ifdef FADERPORT2
+void
+FaderPort8::stripable_selection_changed ()
+{
+	if (!_device_active || _chan_locked) {
+		return;
+	}
+	route_state_connections.drop_connections ();
+	assign_stripables (false);
+	subscribe_to_strip_signals ();
+}
+
+#else
+
 void
 FaderPort8::stripable_selection_changed ()
 {
@@ -1785,7 +1883,7 @@ FaderPort8::stripable_selection_changed ()
 		 */
 		return;
 	}
-	automation_state_connections.drop_connections();
+	route_state_connections.drop_connections();
 
 	switch (_ctrls.fader_mode ()) {
 		case ModePlugins:
@@ -1794,6 +1892,9 @@ FaderPort8::stripable_selection_changed ()
 				int wk = _showing_well_known;
 				drop_ctrl_connections ();
 				select_plugin (wk);
+			} else if (_proc_params.size() == 0) {
+				/* selecting plugin, update available */
+				spill_plugins ();
 			}
 			return;
 		case ModeSend:
@@ -1814,21 +1915,34 @@ FaderPort8::stripable_selection_changed ()
 		_ctrls.strip(id).select_button ().set_blinking (sel && s == first_selected_stripable ());
 	}
 
-	/* track automation-mode of primary selection */
+	subscribe_to_strip_signals ();
+}
+#endif
+
+void
+FaderPort8::subscribe_to_strip_signals ()
+{
+	/* keep track of automation-mode of primary selection, shared buttons */
 	boost::shared_ptr<Stripable> s = first_selected_stripable();
 	if (s) {
 		boost::shared_ptr<AutomationControl> ac;
 		ac = s->gain_control();
 		if (ac && ac->alist()) {
-			ac->alist()->automation_state_changed.connect (automation_state_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::notify_automation_mode_changed, this), this);
+			ac->alist()->automation_state_changed.connect (route_state_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::notify_route_state_changed, this), this);
 		}
 		ac = s->pan_azimuth_control();
 		if (ac && ac->alist()) {
-			ac->alist()->automation_state_changed.connect (automation_state_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::notify_automation_mode_changed, this), this);
+			ac->alist()->automation_state_changed.connect (route_state_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::notify_route_state_changed, this), this);
 		}
+#ifdef FADERPORT2
+		ac = s->rec_enable_control();
+		if (ac) {
+			ac->Changed.connect (route_state_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::notify_route_state_changed, this), this);
+		}
+#endif
 	}
 	/* set lights */
-	notify_automation_mode_changed ();
+	notify_route_state_changed ();
 }
 
 
@@ -1877,9 +1991,9 @@ FaderPort8::select_prev_next (bool next)
 	if (!selected) {
 		if (strips.size() > 0) {
 			if (next) {
-				SetStripableSelection (strips.front ());
+				set_stripable_selection (strips.front ());
 			} else {
-				SetStripableSelection (strips.back ());
+				set_stripable_selection (strips.back ());
 			}
 		}
 		return;
@@ -1906,13 +2020,19 @@ FaderPort8::select_prev_next (bool next)
 	}
 
 	if (found && toselect) {
-		SetStripableSelection (toselect);
+		set_stripable_selection (toselect);
 	}
 }
 
 void
 FaderPort8::bank (bool down, bool page)
 {
+#ifdef FADERPORT2
+	// XXX this should preferably be in actions.cc
+	AccessAction ("Editor", down ? "select-prev-stripable" : "select-next-stripable");
+	return;
+#endif
+
 	int dt = page ? N_STRIPS : 1;
 	if (down) {
 		dt *= -1;

@@ -1,21 +1,26 @@
 /*
-    Copyright (C) 2004
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2007-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2009 David Robillard <d@drobilla.net>
+ * Copyright (C) 2010-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2016 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2015-2016 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2015-2018 John Emmas <john@creativepost.co.uk>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef COMPILER_MSVC
 #include <stdbool.h>
@@ -28,7 +33,7 @@
 #include "ardour/tempo.h"
 #include "ardour/plugin_insert.h"
 #include "ardour/windows_vst_plugin.h"
-#include "ardour/vestige/aeffectx.h"
+#include "ardour/vestige/vestige.h"
 #include "ardour/vst_types.h"
 #ifdef WINDOWS_VST_SUPPORT
 #include <fst.h>
@@ -50,7 +55,8 @@ const char* Session::vst_can_do_strings[] = {
 	X_("receiveVstMidiEvent"),
 	X_("supportShell"),
 	X_("shellCategory"),
-	X_("shellCategorycurID")
+	X_("shellCategorycurID"),
+	X_("sizeWindow")
 };
 const int Session::vst_can_do_string_count = sizeof (vst_can_do_strings) / sizeof (char*);
 
@@ -76,6 +82,9 @@ intptr_t Session::vst_callback (
 		DEBUG_TRACE (PBD::DEBUG::VSTCallbacks, string_compose ("am callback 0x%1%2, opcode = %3%4, plugin = \"%5\"\n",
 					std::hex, (void*) DEBUG_THREAD_SELF,
 					std::dec, opcode, plug->name()));
+		if (plug->_for_impulse_analysis) {
+			plug = 0;
+		}
 	} else {
 		plug = 0;
 		session = 0;
@@ -289,7 +298,7 @@ intptr_t Session::vst_callback (
 			for (int n = 0 ; n < v->numEvents; ++n) {
 				VstMidiEvent *vme = (VstMidiEvent*) (v->events[n]->dump);
 				if (vme->type == kVstMidiType) {
-					plug->midi_buffer()->push_back(vme->deltaSamples, 3, (uint8_t*)vme->midiData);
+					plug->midi_buffer()->push_back(vme->deltaSamples, Evoral::MIDI_EVENT, 3, (uint8_t*)vme->midiData);
 				}
 			}
 		}
@@ -298,6 +307,7 @@ intptr_t Session::vst_callback (
 	case audioMasterSetTime:
 		SHOW_CALLBACK ("audioMasterSetTime");
 		// VstTimenfo* in <ptr>, filter in <value>, not supported
+		return 0;
 
 	case audioMasterTempoAt:
 		SHOW_CALLBACK ("audioMasterTempoAt");
@@ -346,7 +356,7 @@ intptr_t Session::vst_callback (
 				plug->VSTSizeWindow (); /* EMIT SIGNAL */
 			}
 		}
-		return 0;
+		return 1;
 
 	case audioMasterGetSampleRate:
 		SHOW_CALLBACK ("audioMasterGetSampleRate");
@@ -378,6 +388,7 @@ intptr_t Session::vst_callback (
 	case audioMasterGetNextPlug:
 		SHOW_CALLBACK ("audioMasterGetNextPlug");
 		// output pin in <value> (-1: first to come), returns cEffect*
+		return 0;
 
 	case audioMasterWillReplaceOrAccumulate:
 		SHOW_CALLBACK ("audioMasterWillReplaceOrAccumulate");
@@ -436,7 +447,7 @@ intptr_t Session::vst_callback (
 		SHOW_CALLBACK ("audioMasterGetVendorString");
 		// fills <ptr> with a string identifying the vendor (max 64 char)
 		strcpy ((char*) ptr, "Linux Audio Systems");
-		return 0;
+		return 1;
 
 	case audioMasterGetProductString:
 		SHOW_CALLBACK ("audioMasterGetProductString");
@@ -491,20 +502,37 @@ intptr_t Session::vst_callback (
 
 	case audioMasterUpdateDisplay:
 		SHOW_CALLBACK ("audioMasterUpdateDisplay");
-		// something has changed, update 'multi-fx' display
-		if (effect) {
-			effect->dispatcher(effect, effEditIdle, 0, 0, NULL, 0.0f);
+		/* Something has changed, update 'multi-fx' display.
+		 * (Ardour watches output ports already, and redraws when idle.)
+		 *
+		 * We assume that the internal state of the plugin has changed,
+		 * and session as well as preset is marked as modified.
+		 */
+		if (plug) {
+			plug->state_changed ();
 		}
 		return 0;
 
 	case audioMasterBeginEdit:
 		SHOW_CALLBACK ("audioMasterBeginEdit");
 		// begin of automation session (when mouse down), parameter index in <index>
+		if (plug && plug->plugin_insert ()) {
+			boost::shared_ptr<AutomationControl> ac = plug->plugin_insert ()->automation_control (Evoral::Parameter (PluginAutomation, 0, index));
+			if (ac) {
+				ac->start_touch (ac->session().transport_sample());
+			}
+		}
 		return 0;
 
 	case audioMasterEndEdit:
 		SHOW_CALLBACK ("audioMasterEndEdit");
 		// end of automation session (when mouse up),     parameter index in <index>
+		if (plug && plug->plugin_insert ()) {
+			boost::shared_ptr<AutomationControl> ac = plug->plugin_insert ()->automation_control (Evoral::Parameter (PluginAutomation, 0, index));
+			if (ac) {
+				ac->stop_touch (ac->session().transport_sample());
+			}
+		}
 		return 0;
 
 	case audioMasterOpenFileSelector:

@@ -1,22 +1,22 @@
 /*
-    Copyright (C) 2010, 2013 Paul Davis
-    Author: Robin Gareus <robin@gareus.org>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2015 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2013-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 #include <sigc++/bind.h>
 #include "ardour/tempo.h"
 
@@ -63,7 +63,7 @@ VideoImageFrame::VideoImageFrame (PublicEditor& ed, ArdourCanvas::Container& par
 	image = new ArdourCanvas::Image (_parent, Cairo::FORMAT_ARGB32, clip_width, clip_height);
 
 	img = image->get_image();
-	fill_sample(0, 0, 0);
+	fill_frame (0, 0, 0);
 	draw_line();
 	draw_x();
 	image->put_image(img);
@@ -108,7 +108,7 @@ VideoImageFrame::set_videoframe (samplepos_t videoframenumber, int re)
 	rightend = re;
 
 	img = image->get_image();
-	fill_sample(0, 0, 0);
+	fill_frame (0, 0, 0);
 	draw_x();
 	draw_line();
 	cut_rightend();
@@ -116,7 +116,7 @@ VideoImageFrame::set_videoframe (samplepos_t videoframenumber, int re)
 	exposeimg();
 
 	/* request video-frame from decoder in background thread */
-	http_get(video_frame_number);
+	http_get (video_frame_number);
 }
 
 void
@@ -135,7 +135,7 @@ VideoImageFrame::draw_line ()
 }
 
 void
-VideoImageFrame::fill_sample (const uint8_t r, const uint8_t g, const uint8_t b)
+VideoImageFrame::fill_frame (const uint8_t r, const uint8_t g, const uint8_t b)
 {
 	const int rowstride = img->stride;
 	const int clip_height = img->height;
@@ -201,16 +201,16 @@ http_get_thread (void *arg) {
 	char url[2048];
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-	snprintf(url, sizeof(url), "%s?sample=%li&w=%d&h=%d&file=%s&format=bgra",
+	snprintf(url, sizeof(url), "%s?frame=%li&w=%d&h=%d&file=%s&format=bgra",
 	  vif->get_video_server_url().c_str(),
-	  (long int) vif->get_req_sample(), vif->get_width(), vif->get_height(),
+	  (long int) vif->get_req_frame(), vif->get_width(), vif->get_height(),
 	  vif->get_video_filename().c_str()
 	);
 	int status = 0;
 	int timeout = 1000; // * 5ms -> 5sec
 	char *res = NULL;
 	do {
-		res = ArdourCurl::http_get (url, &status);
+		res = ArdourCurl::http_get (url, &status, false);
 		if (status == 503) Glib::usleep(5000); // try-again
 	} while (status == 503 && --timeout > 0);
 
@@ -234,7 +234,7 @@ VideoImageFrame::http_download_done (char *data){
 	if (!data) {
 		/* Image request failed (HTTP error or timeout) */
 		img = image->get_image();
-		fill_sample(128, 0, 0);
+		fill_frame (128, 0, 0);
 		draw_x();
 		cut_rightend();
 		draw_line();
@@ -250,7 +250,7 @@ VideoImageFrame::http_download_done (char *data){
 	}
 
 	exposeimg();
-	/* don't request samples too quickly, wait after user has zoomed */
+	/* don't request frames too quickly, wait after user has zoomed */
 	Glib::usleep(40000);
 
 	if (queued_request) {
@@ -261,7 +261,7 @@ VideoImageFrame::http_download_done (char *data){
 
 
 void
-VideoImageFrame::http_get(samplepos_t fn) {
+VideoImageFrame::http_get (samplepos_t fn) {
 	if (pthread_mutex_trylock(&request_lock)) {
 		pthread_mutex_lock(&queue_lock);
 		queued_request=true;

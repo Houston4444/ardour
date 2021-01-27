@@ -1,21 +1,27 @@
 /*
-    Copyright (C) 2010 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2006 Sampo Savolainen <v2@iki.fi>
+ * Copyright (C) 2005-2006 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2005-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2007-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2007-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2013-2015 John Emmas <john@creativepost.co.uk>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <glib.h>
 #include "pbd/gstdio_compat.h"
@@ -27,10 +33,10 @@
 #include "pbd/floating.h"
 #include "pbd/locale_guard.h"
 
-#include "ardour/vst_plugin.h"
-#include "ardour/vestige/aeffectx.h"
-#include "ardour/session.h"
 #include "ardour/vst_types.h"
+#include "ardour/vst_plugin.h"
+#include "ardour/vestige/vestige.h"
+#include "ardour/session.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/audio_buffer.h"
 
@@ -139,6 +145,31 @@ VSTPlugin::set_block_size (pframes_t nframes)
 	return 0;
 }
 
+bool
+VSTPlugin::requires_fixed_sized_buffers () const
+{
+	/* This controls if Ardour will split the plugin's run()
+	 * on automation events in order to pass sample-accurate automation
+	 * via standard control-ports.
+	 *
+	 * When returning true Ardour will *not* sub-divide the process-cycle.
+	 * Automation events that happen between cycle-start and cycle-end will be
+	 * ignored (ctrl values are interpolated to cycle-start).
+	 *
+	 * Note: This does not guarantee a fixed block-size.
+	 * e.g The process cycle may be split when looping, also
+	 * the period-size may change any time: see set_block_size()
+	 */
+	if (get_info()->n_inputs.n_midi() > 0) {
+		/* we don't yet implement midi buffer offsets (for split cycles).
+		 * Also session_vst callbacls uses _session.transport_sample() directly
+		 * (for BBT) which is not offset for plugin cycle split.
+		 */
+		return true;
+	}
+	return false;
+}
+
 float
 VSTPlugin::default_value (uint32_t which)
 {
@@ -156,7 +187,7 @@ VSTPlugin::get_parameter (uint32_t which) const
 }
 
 void
-VSTPlugin::set_parameter (uint32_t which, float newval)
+VSTPlugin::set_parameter (uint32_t which, float newval, sampleoffset_t when)
 {
 	if (which == UINT32_MAX - 1) {
 		// ardour uses enable-semantics: 1: enabled, 0: bypassed
@@ -186,15 +217,15 @@ VSTPlugin::set_parameter (uint32_t which, float newval)
 
 	if (!PBD::floateq (curval, oldval, 1)) {
 		/* value has changed, follow rest of the notification path */
-		Plugin::set_parameter (which, newval);
+		Plugin::set_parameter (which, newval, when);
 	}
 }
 
 void
-VSTPlugin::parameter_changed_externally (uint32_t which, float value )
+VSTPlugin::parameter_changed_externally (uint32_t which, float value)
 {
 	ParameterChangedExternally (which, value); /* EMIT SIGNAL */
-	Plugin::set_parameter (which, value);
+	Plugin::set_parameter (which, value, 0);
 }
 
 
@@ -260,6 +291,8 @@ VSTPlugin::add_state (XMLNode* root) const
 		chunk_node->add_content (data);
 		g_free (data);
 
+		chunk_node->set_property ("program", (int) _plugin->dispatcher (_plugin, effGetProgram, 0, 0, NULL, 0));
+
 		root->add_child_nocopy (*chunk_node);
 
 	} else {
@@ -281,11 +314,14 @@ VSTPlugin::set_state (const XMLNode& node, int version)
 {
 	LocaleGuard lg;
 	int ret = -1;
-
-#ifndef NO_PLUGIN_STATE
 	XMLNode* child;
 
 	if ((child = find_named_node (node, X_("chunk"))) != 0) {
+
+		int pgm = -1;
+		if (child->get_property (X_("program"), pgm)) {
+			_plugin->dispatcher (_plugin, effSetProgram, 0, pgm, NULL, 0);
+		};
 
 		XMLPropertyList::const_iterator i;
 		XMLNodeList::const_iterator n;
@@ -315,7 +351,6 @@ VSTPlugin::set_state (const XMLNode& node, int version)
 		ret = 0;
 
 	}
-#endif
 
 	Plugin::set_state (node, version);
 	return ret;
@@ -371,13 +406,13 @@ VSTPlugin::get_parameter_descriptor (uint32_t which, ParameterDescriptor& desc) 
 
 		/* old style */
 
-		char label[VestigeMaxLabelLen];
+		char pname[VestigeMaxLabelLen];
 		/* some VST plugins expect this buffer to be zero-filled */
-		memset (label, 0, sizeof (label));
+		memset (pname, 0, sizeof (pname));
 
-		_plugin->dispatcher (_plugin, effGetParamName, which, 0, label, 0);
+		_plugin->dispatcher (_plugin, effGetParamName, which, 0, pname, 0);
 
-		desc.label = Glib::locale_to_utf8 (label);
+		desc.label = Glib::locale_to_utf8 (pname);
 		desc.lower = 0.0f;
 		desc.upper = 1.0f;
 		desc.smallstep = desc.step = 1.f / 300.f;
@@ -392,9 +427,8 @@ VSTPlugin::get_parameter_descriptor (uint32_t which, ParameterDescriptor& desc) 
 
 	if (_parameter_defaults.find (which) == _parameter_defaults.end ()) {
 		_parameter_defaults[which] = get_parameter (which);
-	} else {
-		desc.normal = _parameter_defaults[which];
 	}
+	desc.normal = _parameter_defaults[which];
 
 	return 0;
 }
@@ -496,7 +530,7 @@ VSTPlugin::load_user_preset (PresetRecord r)
 						assert (false);
 					}
 
-					set_parameter (index, value);
+					set_parameter (index, value, 0);
 					PresetPortSetValue (index, value); /* EMIT SIGNAL */
 				}
 			}
@@ -535,19 +569,23 @@ VSTPlugin::do_save_preset (string name)
 	string const uri = string_compose (X_("VST:%1:x%2"), unique_id (), hash);
 
 	if (_plugin->flags & 32 /* effFlagsProgramsChunks */) {
-
 		p = new XMLNode (X_("ChunkPreset"));
-		p->set_property (X_("uri"), uri);
-		p->set_property (X_("label"), name);
+	} else {
+		p = new XMLNode (X_("Preset"));
+	}
+
+	p->set_property (X_("uri"), uri);
+	p->set_property (X_("version"), version ());
+	p->set_property (X_("label"), name);
+	p->set_property (X_("numParams"), parameter_count ());
+
+	if (_plugin->flags & 32) {
+
 		gchar* data = get_chunk (true);
 		p->add_content (string (data));
 		g_free (data);
 
 	} else {
-
-		p = new XMLNode (X_("Preset"));
-		p->set_property (X_("uri"), uri);
-		p->set_property (X_("label"), name);
 
 		for (uint32_t i = 0; i < parameter_count(); ++i) {
 			if (parameter_is_input (i)) {
@@ -607,12 +645,8 @@ VSTPlugin::describe_parameter (Evoral::Parameter param)
 }
 
 samplecnt_t
-VSTPlugin::signal_latency () const
+VSTPlugin::plugin_latency () const
 {
-	if (_user_latency) {
-		return _user_latency;
-	}
-
 #if ( defined(__x86_64__) || defined(_M_X64) )
 	return *((int32_t *) (((char *) &_plugin->flags) + 24)); /* initialDelay */
 #else
@@ -626,7 +660,9 @@ VSTPlugin::automatable () const
 	set<Evoral::Parameter> ret;
 
 	for (uint32_t i = 0; i < parameter_count(); ++i) {
-		ret.insert (ret.end(), Evoral::Parameter(PluginAutomation, 0, i));
+		if (_plugin->dispatcher (_plugin, effCanBeAutomated, i, 0, NULL, 0)) {
+			ret.insert (ret.end(), Evoral::Parameter(PluginAutomation, 0, i));
+		}
 	}
 
 	return ret;
@@ -635,7 +671,7 @@ VSTPlugin::automatable () const
 int
 VSTPlugin::connect_and_run (BufferSet& bufs,
 		samplepos_t start, samplepos_t end, double speed,
-		ChanMapping in_map, ChanMapping out_map,
+		ChanMapping const& in_map, ChanMapping const& out_map,
 		pframes_t nframes, samplecnt_t offset)
 {
 	Plugin::connect_and_run(bufs, start, end, speed, in_map, out_map, nframes, offset);
@@ -650,8 +686,9 @@ VSTPlugin::connect_and_run (BufferSet& bufs,
 		return 0;
 	}
 
-	_transport_sample = start;
-	_transport_speed = speed;
+	/* remain at zero during pre-roll at zero */
+	_transport_speed = end > 0 ? speed : 0;
+	_transport_sample = std::max (samplepos_t (0), start);
 
 	ChanCount bufs_count;
 	bufs_count.set(DataType::AUDIO, 1);
@@ -698,6 +735,7 @@ VSTPlugin::connect_and_run (BufferSet& bufs,
 		VstEvents* v = 0;
 		bool valid = false;
 		const uint32_t buf_index_in = in_map.get(DataType::MIDI, 0, &valid);
+		/* TODO: apply offset to MIDI buffer and trim at nframes */
 		if (valid) {
 			v = bufs.get_vst_midi (buf_index_in);
 		}
@@ -705,7 +743,8 @@ VSTPlugin::connect_and_run (BufferSet& bufs,
 		const uint32_t buf_index_out = out_map.get(DataType::MIDI, 0, &valid);
 		if (valid) {
 			_midi_out_buf = &bufs.get_midi(buf_index_out);
-			_midi_out_buf->silence(0, 0);
+			/* TODO: apply offset to MIDI buffer and trim at nframes */
+			_midi_out_buf->silence(nframes, offset);
 		} else {
 			_midi_out_buf = 0;
 		}
@@ -754,6 +793,12 @@ VSTPlugin::label () const
 	return _handle->name;
 }
 
+int32_t
+VSTPlugin::version () const
+{
+	return _plugin->version;
+}
+
 uint32_t
 VSTPlugin::parameter_count () const
 {
@@ -766,27 +811,45 @@ VSTPlugin::has_editor () const
 	return _plugin->flags & effFlagsHasEditor;
 }
 
-void
-VSTPlugin::print_parameter (uint32_t param, char *buf, uint32_t /*len*/) const
+bool
+VSTPlugin::print_parameter (uint32_t param, std::string& rv) const
 {
-	char *first_nonws;
+	char buf[64];
+	size_t len = sizeof(buf);
+	assert (len > VestigeMaxShortLabelLen);
+	memset (buf, 0, len);
 
 	_plugin->dispatcher (_plugin, 7 /* effGetParamDisplay */, param, 0, buf, 0);
 
 	if (buf[0] == '\0') {
-		return;
+		return false;
 	}
 
-	first_nonws = buf;
+	buf[len - 1] = '\0';
+
+	char* first_nonws = buf;
 	while (*first_nonws && isspace (*first_nonws)) {
-		first_nonws++;
+		++first_nonws;
 	}
 
 	if (*first_nonws == '\0') {
-		return;
+		return false;
 	}
 
 	memmove (buf, first_nonws, strlen (buf) - (first_nonws - buf) + 1);
+
+	/* optional Unit label */
+	char label[VestigeMaxNameLen];
+	memset (label, 0, sizeof (label));
+	_plugin->dispatcher (_plugin, 6 /* effGetParamLabel */, param, 0, label, 0);
+
+	if (strlen (label) > 0) {
+		std::string lbl = std::string (" ") + Glib::locale_to_utf8 (label);
+		strncat (buf, lbl.c_str(), strlen (buf) - 1);
+	}
+
+	rv = std::string (buf);
+	return true;
 }
 
 void
@@ -796,7 +859,8 @@ VSTPlugin::find_presets ()
 
 	int const vst_version = _plugin->dispatcher (_plugin, effGetVstVersion, 0, 0, NULL, 0);
 	for (int i = 0; i < _plugin->numPrograms; ++i) {
-		PresetRecord r (string_compose (X_("VST:%1:%2"), unique_id (), i), "", false);
+
+		PresetRecord r (string_compose (X_("VST:%1:%2"), unique_id (), std::setw(4), std::setfill('0'), i), "", false);
 
 		if (vst_version >= 2) {
 			char buf[256];
@@ -878,3 +942,31 @@ VSTPlugin::presets_file () const
 	return string("vst-") + unique_id ();
 }
 
+
+VSTPluginInfo::VSTPluginInfo (VSTInfo* nfo)
+{
+
+	char buf[32];
+	snprintf (buf, sizeof (buf), "%d", nfo->UniqueID);
+	unique_id = buf;
+
+	index = 0;
+
+	name = nfo->name;
+	creator = nfo->creator;
+	n_inputs.set_audio  (nfo->numInputs);
+	n_outputs.set_audio (nfo->numOutputs);
+	n_inputs.set_midi  ((nfo->wantMidi & 1) ? 1 : 0);
+	n_outputs.set_midi ((nfo->wantMidi & 2) ? 1 : 0);
+
+	_is_instrument = nfo->isInstrument;
+}
+
+bool
+VSTPluginInfo::is_instrument () const
+{
+	if (_is_instrument) {
+		return true;
+	}
+	return PluginInfo::is_instrument ();
+}

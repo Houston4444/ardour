@@ -1,22 +1,21 @@
 /*
-    Copyright (C) 1999 Paul Barton-Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-    $Id$
-*/
+ * Copyright (C) 1999 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <string>
 #include <gtkmm/stock.h>
@@ -29,30 +28,33 @@
 using namespace std;
 using namespace ArdourWidgets;
 
-Prompter::Prompter (Gtk::Window& parent, bool modal)
+Prompter::Prompter (Gtk::Window& parent, bool modal, bool with_cancel)
 	: Gtk::Dialog ("", parent, modal)
 	, first_show (true)
 	, can_accept_from_entry (false)
 {
-	init ();
+	init (with_cancel);
 }
 
-Prompter::Prompter (bool modal)
+Prompter::Prompter (bool modal, bool with_cancel)
 	: Gtk::Dialog ("", modal)
 	, first_show (true)
 	, can_accept_from_entry (false)
 {
-	init ();
+	init (with_cancel);
 }
 
 void
-Prompter::init ()
+Prompter::init (bool with_cancel)
 {
 	set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
 	set_position (Gtk::WIN_POS_MOUSE);
 	set_name ("Prompter");
 
-	add_button (Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
+	if (with_cancel) {
+		/* some callers need to name this button more sensibly */
+		add_button (Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
+	}
 
 	/*
 	   Alas a generic 'affirmative' button seems a bit useless sometimes.

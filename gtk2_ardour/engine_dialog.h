@@ -1,21 +1,24 @@
 /*
-    Copyright (C) 2010 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2007-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2007-2016 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2008-2009 David Robillard <d@drobilla.net>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __gtk2_ardour_engine_dialog_h__
 #define __gtk2_ardour_engine_dialog_h__
@@ -52,7 +55,6 @@ public:
 	bool set_state (const XMLNode&);
 
 	void set_desired_sample_rate (uint32_t);
-	bool try_autostart ();
 
 private:
 	Gtk::Notebook notebook;
@@ -92,13 +94,31 @@ private:
 	ArdourWidgets::ArdourButton start_stop_button;
 	ArdourWidgets::ArdourButton update_devices_button;
 	ArdourWidgets::ArdourButton use_buffered_io_button;
+	ArdourWidgets::ArdourButton try_autostart_button;
 
 	Gtk::Button     connect_disconnect_button;
 
 	/* latency measurement */
 
-	Gtk::ComboBoxText           lm_output_channel_combo;
-	Gtk::ComboBoxText           lm_input_channel_combo;
+	class ChannelNameCols : public Gtk::TreeModelColumnRecord
+	{
+		public:
+			ChannelNameCols () {
+				add (pretty_name);
+				add (port_name);
+			}
+			Gtk::TreeModelColumn<std::string> pretty_name;
+			Gtk::TreeModelColumn<std::string> port_name;
+	};
+
+	ChannelNameCols              lm_output_channel_cols;
+	Glib::RefPtr<Gtk::ListStore> lm_output_channel_list;
+	Gtk::ComboBox                lm_output_channel_combo;
+
+	ChannelNameCols              lm_input_channel_cols;
+	Glib::RefPtr<Gtk::ListStore> lm_input_channel_list;
+	Gtk::ComboBox                lm_input_channel_combo;
+
 	Gtk::Label                  lm_measure_label;
 	Gtk::Button                 lm_measure_button;
 	Gtk::Button                 lm_use_button;
@@ -133,7 +153,8 @@ private:
 	void sample_rate_changed ();
 	void buffer_size_changed ();
 	void nperiods_changed ();
-	void parameter_changed ();
+	void channels_changed ();
+	void latency_changed ();
 	void midi_option_changed ();
 
 	void setup_midi_tab_for_backend ();
@@ -228,6 +249,8 @@ private:
 		bool use_buffered_io;
 		std::string midi_option;
 		std::vector<MidiDeviceSettings> midi_devices;
+		std::string lm_input;
+		std::string lm_output;
 		time_t lru;
 
 		StateStruct()
@@ -249,7 +272,8 @@ private:
 
 	StateList states;
 
-	State get_matching_state (const std::string& backend);
+	bool set_state_for_backend (const std::string& backend);
+
 	State get_matching_state (const std::string& backend,
 	                          const std::string& driver,
 	                          const std::string& device);
@@ -308,10 +332,12 @@ private:
 
 	void on_show ();
 	void on_map ();
+	void config_parameter_changed (std::string const&);
 	void control_app_button_clicked ();
 	void start_stop_button_clicked ();
 	void update_devices_button_clicked ();
 	void use_buffered_io_button_clicked ();
+	void try_autostart_button_clicked ();
 	void use_latency_button_clicked ();
 	void manage_control_app_sensitivity ();
 	int push_state_to_backend (bool start);
@@ -333,6 +359,7 @@ private:
 
 	void on_switch_page (GtkNotebookPage*, guint page_num);
 	bool on_delete_event (GdkEventAny*);
+	void on_response (int);
 
 	void engine_running ();
 	void engine_stopped ();

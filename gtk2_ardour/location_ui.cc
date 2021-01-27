@@ -1,21 +1,28 @@
 /*
-    Copyright (C) 2000 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2006 Hans Fugal <hans@fugal.net>
+ * Copyright (C) 2008-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2014-2016 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2015-2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cmath>
 #include <cstdlib>
@@ -63,12 +70,14 @@ LocationEditRow::LocationEditRow(Session * sess, Location * loc, int32_t num)
 	, glue_check_button (_("Glue"))
 	, _clock_group (0)
 {
+
 	i_am_the_modifier = 0;
 
 	remove_button.set_icon (ArdourIcon::CloseCross);
 	remove_button.set_events (remove_button.get_events() & ~(Gdk::ENTER_NOTIFY_MASK|Gdk::LEAVE_NOTIFY_MASK));
 
 	number_label.set_name ("LocationEditNumberLabel");
+	date_label.set_name ("LocationDateLabel");
 	name_label.set_name ("LocationEditNameLabel");
 	name_entry.set_name ("LocationEditNameEntry");
 	cd_check_button.set_name ("LocationEditCdButton");
@@ -242,6 +251,11 @@ LocationEditRow::set_location (Location *loc)
 		item_table.attach (hide_check_button, 5, 6, 0, 1, FILL, Gtk::FILL, 4, 0);
 		item_table.attach (lock_check_button, 6, 7, 0, 1, FILL, Gtk::FILL, 4, 0);
 		item_table.attach (glue_check_button, 7, 8, 0, 1, FILL, Gtk::FILL, 4, 0);
+
+		Glib::DateTime gdt(Glib::DateTime::create_now_local (location->timestamp()));
+		string date = gdt.format ("%F %H:%M");
+		date_label.set_text(date);
+		item_table.attach (date_label, 9, 10, 0, 1, FILL, Gtk::FILL, 4, 0);
 	}
 	hide_check_button.set_active (location->is_hidden());
 	lock_check_button.set_active (location->locked());
@@ -283,12 +297,6 @@ LocationEditRow::set_location (Location *loc)
 
 		cd_check_button.set_active (location->is_cd_marker());
 		cd_check_button.show();
-
-		if (location->start() == _session->current_start_sample()) {
-			cd_check_button.set_sensitive (false);
-		} else {
-			cd_check_button.set_sensitive (true);
-		}
 
 		hide_check_button.show();
 		lock_check_button.show();
@@ -423,7 +431,7 @@ LocationEditRow::to_playhead_button_pressed (LocationPart part)
 		case LocEnd:
 			location->set_end (_session->transport_sample (), false, true,divisions);
 			if (location->is_session_range()) {
-				_session->set_end_is_free (false);
+				_session->set_session_range_is_free (false);
 			}
 			break;
 		default:
@@ -472,13 +480,13 @@ LocationEditRow::clock_changed (LocationPart part)
 		case LocEnd:
 			location->set_end (end_clock.current_time(), false, true, divisions);
 			if (location->is_session_range()) {
-				_session->set_end_is_free (false);
+				_session->set_session_range_is_free (false);
 			}
 			break;
 		case LocLength:
 			location->set_end (location->start() + length_clock.current_duration(), false, true, divisions);
 			if (location->is_session_range()) {
-				_session->set_end_is_free (false);
+				_session->set_session_range_is_free (false);
 			}
 		default:
 			break;
@@ -519,18 +527,6 @@ LocationEditRow::cd_toggled ()
 		return;
 	}
 
-	//if (cd_check_button.get_active() == location->is_cd_marker()) {
-	//	return;
-	//}
-
-	if (cd_check_button.get_active()) {
-		if (location->start() <= _session->current_start_sample()) {
-			error << _("You cannot put a CD marker at the start of the session") << endmsg;
-			cd_check_button.set_active (false);
-			return;
-		}
-	}
-
 	location->set_cd (cd_check_button.get_active(), this);
 
 	if (location->is_cd_marker()) {
@@ -541,7 +537,7 @@ LocationEditRow::cd_toggled ()
 
 		item_table.remove (cd_track_details_hbox);
 		//	  item_table.resize(1, 7);
-		redraw_ranges(); /* 	EMIT_SIGNAL */
+		redraw_ranges(); /* EMIT_SIGNAL */
 	}
 }
 
@@ -590,7 +586,7 @@ LocationEditRow::remove_button_pressed ()
 		return;
 	}
 
-	remove_requested (location); /*	EMIT_SIGNAL */
+	remove_requested (location); /* EMIT_SIGNAL */
 }
 
 
@@ -645,12 +641,6 @@ LocationEditRow::start_changed ()
 	i_am_the_modifier++;
 
 	start_clock.set (location->start());
-
-	if (location->start() == _session->current_start_sample()) {
-		cd_check_button.set_sensitive (false);
-	} else {
-		cd_check_button.set_sensitive (true);
-	}
 
 	i_am_the_modifier--;
 }
@@ -803,20 +793,20 @@ LocationUI::LocationUI (std::string state_node_name)
 	location_rows.set_name("LocationLocRows");
 	location_rows_scroller.add (location_rows);
 	location_rows_scroller.set_name ("LocationLocRowsScroller");
-	location_rows_scroller.set_policy (Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
+	location_rows_scroller.set_policy (Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
 	location_rows_scroller.set_size_request (-1, 130);
 
 	newest_location = 0;
 
-	loc_sample_box.set_spacing (5);
-	loc_sample_box.set_border_width (5);
-	loc_sample_box.set_name("LocationFrameBox");
+	loc_frame_box.set_spacing (5);
+	loc_frame_box.set_border_width (5);
+	loc_frame_box.set_name("LocationFrameBox");
 
-	loc_sample_box.pack_start (location_rows_scroller, true, true);
+	loc_frame_box.pack_start (location_rows_scroller, true, true);
 
 	add_location_button.set_name ("LocationAddLocationButton");
 
-	table->attach (loc_sample_box, 0, 2, table_row, table_row + 1);
+	table->attach (loc_frame_box, 0, 2, table_row, table_row + 1);
 	++table_row;
 
 	loc_range_panes.add (*table);
@@ -838,17 +828,17 @@ LocationUI::LocationUI (std::string state_node_name)
 	range_rows.set_name("LocationRangeRows");
 	range_rows_scroller.add (range_rows);
 	range_rows_scroller.set_name ("LocationRangeRowsScroller");
-	range_rows_scroller.set_policy (Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
+	range_rows_scroller.set_policy (Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
 	range_rows_scroller.set_size_request (-1, 130);
 
-	range_sample_box.set_spacing (5);
-	range_sample_box.set_name("LocationFrameBox");
-	range_sample_box.set_border_width (5);
-	range_sample_box.pack_start (range_rows_scroller, true, true);
+	range_frame_box.set_spacing (5);
+	range_frame_box.set_name("LocationFrameBox");
+	range_frame_box.set_border_width (5);
+	range_frame_box.pack_start (range_rows_scroller, true, true);
 
 	add_range_button.set_name ("LocationAddRangeButton");
 
-	table->attach (range_sample_box, 0, 2, table_row, table_row + 1);
+	table->attach (range_frame_box, 0, 2, table_row, table_row + 1);
 	++table_row;
 
 	loc_range_panes.add (*table);
@@ -929,6 +919,9 @@ LocationUI::location_added (Location* location)
 		punch_edit_row.set_location(location);
 	} else if (location->is_auto_loop()) {
 		loop_edit_row.set_location(location);
+	} else if (location->is_xrun()) {
+		/* we don't show xrun markers here */
+		return;
 	} else if (location->is_range_marker() || location->is_mark()) {
 		Locations::LocationList loc = _session->locations()->list ();
 		loc.sort (LocationSortByStart ());
@@ -1180,11 +1173,11 @@ LocationUI::clock_mode_from_session_instant_xml ()
 
 	XMLNode* node = _session->instant_xml (_state_node_name);
 	if (!node) {
-		return ARDOUR_UI::instance()->secondary_clock->mode();
+		return ARDOUR_UI::instance()->primary_clock->mode();
 	}
 
 	if (!node->get_property (X_("clock-mode"), _mode)) {
-		return ARDOUR_UI::instance()->secondary_clock->mode();
+		return ARDOUR_UI::instance()->primary_clock->mode();
 	}
 
 	_mode_set = true;

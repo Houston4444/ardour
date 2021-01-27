@@ -1,21 +1,27 @@
 /*
-    Copyright (C) 2009 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2009-2015 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2014 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2015-2018 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __gtk2_ardour_editor_drag_h_
 #define __gtk2_ardour_editor_drag_h_
@@ -38,6 +44,7 @@
 
 namespace ARDOUR {
 	class Location;
+	class Region;
 	class TempoSection;
 }
 
@@ -114,6 +121,9 @@ public:
 		return _current_pointer_sample;
 	}
 
+	/** return drag-motion displays video-frame of drag-location */
+	bool preview_video () const;
+
 private:
 	Editor* _editor;
 	std::list<Drag*> _drags;
@@ -183,6 +193,10 @@ public:
 		return true;
 	}
 
+	bool preview_video () const {
+		return _preview_video;
+	}
+
 	/** @return minimum number of samples (in x) and pixels (in y) that should be considered a movement */
 	virtual std::pair<ARDOUR::samplecnt_t, int> move_threshold () const {
 		return std::make_pair (1, 1);
@@ -210,6 +224,14 @@ public:
 	virtual void setup_pointer_sample_offset () {
 		_pointer_sample_offset = 0;
 	}
+
+	/** Set up the _video_sample_offset - relative to _current_pointer_sample */
+	virtual void setup_video_sample_offset () {
+		_video_sample_offset = 0;
+		_preview_video = false;
+	}
+
+	int grab_button() const { return _grab_button; }
 
 protected:
 
@@ -255,12 +277,15 @@ protected:
 	void show_verbose_cursor_time (samplepos_t);
 	void show_verbose_cursor_duration (samplepos_t, samplepos_t, double xoffset = 0);
 	void show_verbose_cursor_text (std::string const &);
+	void show_view_preview (samplepos_t);
 
 	Editor* _editor; ///< our editor
 	DragManager* _drags;
 	ArdourCanvas::Item* _item; ///< our item
 	/** Offset from the mouse's position for the drag to the start of the thing that is being dragged */
 	ARDOUR::samplecnt_t _pointer_sample_offset;
+	ARDOUR::samplecnt_t _video_sample_offset;
+	bool _preview_video;
 	bool _x_constrained; ///< true if x motion is constrained, otherwise false
 	bool _y_constrained; ///< true if y motion is constrained, otherwise false
 	bool _was_rolling; ///< true if the session was rolling before the drag started, otherwise false
@@ -283,9 +308,10 @@ private:
 	 *  samplepos. used for relative snap.
 	 */
 	samplepos_t _snap_delta;
-	double     _snap_delta_music;
+	double      _snap_delta_music;
 	CursorContext::Handle _cursor_ctx; ///< cursor change context
 	bool _constraint_pressed; ///< if the keyboard indicated constraint modifier was pressed on start_grab()
+	int _grab_button;
 };
 
 class RegionDrag;
@@ -334,6 +360,8 @@ protected:
 	int _visible_y_low;
 	int _visible_y_high;
 	uint32_t _ntracks;
+
+	void setup_video_sample_offset ();
 
 	friend class DraggingView;
 
@@ -486,8 +514,8 @@ protected:
 	bool y_movement_allowed (int delta_track, double delta_layer, int skip_invisible = 0) const;
 
 private:
-	TimeAxisView *prev_tav;		// where regions were most recently dragged from
-	TimeAxisView *orig_tav;		// where drag started
+	TimeAxisView *prev_tav; // where regions were most recently dragged from
+	TimeAxisView *orig_tav; // where drag started
 	ARDOUR::samplecnt_t prev_amount;
 	ARDOUR::samplepos_t prev_position;
 	ARDOUR::samplecnt_t selection_length;
@@ -496,6 +524,7 @@ private:
 	void add_all_after_to_views (TimeAxisView *tav, ARDOUR::samplepos_t where, const RegionSelection &exclude, bool drag_in_progress);
 	void remove_unselected_from_views (ARDOUR::samplecnt_t amount, bool move_regions);
 
+	std::list<boost::shared_ptr<ARDOUR::Region> > _orig_tav_ripples;
 };
 
 /** "Drag" to cut a region (action only on button release) */
@@ -511,7 +540,6 @@ public:
 	void aborted (bool);
 
 private:
-	EditorCursor* line;
 };
 
 /** Drags to create regions */
@@ -540,6 +568,10 @@ public:
 	void finished (GdkEvent *, bool);
 	void aborted (bool);
 
+	bool allow_vertical_autoscroll () const {
+		return false;
+	}
+
 private:
 	MidiRegionView*     region;
 	bool                relative;
@@ -560,6 +592,11 @@ public:
 	void aborted (bool);
 
 	void setup_pointer_sample_offset ();
+
+	bool allow_vertical_autoscroll () const {
+		return false;
+	}
+
 private:
 
 	double total_dx (GdkEvent * event) const; // total movement in quarter notes
@@ -588,6 +625,10 @@ public:
 
 	bool active (Editing::MouseMode mode) {
 		return mode == Editing::MouseDraw || mode == Editing::MouseContent;
+	}
+
+	bool allow_vertical_autoscroll () const {
+		return false;
 	}
 
 	bool y_movement_matters () const {
@@ -637,7 +678,7 @@ private:
 	}
 
 	MidiRegionView* _region_view;
-	samplepos_t      _last_pos;
+	samplepos_t     _last_pos;
 	double          _y;
 
 };
@@ -653,6 +694,10 @@ public:
 	void aborted (bool);
 
 	bool y_movement_matters () const {
+		return false;
+	}
+
+	bool allow_vertical_autoscroll () const {
 		return false;
 	}
 
@@ -724,6 +769,10 @@ public:
 		return false;
 	}
 
+	bool allow_vertical_autoscroll () const {
+		return false;
+	}
+
 	void setup_pointer_sample_offset ();
 
 private:
@@ -760,7 +809,7 @@ private:
 	ARDOUR::MeterSection* _real_section;
 
 	bool _copy;
-	Editing::SnapType _old_snap_type;
+	Editing::GridType _old_grid_type;
 	Editing::SnapMode _old_snap_mode;
 	XMLNode* before_state;
 };
@@ -932,6 +981,10 @@ public:
 		return false;
 	}
 
+	bool allow_vertical_autoscroll () const {
+		return false;
+	}
+
 	void setup_pointer_sample_offset ();
 };
 
@@ -947,6 +1000,10 @@ public:
 	void aborted (bool);
 
 	bool y_movement_matters () const {
+		return false;
+	}
+
+	bool allow_vertical_autoscroll () const {
 		return false;
 	}
 
@@ -974,6 +1031,7 @@ public:
 	}
 
 	void setup_pointer_sample_offset ();
+	void setup_video_sample_offset ();
 
 private:
 	void update_item (ARDOUR::Location *);
@@ -1005,6 +1063,11 @@ public:
 
 	bool active (Editing::MouseMode m);
 
+	bool allow_vertical_autoscroll () const {
+		return false;
+	}
+
+
 private:
 
 	ControlPoint* _point;
@@ -1027,6 +1090,10 @@ public:
 	void motion (GdkEvent *, bool);
 	void finished (GdkEvent *, bool);
 	void aborted (bool);
+
+	bool allow_vertical_autoscroll () const {
+		return false;
+	}
 
 private:
 
@@ -1245,7 +1312,7 @@ class AutomationRangeDrag : public Drag
 {
 public:
 	AutomationRangeDrag (Editor *, AutomationTimeAxisView *, std::list<ARDOUR::AudioRange> const &);
-	AutomationRangeDrag (Editor *, RegionView *, std::list<ARDOUR::AudioRange> const &);
+	AutomationRangeDrag (Editor *, std::list<RegionView*> const &, std::list<ARDOUR::AudioRange> const &, double y_origin, double y_height);
 
 	void start_grab (GdkEvent *, Gdk::Cursor* c = 0);
 	void motion (GdkEvent *, bool);
@@ -1258,7 +1325,7 @@ public:
 
 private:
 	void setup (std::list<boost::shared_ptr<AutomationLine> > const &);
-	double y_fraction (boost::shared_ptr<AutomationLine>, double global_y_position) const;
+	double y_fraction (double global_y_position) const;
 	double value (boost::shared_ptr<ARDOUR::AutomationList> list, double x) const;
 
 	std::list<ARDOUR::AudioRange> _ranges;
@@ -1269,11 +1336,11 @@ private:
 		std::list<ControlPoint*> points; ///< points to drag on the line
 		std::pair<ARDOUR::samplepos_t, ARDOUR::samplepos_t> range; ///< the range of all points on the line, in session samples
 		XMLNode* state; ///< the XML state node before the drag
-		double original_fraction; ///< initial y-fraction before the drag
 	};
 
 	std::list<Line> _lines;
 	double          _y_origin;
+	double          _y_height;
 	bool            _nothing_to_drag;
 	bool            _integral;
 };
@@ -1304,4 +1371,3 @@ private:
 };
 
 #endif /* __gtk2_ardour_editor_drag_h_ */
-

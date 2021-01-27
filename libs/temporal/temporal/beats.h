@@ -1,24 +1,25 @@
-/* This file is part of Evoral.
- * Copyright (C) 2008-2015 David Robillard <http://drobilla.net>
- * Copyright (C) 2000-2008 Paul Davis
+/*
+ * Copyright (C) 2017-2018 Paul Davis <paul@linuxaudiosystems.com>
  *
- * Evoral is free software; you can redistribute it and/or modify it under the
- * terms of the GNU General Public License as published by the Free Software
- * Foundation; either version 2 of the License, or (at your option) any later
- * version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
- * Evoral is distributed in the hope that it will be useful, but WITHOUT ANY
- * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
- * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #ifndef TEMPORAL_BEATS_HPP
 #define TEMPORAL_BEATS_HPP
 
+#include <cassert>
 #include <float.h>
 #include <math.h>
 #include <stdint.h>
@@ -37,19 +38,26 @@ public:
 	LIBTEMPORAL_API static const int32_t PPQN = 1920;
 
 	Beats() : _beats(0), _ticks(0) {}
+	Beats(const Beats& other) : _beats(other._beats), _ticks(other._ticks) {}
 
 	/** Normalize so ticks is within PPQN. */
 	void normalize() {
 		// First, fix negative ticks with positive beats
-		if (_beats >= 0) {
-			while (_ticks < 0) {
-				--_beats;
-				_ticks += PPQN;
-			}
+		while (_beats > 0 && _ticks < 0) {
+			--_beats;
+			_ticks += PPQN;
 		}
 
+		// Now fix positive ticks with negative beats
+		while (_beats < 0 && _ticks > 0) {
+			++_beats;
+			_ticks -= PPQN;
+		}
+
+		assert ((_beats < 0 && _ticks <= 0) || (_beats > 0 && _ticks >= 0) || _beats == 0);
+
 		// Work with positive beats and ticks to normalize
-		const int32_t sign  = _beats < 0 ? -1 : 1;
+		const int32_t sign  = _beats < 0 ? -1 : _ticks < 0 ? -1 : 1;
 		int32_t       beats = abs(_beats);
 		int32_t       ticks = abs(_ticks);
 
@@ -227,12 +235,19 @@ public:
 	}
 
 	Beats operator-() const {
-		return Beats(-_beats, -_ticks);
+		/* must avoid normalization here, which will convert a negative
+		   value into a valid beat position before zero, which is not
+		   we want here.
+		*/
+		Beats b (_beats, _ticks);
+		b._beats = -b._beats;
+		b._ticks = -b._ticks;
+		return b;
 	}
 
 	template<typename Number>
 	Beats operator*(Number factor) const {
-		return Beats(_beats * factor, _ticks * factor);
+		return ticks ((_beats * PPQN + _ticks) * factor);
 	}
 
 	template<typename Number>
@@ -308,8 +323,7 @@ namespace std {
 	template<>
 	struct numeric_limits<Temporal::Beats> {
 		static Temporal::Beats lowest() {
-			return Temporal::Beats(std::numeric_limits<int32_t>::min(),
-			                     std::numeric_limits<int32_t>::min());
+			return Temporal::Beats(std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::min());
 		}
 
 		/* We don't define min() since this has different behaviour for integral and floating point types,
@@ -317,8 +331,7 @@ namespace std {
 		   than a confusing one. */
 
 		static Temporal::Beats max() {
-			return Temporal::Beats(std::numeric_limits<int32_t>::max(),
-			                     std::numeric_limits<int32_t>::max());
+			return Temporal::Beats(std::numeric_limits<int32_t>::max(), Temporal::Beats::PPQN-1);
 		}
 	};
 }

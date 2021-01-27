@@ -1,3 +1,22 @@
+/*
+ * Copyright (C) 2016-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2016-2017 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
 #include <sigc++/bind.h>
 #include "ardour/tempo.h"
 
@@ -141,22 +160,22 @@ TempoCurve::set_position (samplepos_t sample, samplepos_t end_sample)
 		points->push_back (ArdourCanvas::Duple (editor.sample_to_pixel (end_sample - sample), y_pos));
 	} else {
 
-		const samplepos_t sample_step = max ((end_sample - sample) / 5, (samplepos_t) 1);
+		const samplepos_t sample_step = std::max ((end_sample - sample) / 5, (samplepos_t) 1);
 		samplepos_t current_sample = sample;
 
 		while (current_sample < end_sample) {
 			const double tempo_at = _tempo.tempo_at_minute (_tempo.minute_at_sample (current_sample)).note_types_per_minute();
-			const double y_pos = max ((curve_height) - (((tempo_at - _min_tempo) / (_max_tempo - _min_tempo)) * curve_height), 0.0);
+			const double y_pos = std::max ((curve_height) - (((tempo_at - _min_tempo) / (_max_tempo - _min_tempo)) * curve_height), 0.0);
 
-			points->push_back (ArdourCanvas::Duple (editor.sample_to_pixel (current_sample - sample), min (y_pos, curve_height)));
+			points->push_back (ArdourCanvas::Duple (editor.sample_to_pixel (current_sample - sample), std::min (y_pos, curve_height)));
 
 			current_sample += sample_step;
 		}
 
 		const double tempo_at = _tempo.tempo_at_minute (_tempo.minute_at_sample (end_sample)).note_types_per_minute();
-		const double y_pos = max ((curve_height) - (((tempo_at - _min_tempo) / (_max_tempo - _min_tempo)) * curve_height), 0.0);
+		const double y_pos = std::max ((curve_height) - (((tempo_at - _min_tempo) / (_max_tempo - _min_tempo)) * curve_height), 0.0);
 
-		points->push_back (ArdourCanvas::Duple (editor.sample_to_pixel (end_sample - sample), min (y_pos, curve_height)));
+		points->push_back (ArdourCanvas::Duple (editor.sample_to_pixel (end_sample - sample), std::min (y_pos, curve_height)));
 	}
 
 	_curve->set (*points);

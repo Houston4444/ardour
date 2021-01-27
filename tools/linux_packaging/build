@@ -9,8 +9,6 @@
 
 # where the GTK stack is installed
 GTKSTACK_ROOT=$HOME/gtk/inst
-# where the Ardour dependencies are installed
-ARDOURSTACK_ROOT=$HOME/a3/inst
 # the waf build tree to use when copying built/generated files
 BUILD_ROOT=../../build
 
@@ -23,7 +21,8 @@ fi
 
 MIXBUS=
 WITH_HARRISON_LV2=
-WITH_X42_LV2=
+WITH_COMMERCIAL_X42_LV2=
+WITH_GRATIS_X42_LV2=
 WITH_HARVID=
 STRIP=all
 PRINT_SYSDEPS=
@@ -38,7 +37,7 @@ NOSTRIP="libsuil|libserd|libsord|liblilv|libsratom|liblrdf|libardour|libpbd|libe
 
 : ${HARRISONCHANNELSTRIP=harrison_channelstrip}
 : ${HARRISONLV2=harrison_lv2s-n}
-: ${HARRISONDSPURL=http://www.harrisonconsoles.com/plugins/releases/public}
+: ${HARRISONDSPURL=http://rsrc.harrisonconsoles.com/plugins/releases/public}
 
 if [ $# -eq 0 ] ; then
 	echo ""
@@ -60,7 +59,8 @@ while [ $# -gt 0 ] ; do
 	--mixbus)
 		MIXBUS=1;
 		WITH_HARRISON_LV2=1 ;
-		WITH_X42_LV2=1 ;
+		WITH_COMMERCIAL_X42_LV2=1
+		WITH_GRATIS_X42_LV2=1
 		WITH_NLS=1 ;
 		STRIP=all
 		APPNAME=Mixbus ;
@@ -70,7 +70,8 @@ while [ $# -gt 0 ] ; do
 	--mixbus32c)
 		MIXBUS=1;
 		WITH_HARRISON_LV2=1 ;
-		WITH_X42_LV2=1 ;
+		WITH_COMMERCIAL_X42_LV2=1
+		WITH_GRATIS_X42_LV2=1
 		WITH_NLS=1 ;
 		STRIP=all
 		APPNAME=Mixbus32C ;
@@ -186,11 +187,14 @@ Backends=$APPLIB/backends
 
 Themes=$Shared/themes
 Templates=$Shared/templates
+PluginMetadata=$Shared/plugin_metadata
+MixerSettings=$Shared/mixer_settings
 ExportFormats=$Shared/export
 Locale=$Shared/locale
 MidiMaps=$Shared/midi_maps
 PatchFiles=$Shared/patchfiles
 LuaScripts=$Shared/scripts
+WebSurfaces=$Shared/web_surfaces
 MackieControl=$Shared/mcp
 OSC=$Shared/osc
 
@@ -252,7 +256,7 @@ fi
 # jack in the places where it might be
 #
 
-echo export 'PATH=/usr/local/bin:/opt/bin:$PATH' >> $ENVIRONMENT
+echo export 'PATH="/usr/local/bin:/opt/bin:$PATH"' >> $ENVIRONMENT
 
 # create startup helper script
 if test -d $BUILD_ROOT/vst; then
@@ -340,12 +344,6 @@ else
 	echo "Skipping NLS support"
 fi
 
-#
-# Copy stuff that may be dynamically loaded
-#
-
-cp -R $GTKSTACK_ROOT/etc/* $Etc
-
 # We rely on clearlooks, so include a version from our own build tree
 # this one is special - we will set GTK_PATH to $Libraries/gtkengines
 
@@ -365,19 +363,19 @@ cp $BUILD_ROOT/libs/surfaces/control_protocol/libardourcp.so* $Libraries
 
 # MidiMaps
 # got to be careful with names here
-for x in $BUILD_ROOT/../midi_maps/*.map ; do
+for x in $BUILD_ROOT/../share/midi_maps/*.map ; do
     cp "$x" $MidiMaps
 done
 
 # MIDNAM Patch Files
 # got to be careful with names here
-for x in $BUILD_ROOT/../patchfiles/*.midnam ; do
+for x in $BUILD_ROOT/../share/patchfiles/*.midnam ; do
     cp "$x" $PatchFiles
 done
 
 # Lua Scripts Files
 # got to be careful with names here
-for x in $BUILD_ROOT/../scripts/*.lua ; do
+for x in $BUILD_ROOT/../share/scripts/*.lua ; do
 		BN=$(basename $x)
 	  if test "${BN:0:1}" = "_"; then
 			continue;
@@ -385,24 +383,37 @@ for x in $BUILD_ROOT/../scripts/*.lua ; do
     cp "$x" $LuaScripts
 done
 
+# recusively copy web-surface html/js
+cp -a $BUILD_ROOT/../share/web_surfaces $WebSurfaces
+rm $WebSurfaces/wscript
+
 # MackieControl data
 # got to be careful with names here
-for x in $BUILD_ROOT/../mcp/*.device $BUILD_ROOT/../mcp/*.profile ; do
+for x in $BUILD_ROOT/../share/mcp/*.device $BUILD_ROOT/../share/mcp/*.profile ; do
     cp "$x" $MackieControl
 done
 
 # OSC data
 # got to be careful with names here
-for x in $BUILD_ROOT/../osc/*.preset ; do
+for x in $BUILD_ROOT/../share/osc/*.preset ; do
     cp "$x" $OSC
 done
 
+# Mixbus MixerSettings (if any)
+for x in $BUILD_ROOT/../mixer_settings/*.lua ; do
+    mkdir -p $MixerSettings  # create on demand
+    cp "$x" $MixerSettings
+done
+
 #Session templates
-cp -av $BUILD_ROOT/../templates $Templates
+cp -av $BUILD_ROOT/../share/templates $Templates
+
+# PluginMetadata
+cp -av $BUILD_ROOT/../share/plugin_metadata $PluginMetadata
 
 # ExportFormats
 # got to be careful with names here
-for x in $BUILD_ROOT/../export/*.preset $BUILD_ROOT/../export/*.format ; do
+for x in $BUILD_ROOT/../share/export/*.preset $BUILD_ROOT/../share/export/*.format ; do
     cp "$x" $ExportFormats
 done
 
@@ -410,21 +421,17 @@ done
 cp $BUILD_ROOT/libs/panners/*/lib*.so* $Panners
 
 # Backends
-for backend in jack alsa dummy wavesaudio ; do
+for backend in jack alsa dummy wavesaudio pulseaudio; do
     cp $BUILD_ROOT/libs/backends/$backend/lib*.so* $Backends
 done
 
 # VAMP plugins that we use
-cp $BUILD_ROOT/libs/vamp-plugins/libardourvampplugins.so* $Libraries
+cp $BUILD_ROOT/libs/vamp-plugins/libardourvampplugins.so $Libraries
+cp $BUILD_ROOT/libs/vamp-pyin/libardourvamppyin.so $Libraries
 
 # Suil modules (new dir 'build-stack')
 if test -d $GTKSTACK_ROOT/lib/suil-0/ ; then
     cp $GTKSTACK_ROOT/lib/suil-0/lib* $Libraries
-fi
-
-# Suil modules (old dir 'build-ardour-stack')
-if test -d $ARDOURSTACK_ROOT/lib/suil-0/ ; then
-    cp $ARDOURSTACK_ROOT/lib/suil-0/lib* $Libraries
 fi
 
 # VST scanner app (both LXVST as well as WIN-VST, 2in1)
@@ -433,8 +440,10 @@ fi
 #  neither binary nor script exists)
 if test -d $BUILD_ROOT/libs/fst ; then
     cp $BUILD_ROOT/libs/fst/ardour-vst-scanner* $APPLIB || true
+    cp $BUILD_ROOT/libs/fst/ardour-vst3-scanner* $APPLIB || true
     if test x$STRIP = xall ; then
         strip -s $APPLIB/ardour-vst-scanner*
+        strip -s $APPLIB/ardour-vst3-scanner*
     fi
 fi
 
@@ -465,6 +474,16 @@ for file in $BUILD_ROOT/session_utils/${lower_case_appname}${major_version}-*; d
 	ln -s ../lib/ardour-util.sh $APPBIN/${BN}
 	HAVE_SESSION_UTILS=true
 done
+
+if test -x $BUILD_ROOT/luasession/luasession; then
+	BN=${lower_case_appname}${major_version}-lua
+	cp -v $BUILD_ROOT/luasession/luasession $APPLIB/$BN
+	if test x$STRIP = xall ; then
+		strip -s $APPLIB/${BN}
+	fi
+	ln -s ../lib/ardour-util.sh $APPBIN/${BN}
+	HAVE_SESSION_UTILS=true
+fi
 
 if test "$HAVE_SESSION_UTILS" = true ; then
 	cat >> $APPLIB/ardour-util.sh << EOF
@@ -542,12 +561,15 @@ while [ true ] ; do
 
 			# don't use anything mapped at a specific address
 			if echo $dep | grep -qs '0x' ; then continue; fi
-			# don't include /lib
+			# don't include any distro libraries
 			if echo $dep | grep -qs "^/lib/" ; then continue; fi
-			# don't include jack
+			if echo $dep | grep -qs "^/usr/lib/" ; then continue; fi
+			if echo $dep | grep -qs "^/usr/local/lib/" ; then continue; fi
+			## the following re likley redudant ##
+			# skip jack, ALSA & pulse
 			if echo $dep | grep -qs libjack ; then continue; fi
-			# don't include ALSA
 			if echo $dep | grep -qs libasound ; then continue; fi
+			if echo $dep | grep -qs libpulse ; then continue; fi
 			# don't include any X Window libraries
 			if echo $dep | grep -qs libX\. ; then continue; fi
 			if echo $dep | grep -qs libxcb ; then continue; fi
@@ -572,6 +594,7 @@ while [ true ] ; do
 					echo "Copying dependant lib $dep    (required by ${parent})"
 					cp $dep $Libraries
 				fi
+				chmod 755 $Libraries/`basename $dep`
                                 #
                                 # reset RPATH so that the runtime linker never looks
                                 # in places we don't want it to
@@ -627,6 +650,7 @@ cp ../../system_config $Etc/system_config
 cp ../../gtk2_ardour/icons/*.png ${Shared}/icons
 cp -r ../../gtk2_ardour/icons/cursor_* ${Shared}/icons/
 cp ../../gtk2_ardour/ArdourMono.ttf $Shared
+cp ../../gtk2_ardour/ArdourSans.ttf $Shared
 cp ../../gtk2_ardour/resources/${APPNAME}-* ${Shared}/resources/
 
 # Themes: only install those named for this app
@@ -643,14 +667,12 @@ fi
 # install bundled LV2s to <app>/lib/LV2/
 cp -R $BUILD_ROOT/libs/LV2 $APPLIB/
 
-# lv2 core, classifications etc - TODO check if we need the complete LV2 ontology
-if test -d $ARDOURSTACK_ROOT/lib/lv2/lv2core.lv2 ; then
-	mkdir -p $APPLIB/LV2/lv2core.lv2
-	cp -R $ARDOURSTACK_ROOT/lib/lv2/lv2core.lv2/*.ttl $APPLIB/LV2/lv2core.lv2/
-elif test -d $GTKSTACK_ROOT/lib/lv2/lv2core.lv2 ; then
-	mkdir -p $APPLIB/LV2/lv2core.lv2
-	cp -R $GTKSTACK_ROOT/lib/lv2/lv2core.lv2/*.ttl $APPLIB/LV2/lv2core.lv2/
-fi
+# lv2 core, classifications
+for file in $GTKSTACK_ROOT/lib/lv2/*.lv2; do
+	BN=$(basename $file)
+	mkdir -p $APPLIB/LV2/$BN
+	cp $GTKSTACK_ROOT/lib/lv2/${BN}/*.ttl $APPLIB/LV2/${BN}/
+done
 
 # go through and recursively remove any .svn dirs in the bundle
 for svndir in `find $APPDIR -name .svn -type d`; do
@@ -716,12 +738,26 @@ if true ; then
 fi
 
 
-if test x$WITH_X42_LV2 != x ; then
+if test x$WITH_COMMERCIAL_X42_LV2 != x ; then
 	mkdir -p $APPLIB/LV2
 
-	echo "Adding x42 Plugins"
+	echo "Adding commercial x42 Plugins"
 
-	for proj in x42-meters x42-midifilter x42-midimap x42-stereoroute x42-eq setBfree x42-avldrums; do
+	for proj in x42-meters x42-eq x42-whirl; do
+		X42_VERSION=$(curl -s -S http://x42-plugins.com/x42/linux/${proj}.latest.txt)
+		rsync -a -q --partial \
+			rsync://x42-plugins.com/x42/linux/${proj}-lv2-linux-${WARCH}-${X42_VERSION}.zip \
+			"${CACHEDIR}/${proj}-lv2-linux-${WARCH}-${X42_VERSION}.zip"
+		unzip -q -d "$APPLIB/LV2/" "${CACHEDIR}/${proj}-lv2-linux-${WARCH}-${X42_VERSION}.zip"
+	done
+fi
+
+if test x$WITH_GRATIS_X42_LV2 != x ; then
+	mkdir -p $APPLIB/LV2
+
+	echo "Adding gratis x42 Plugins"
+
+	for proj in x42-midifilter x42-stereoroute setBfree x42-avldrums x42-limiter x42-tuner; do
 		X42_VERSION=$(curl -s -S http://x42-plugins.com/x42/linux/${proj}.latest.txt)
 		rsync -a -q --partial \
 			rsync://x42-plugins.com/x42/linux/${proj}-lv2-linux-${WARCH}-${X42_VERSION}.zip \

@@ -1,26 +1,31 @@
 /*
-    Copyright (C) 2006 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify it
-    under the terms of the GNU General Public License as published by the Free
-    Software Foundation; either version 2 of the License, or (at your option)
-    any later version.
-
-    This program is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-    for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2006-2016 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2018 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2014-2015 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cstring>
 #include <cmath>
 #include <algorithm>
 
-#include "evoral/Curve.hpp"
+#include "evoral/Curve.h"
 
 #include "ardour/amp.h"
 #include "ardour/audio_buffer.h"
@@ -143,25 +148,8 @@ Amp::run (BufferSet& bufs, samplepos_t /*start_sample*/, samplepos_t /*end_sampl
 		} else if (target_gain != GAIN_COEFF_UNITY) {
 
 			_current_gain = target_gain;
+			apply_simple_gain (bufs, nframes, _current_gain, _midi_amp);
 
-			if (_midi_amp) {
-				/* don't Trim midi velocity -- only relevant for Midi on Audio tracks */
-				for (BufferSet::midi_iterator i = bufs.midi_begin(); i != bufs.midi_end(); ++i) {
-
-					MidiBuffer& mb (*i);
-
-					for (MidiBuffer::iterator m = mb.begin(); m != mb.end(); ++m) {
-						Evoral::Event<MidiBuffer::TimeType> ev = *m;
-						if (ev.is_note_on()) {
-							scale_midi_velocity (ev, fabsf (_current_gain));
-						}
-					}
-				}
-			}
-
-			for (BufferSet::audio_iterator i = bufs.audio_begin(); i != bufs.audio_end(); ++i) {
-				apply_gain_to_buffer (i->data(), nframes, _current_gain);
-			}
 		} else {
 			/* unity target gain */
 			_current_gain = target_gain;
@@ -187,36 +175,9 @@ Amp::apply_gain (BufferSet& bufs, samplecnt_t sample_rate, samplecnt_t nframes, 
 		return target;
 	}
 
-	/* MIDI Gain */
-	if (midi_amp) {
-		/* don't Trim midi velocity -- only relevant for Midi on Audio tracks */
-		for (BufferSet::midi_iterator i = bufs.midi_begin(); i != bufs.midi_end(); ++i) {
-
-			gain_t  delta;
-			if (target < initial) {
-				/* fade out: remove more and more of delta from initial */
-				delta = -(initial - target);
-			} else {
-				/* fade in: add more and more of delta from initial */
-				delta = target - initial;
-			}
-
-			MidiBuffer& mb (*i);
-
-			for (MidiBuffer::iterator m = mb.begin(); m != mb.end(); ++m) {
-				Evoral::Event<MidiBuffer::TimeType> ev = *m;
-
-				if (ev.is_note_on()) {
-					const gain_t scale = delta * (ev.time()/(double) nframes);
-					scale_midi_velocity (ev, fabsf (initial + scale));
-				}
-			}
-		}
-	}
-
-	/* Audio Gain */
-
-	/* Low pass filter coefficient: 1.0 - e^(-2.0 * π * f / 48000) f in Hz.
+	/* Apply Audio Gain first, calculate target LFP'ed gain coefficient
+	 *
+	 * Low pass filter coefficient: 1.0 - e^(-2.0 * π * f / 48000) f in Hz.
 	 * for f << SR,  approx a ~= 6.2 * f / SR;
 	 */
 	const gain_t a = 156.825f / (gain_t)sample_rate; // 25 Hz LPF
@@ -233,51 +194,56 @@ Amp::apply_gain (BufferSet& bufs, samplecnt_t sample_rate, samplecnt_t nframes, 
 			rv = lpf;
 		}
 	}
-	if (fabsf (rv - target) < GAIN_COEFF_DELTA) return target;
-	return rv;
-}
 
-void
-Amp::declick (BufferSet& bufs, samplecnt_t nframes, int dir)
-{
-	if (nframes == 0 || bufs.count().n_total() == 0) {
-		return;
+	if (fabsf (rv - target) < GAIN_COEFF_DELTA) {
+		rv = target;
 	}
 
-	const samplecnt_t declick = std::min ((samplecnt_t) 512, nframes);
-	const double     fractional_shift = 1.0 / declick ;
-	gain_t           delta, initial;
+	/* MIDI Velocity scale from initial to LPF target */
+	if (midi_amp) {
+		/* don't Trim midi velocity -- only relevant for Midi on Audio tracks */
+		for (BufferSet::midi_iterator i = bufs.midi_begin(); i != bufs.midi_end(); ++i) {
 
-	if (dir < 0) {
-		/* fade out: remove more and more of delta from initial */
-		delta = -1.0;
-		initial = GAIN_COEFF_UNITY;
-	} else {
-		/* fade in: add more and more of delta from initial */
-		delta = 1.0;
-		initial = GAIN_COEFF_ZERO;
-	}
+			gain_t  delta;
+			if (rv < initial) {
+				/* fade out: remove more and more of delta from initial */
+				delta = -(initial - rv);
+			} else {
+				/* fade in: add more and more of delta from initial */
+				delta = rv - initial;
+			}
 
-	/* Audio Gain */
-	for (BufferSet::audio_iterator i = bufs.audio_begin(); i != bufs.audio_end(); ++i) {
-		Sample* const buffer = i->data();
+			MidiBuffer& mb (*i);
 
-		double fractional_pos = 0.0;
+			for (MidiBuffer::iterator m = mb.begin(); m != mb.end(); ) {
+				Evoral::Event<MidiBuffer::TimeType> ev = *m;
 
-		for (pframes_t nx = 0; nx < declick; ++nx) {
-			buffer[nx] *= initial + (delta * fractional_pos);
-			fractional_pos += fractional_shift;
-		}
+				if (ev.is_note_on() || ev.is_note_off()) {
+					const gain_t scale = fabsf (initial + delta * (ev.time() / (double) nframes));
+					if (scale < GAIN_COEFF_SMALL) {
+						m = mb.erase (m);
+						continue;
+					} else if (ev.is_note_on()) {
+						scale_midi_velocity (ev, scale);
+					}
+				}
+				++m;
+			}
 
-		/* now ensure the rest of the buffer has the target value applied, if necessary. */
-		if (declick != nframes) {
-			if (dir < 0) {
-				memset (&buffer[declick], 0, sizeof (Sample) * (nframes - declick));
+			/* queue MIDI all-note-off when going silent */
+			if (initial > GAIN_COEFF_SMALL && rv <= GAIN_COEFF_SMALL) {
+				for (uint8_t channel = 0; channel <= 0xF; channel++) {
+					uint8_t ev[3] = { ((uint8_t) (MIDI_CMD_CONTROL | channel)), ((uint8_t) MIDI_CTL_SUSTAIN), 0 };
+					mb.push_back (nframes - 1, Evoral::MIDI_EVENT, 3, ev);
+					ev[1] = MIDI_CTL_ALL_NOTES_OFF;
+					mb.push_back (nframes - 1, Evoral::MIDI_EVENT, 3, ev);
+				}
 			}
 		}
 	}
-}
 
+	return rv;
+}
 
 gain_t
 Amp::apply_gain (AudioBuffer& buf, samplecnt_t sample_rate, samplecnt_t nframes, gain_t initial, gain_t target, sampleoffset_t offset)
@@ -315,14 +281,15 @@ Amp::apply_simple_gain (BufferSet& bufs, samplecnt_t nframes, gain_t target, boo
 	if (fabsf (target) < GAIN_COEFF_SMALL) {
 
 		if (midi_amp) {
-			/* don't Trim midi velocity -- only relevant for Midi on Audio tracks */
 			for (BufferSet::midi_iterator i = bufs.midi_begin(); i != bufs.midi_end(); ++i) {
 				MidiBuffer& mb (*i);
 
-				for (MidiBuffer::iterator m = mb.begin(); m != mb.end(); ++m) {
+				for (MidiBuffer::iterator m = mb.begin(); m != mb.end();) {
 					Evoral::Event<MidiBuffer::TimeType> ev = *m;
-					if (ev.is_note_on()) {
-						ev.set_velocity (0);
+					if (ev.is_note_on() || ev.is_note_off()) {
+						m = mb.erase (m);
+					} else {
+						++m;
 					}
 				}
 			}
@@ -335,7 +302,6 @@ Amp::apply_simple_gain (BufferSet& bufs, samplecnt_t nframes, gain_t target, boo
 	} else if (target != GAIN_COEFF_UNITY) {
 
 		if (midi_amp) {
-			/* don't Trim midi velocity -- only relevant for Midi on Audio tracks */
 			for (BufferSet::midi_iterator i = bufs.midi_begin(); i != bufs.midi_end(); ++i) {
 				MidiBuffer& mb (*i);
 
@@ -368,7 +334,20 @@ XMLNode&
 Amp::state ()
 {
 	XMLNode& node (Processor::state ());
-	node.set_property("type", _gain_control->parameter().type() == GainAutomation ? "amp" : "trim");
+	switch (_gain_control->parameter().type()) {
+		case GainAutomation:
+			node.set_property("type", "amp");
+			break;
+		case TrimAutomation:
+			node.set_property("type", "trim");
+			break;
+		case MainOutVolume:
+			node.set_property("type", "main-volume");
+			break;
+		default:
+			assert (0);
+			break;
+	}
 	node.add_child_nocopy (_gain_control->get_state());
 
 	return node;

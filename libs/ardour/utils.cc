@@ -1,21 +1,26 @@
 /*
-    Copyright (C) 2000-2003 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2000-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006-2013 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2015 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2012-2018 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013-2014 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2013-2015 John Emmas <john@creativepost.co.uk>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "libardour-config.h"
@@ -444,62 +449,6 @@ ARDOUR::edit_mode_to_string (EditMode mode)
 	}
 }
 
-SyncSource
-ARDOUR::string_to_sync_source (string str)
-{
-	if (str == _("MIDI Timecode") || str == _("MTC")) {
-		return MTC;
-	}
-
-	if (str == _("MIDI Clock")) {
-		return MIDIClock;
-	}
-
-	if (str == _("JACK")) {
-		return Engine;
-	}
-
-	if (str == _("LTC")) {
-		return LTC;
-	}
-
-	fatal << string_compose (_("programming error: unknown sync source string \"%1\""), str) << endmsg;
-	abort(); /*NOTREACHED*/
-	return Engine;
-}
-
-/** @param sh Return a short version of the string */
-const char*
-ARDOUR::sync_source_to_string (SyncSource src, bool sh)
-{
-	switch (src) {
-	case Engine:
-		/* no other backends offer sync for now ... deal with this if we
-		 * ever have to.
-		 */
-		return S_("SyncSource|JACK");
-
-	case MTC:
-		if (sh) {
-			return S_("SyncSource|MTC");
-		} else {
-			return _("MIDI Timecode");
-		}
-
-	case MIDIClock:
-		if (sh) {
-			return S_("SyncSource|M-Clk");
-		} else {
-			return _("MIDI Clock");
-		}
-
-	case LTC:
-		return S_("SyncSource|LTC");
-	}
-	/* GRRRR .... stupid, stupid gcc - you can't get here from there, all enum values are handled */
-	return S_("SyncSource|JACK");
-}
-
 float
 ARDOUR::meter_falloff_to_float (MeterFalloff falloff)
 {
@@ -624,6 +573,8 @@ ARDOUR::native_header_format_extension (HeaderFormat hf, const DataType& type)
                 return ".aif";
         case iXML:
                 return ".ixml";
+        case FLAC:
+                return ".flac";
         case RF64:
         case RF64_WAV:
         case MBWF:

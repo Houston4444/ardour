@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2018 Robin Gareus <robin@gareus.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -11,9 +11,9 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <glibmm.h>
@@ -474,7 +474,9 @@ CoreAudioPCM::get_latency(uint32_t device_id, bool input)
 	for (size_t i = 0; i < stream_latencies.size(); ++i) {
 		max_stream_latency = std::max(max_stream_latency, stream_latencies[i]);
 	}
+#if 0
 	latency += max_stream_latency;
+#endif
 
 	return latency;
 }
@@ -1067,7 +1069,7 @@ CoreAudioPCM::cache_port_names(AudioDeviceID id, bool input)
 
 		ss << (c + 1);
 
-		if (cstr_name && decoded && (0 != std::strlen(cstr_name) ) ) {
+		if (cstr_name && decoded && (0 != ::strlen(cstr_name) ) ) {
 			ss << " - " <<  cstr_name;
 		}
 #if 0

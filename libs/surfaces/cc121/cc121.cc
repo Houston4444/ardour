@@ -1,24 +1,24 @@
 /*
-    Copyright (C) 2015 Paul Davis
-    Copyright (C) 2016 W.P. van Paassen
-
-    Thanks to Rolf Meyerhoff for reverse engineering the CC121 protocol.
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2016 W.P. van Paass
+ * Copyright (C) 2016-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2017-2018 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * Thanks to Rolf Meyerhoff for reverse engineering the CC121 protocol.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cstdlib>
 #include <sstream>
@@ -44,11 +44,11 @@
 #include "ardour/audioengine.h"
 #include "ardour/amp.h"
 #include "ardour/bundle.h"
-#include "ardour/controllable_descriptor.h"
 #include "ardour/debug.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/midi_port.h"
 #include "ardour/midiport_manager.h"
+#include "ardour/monitor_control.h"
 #include "ardour/monitor_processor.h"
 #include "ardour/profile.h"
 #include "ardour/rc_configuration.h"
@@ -389,46 +389,54 @@ CC121::encoder_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 {
         DEBUG_TRACE (DEBUG::CC121, "encoder handler");
 
+	boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (_current_stripable);
 	/* Extract absolute value*/
 	float adj = static_cast<float>(tb->value & ~0x40);
-
 	/* Get direction (negative values start at 0x40)*/
 	float sign = (tb->value & 0x40) ? -1.0 : 1.0;
+
+	/* Get amount of change (encoder clicks) * (change per click)
+	 * Create an exponential curve
+	 */
+	float curve = sign * powf (adj, (1.f + 10.f) / 10.f);
+	adj = curve * (31.f / 1000.f);
+
 	switch(tb->controller_number) {
 	case 0x10:
 	  /* pan */
-	  DEBUG_TRACE (DEBUG::CC121, "PAN encoder");
-	  if (_current_stripable) {
-	    /* Get amount of change (encoder clicks) * (change per click)*/
-	    /*Create an exponential curve*/
-	    float curve = sign * powf (adj, (1.f + 10.f) / 10.f);
-	    adj = curve * (31.f / 1000.f);
-	    ardour_pan_azimuth (adj);
-	  }
+	  if (r) { set_controllable (r->pan_azimuth_control(), adj); }
 	  break;
 	case 0x20:
 	  /* EQ 1 Q */
+	  if (r) { set_controllable (r->eq_q_controllable(0), adj); }
 	  break;
 	case 0x21:
 	  /* EQ 2 Q */
+	  if (r) { set_controllable (r->eq_q_controllable(1), adj); }
 	  break;
 	case 0x22:
 	  /* EQ 3 Q */
+	  if (r) { set_controllable (r->eq_q_controllable(2), adj); }
 	  break;
 	case 0x23:
 	  /* EQ 4 Q */
+	  if (r) { set_controllable (r->eq_q_controllable(3), adj); }
 	  break;
 	case 0x30:
 	  /* EQ 1 Frequency */
+	  if (r) { set_controllable (r->eq_freq_controllable(0), adj); }
 	  break;
 	case 0x31:
 	  /* EQ 2 Frequency */
+	  if (r) { set_controllable (r->eq_freq_controllable(1), adj); }
 	  break;
 	case 0x32:
 	  /* EQ 3 Frequency */
+	  if (r) { set_controllable (r->eq_freq_controllable(2), adj); }
 	  break;
 	case 0x33:
 	  /* EQ 4 Frequency */
+	  if (r) { set_controllable (r->eq_freq_controllable(3), adj); }
 	  break;
 	case 0x3C:
 	  /* AI */
@@ -451,15 +459,19 @@ CC121::encoder_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 	  break;
 	case 0x40:
 	  /* EQ 1 Gain */
+	  if (r) { set_controllable (r->eq_gain_controllable(0), adj); }
 	  break;
 	case 0x41:
 	  /* EQ 2 Gain */
+	  if (r) { set_controllable (r->eq_gain_controllable(1), adj); }
 	  break;
 	case 0x42:
 	  /* EQ 3 Gain */
+	  if (r) { set_controllable (r->eq_gain_controllable(2), adj); }
 	  break;
 	case 0x43:
 	  /* EQ 4 Gain */
+	  if (r) { set_controllable (r->eq_gain_controllable(3), adj); }
 	  break;
 	case 0x50:
 	  /* Value */
@@ -657,7 +669,7 @@ CC121::map_transport_state ()
 {
 	get_button (Loop).set_led_state (_output_port, session->get_play_loop());
 
-	float ts = session->transport_speed();
+	float ts = get_transport_speed();
 
 	if (ts == 0) {
 		stop_blinking (Play);
@@ -668,9 +680,9 @@ CC121::map_transport_state ()
 		start_blinking (Play);
 	}
 
-	get_button (Stop).set_led_state (_output_port, session->transport_stopped ());
-	get_button (Rewind).set_led_state (_output_port, session->transport_speed() < 0.0);
-	get_button (Ffwd).set_led_state (_output_port, session->transport_speed() > 1.0);
+	get_button (Stop).set_led_state (_output_port, stop_button_onoff());
+	get_button (Rewind).set_led_state (_output_port, rewind_button_onoff());
+	get_button (Ffwd).set_led_state (_output_port, ffwd_button_onoff());
 	get_button (Jog).set_led_state (_output_port, _jogmode == scroll);
 }
 
@@ -770,7 +782,7 @@ CC121::set_state (const XMLNode& node, int version)
 	for (XMLNodeList::const_iterator n = node.children().begin(); n != node.children().end(); ++n) {
 		if ((*n)->name() == X_("Button")) {
 			int32_t xid;
-			if (!node.get_property ("id", xid)) {
+			if (!(*n)->get_property ("id", xid)) {
 				continue;
 			}
 			ButtonMap::iterator b = buttons.find (ButtonID (xid));
@@ -1064,6 +1076,7 @@ CC121::set_current_stripable (boost::shared_ptr<Stripable> r)
 		boost::shared_ptr<Track> t = boost::dynamic_pointer_cast<Track> (_current_stripable);
 		if (t) {
 			t->rec_enable_control()->Changed.connect (stripable_connections, MISSING_INVALIDATOR, boost::bind (&CC121::map_recenable, this), this);
+			t->monitoring_control()->Changed.connect (stripable_connections, MISSING_INVALIDATOR, boost::bind (&CC121::map_monitoring, this), this);
 		}
 
 		boost::shared_ptr<AutomationControl> control = _current_stripable->gain_control ();
@@ -1102,6 +1115,7 @@ CC121::map_auto ()
 			get_button (EButton).set_led_state (_output_port, false);
 			get_button (OpenVST).set_led_state (_output_port, false);
 		break;
+		case ARDOUR::Latch:
 		case ARDOUR::Touch:
 			get_button (EButton).set_led_state (_output_port, true);
 			get_button (FP_Read).set_led_state (_output_port, false);
@@ -1170,6 +1184,23 @@ CC121::map_recenable ()
 	} else {
 		get_button (Rec).set_led_state (_output_port, false);
 	}
+	map_monitoring ();
+}
+
+void
+CC121::map_monitoring ()
+{
+	boost::shared_ptr<Track> t = boost::dynamic_pointer_cast<Track> (_current_stripable);
+	if (t) {
+	  MonitorState state = t->monitoring_control()->monitoring_state ();
+		if (state == MonitoringInput || state == MonitoringCue) {
+	    get_button(InputMonitor).set_led_state (_output_port, true);
+		} else {
+	    get_button(InputMonitor).set_led_state (_output_port, false);
+		}
+	} else {
+		get_button(InputMonitor).set_led_state (_output_port, false);
+	}
 }
 
 void
@@ -1222,6 +1253,7 @@ CC121::map_stripable_state ()
 		map_recenable ();
 		map_gain ();
 		map_auto ();
+		map_monitoring ();
 
 		if (_current_stripable == session->monitor_out()) {
 			map_cut ();

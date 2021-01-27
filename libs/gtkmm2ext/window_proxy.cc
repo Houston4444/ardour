@@ -1,27 +1,26 @@
 /*
-    Copyright (C) 2015 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2015-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2017-2018 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <gtkmm/action.h>
 #include <gtkmm/window.h>
 
 #include "pbd/xml++.h"
-#include "pbd/stacktrace.h"
 
 #include "gtkmm2ext/window_proxy.h"
 #include "gtkmm2ext/visibility_tracker.h"
@@ -31,19 +30,6 @@
 using namespace Gtk;
 using namespace Gtkmm2ext;
 using namespace PBD;
-
-WindowProxy::WindowProxy (const std::string& name)
-	: _name (name)
-	, _window (0)
-	, _visible (false)
-	, _x_off (-1)
-	, _y_off (-1)
-	, _width (-1)
-	, _height (-1)
-	, vistracker (0)
-	, _state_mask (StateMask (Position|Size))
-{
-}
 
 WindowProxy::WindowProxy (const std::string& name, const std::string& menu_name)
 	: _name (name)
@@ -69,6 +55,7 @@ WindowProxy::WindowProxy (const std::string& name, const std::string& menu_name,
 	, _width (-1)
 	, _height (-1)
 	, vistracker (0)
+	, _state_mask (StateMask (Position|Size))
 {
 	set_state (node, 0);
 }
@@ -145,7 +132,11 @@ WindowProxy::toggle()
 			save_pos_and_size();
 		}
 
-		vistracker->cycle_visibility ();
+		if (vistracker) {
+			vistracker->cycle_visibility ();
+		} else {
+			_window->present ();
+		}
 
 		if (_window->is_mapped()) {
 			if (_width != -1 && _height != -1) {
@@ -211,11 +202,11 @@ void
 WindowProxy::drop_window ()
 {
 	if (_window) {
+		_window->hide ();
 		delete_connection.disconnect ();
 		configure_connection.disconnect ();
 		map_connection.disconnect ();
 		unmap_connection.disconnect ();
-		_window->hide ();
 		delete _window;
 		_window = 0;
 		delete vistracker;
@@ -236,7 +227,7 @@ WindowProxy::setup ()
 {
 	assert (_window);
 
-	vistracker = new Gtkmm2ext::VisibilityTracker (*_window);
+	assert (_window);
 
 	delete_connection = _window->signal_delete_event().connect (sigc::mem_fun (*this, &WindowProxy::delete_event_handler));
 	configure_connection = _window->signal_configure_event().connect (sigc::mem_fun (*this, &WindowProxy::configure_handler), false);
@@ -249,6 +240,7 @@ WindowProxy::setup ()
 void
 WindowProxy::map_handler ()
 {
+	vistracker = new Gtkmm2ext::VisibilityTracker (*_window);
 	/* emit our own signal */
 	signal_map ();
 }

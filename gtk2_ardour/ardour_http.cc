@@ -1,19 +1,20 @@
 /*
- * Copyright (C) 2016 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2018 Paul Davis <paul@linuxaudiosystems.com>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 //#define ARDOURCURLDEBUG
@@ -26,10 +27,11 @@
 #include <glibmm.h>
 
 #include "pbd/compose.h"
-#include "pbd/i18n.h"
 #include "pbd/error.h"
 
 #include "ardour_http.h"
+
+#include "pbd/i18n.h"
 
 #ifdef WAF_BUILD
 #include "gtk2ardour-version.h"
@@ -139,7 +141,7 @@ HttpGet::HttpGet (bool p, bool ssl)
 	, _status (-1)
 	, _result (-1)
 {
-	memset (error_buffer, 0, sizeof (*error_buffer));
+	error_buffer[0] = 0;
 	_curl = curl_easy_init ();
 
 	if (!_curl) {
@@ -166,6 +168,10 @@ HttpGet::HttpGet (bool p, bool ssl)
 	if (ssl && ca_path) {
 		curl_easy_setopt (_curl, CURLOPT_CAPATH, ca_path);
 	}
+
+	if (ssl && (ca_info || ca_path)) {
+		curl_easy_setopt (_curl, CURLOPT_SSL_VERIFYPEER, 1);
+	}
 }
 
 HttpGet::~HttpGet ()
@@ -179,14 +185,16 @@ HttpGet::~HttpGet ()
 }
 
 char*
-HttpGet::get (const char* url)
+HttpGet::get (const char* url, bool with_error_logging)
 {
 #ifdef ARDOURCURLDEBUG
-		std::cerr << "HttpGet::get() ---- new request ---"<< std::endl;
+	std::cerr << "HttpGet::get() ---- new request ---"<< std::endl;
 #endif
 	_status = _result = -1;
 	if (!_curl || !url) {
-		PBD::error << "HttpGet::get() not initialized (or NULL url)"<< endmsg;
+		if (with_error_logging) {
+			PBD::error << "HttpGet::get() not initialized (or NULL url)"<< endmsg;
+		}
 #ifdef ARDOURCURLDEBUG
 		std::cerr << "HttpGet::get() not initialized (or NULL url)"<< std::endl;
 #endif
@@ -194,7 +202,9 @@ HttpGet::get (const char* url)
 	}
 
 	if (strncmp ("http://", url, 7) && strncmp ("https://", url, 8)) {
-		PBD::error << "HttpGet::get() not a http[s] URL"<< endmsg;
+		if (with_error_logging) {
+			PBD::error << "HttpGet::get() not a http[s] URL"<< endmsg;
+		}
 #ifdef ARDOURCURLDEBUG
 		std::cerr << "HttpGet::get() not a http[s] URL"<< std::endl;
 #endif
@@ -205,7 +215,7 @@ HttpGet::get (const char* url)
 		free (mem.data);
 	} // otherwise caller is expected to have free()d or re-used it.
 
-	memset (error_buffer, 0, sizeof (*error_buffer));
+	error_buffer[0] = 0;
 	mem.data = NULL;
 	mem.size = 0;
 
@@ -218,14 +228,18 @@ HttpGet::get (const char* url)
 	CCERR ("CURLINFO_RESPONSE_CODE,");
 
 	if (_result) {
-		PBD::error << string_compose (_("HTTP request failed: (%1) %2"), _result, error_buffer) << endmsg;
+		if (with_error_logging) {
+			PBD::error << string_compose (_("HTTP request failed: (%1) %2"), _result, error_buffer) << endmsg;
+		}
 #ifdef ARDOURCURLDEBUG
 		std::cerr << string_compose (_("HTTP request failed: (%1) %2"), _result, error_buffer) << std::endl;
 #endif
 		return NULL;
 	}
 	if (_status != 200) {
+		if (with_error_logging) {
 		PBD::error << string_compose (_("HTTP request status: %1"), _status) << endmsg;
+	}
 #ifdef ARDOURCURLDEBUG
 		std::cerr << string_compose (_("HTTP request status: %1"), _status) << std::endl;
 #endif
@@ -247,9 +261,9 @@ HttpGet::error () const {
 }
 
 char*
-ArdourCurl::http_get (const char* url, int* status) {
+ArdourCurl::http_get (const char* url, int* status, bool with_error_logging) {
 	HttpGet h (true);
-	char* rv = h.get (url);
+	char* rv = h.get (url, with_error_logging);
 	if (status) {
 		*status = h.status ();
 	}
@@ -257,6 +271,6 @@ ArdourCurl::http_get (const char* url, int* status) {
 }
 
 std::string
-ArdourCurl::http_get (const std::string& url) {
-	return HttpGet (false).get (url);
+ArdourCurl::http_get (const std::string& url, bool with_error_logging) {
+	return HttpGet (false).get (url, with_error_logging);
 }

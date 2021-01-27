@@ -1,21 +1,25 @@
 /*
-    Copyright (C) 2003 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006 Jesse Chappell <jesse@essej.net>
+ * Copyright (C) 2006 Sampo Savolainen <v2@iki.fi>
+ * Copyright (C) 2007-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2011-2012 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <algorithm>
 
@@ -161,8 +165,7 @@ struct Segment {
  *  @param cnt Number of samples to read.
  */
 ARDOUR::samplecnt_t
-AudioPlaylist::read (Sample *buf, Sample *mixdown_buffer, float *gain_buffer, samplepos_t start,
-		     samplecnt_t cnt, unsigned chan_n)
+AudioPlaylist::read (Sample *buf, Sample *mixdown_buffer, float *gain_buffer, samplepos_t start, samplecnt_t cnt, unsigned chan_n)
 {
 	DEBUG_TRACE (DEBUG::AudioPlayback, string_compose ("Playlist %1 read @ %2 for %3, channel %4, regions %5 mixdown @ %6 gain @ %7\n",
 							   name(), start, cnt, chan_n, regions.size(), mixdown_buffer, gain_buffer));
@@ -208,8 +211,15 @@ AudioPlaylist::read (Sample *buf, Sample *mixdown_buffer, float *gain_buffer, sa
 		boost::shared_ptr<AudioRegion> ar = boost::dynamic_pointer_cast<AudioRegion> (*i);
 
 		/* muted regions don't figure into it at all */
-		if ( ar->muted() )
+		if (ar->muted()) {
 			continue;
+		}
+
+		/* check for the case of solo_selection */
+		const bool force_transparent = (_session.solo_selection_active() && SoloSelectedActive() && !SoloSelectedListIncludes( (const Region*) &(**i)));
+		if (force_transparent) {
+			continue;
+		}
 
 		/* Work out which bits of this region need to be read;
 		   first, trim to the range we are reading...

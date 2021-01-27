@@ -1,21 +1,24 @@
 /*
-    Copyright (C) 2007 Paul Davis
-    Author: David Robillard
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2007-2015 David Robillard <d@drobilla.net>
+ * Copyright (C) 2008-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2009-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2017-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <utility>
 
@@ -25,6 +28,7 @@
 #include "ardour/event_type_map.h"
 #include "ardour/midi_automation_list_binder.h"
 #include "ardour/midi_region.h"
+#include "ardour/midi_track.h"
 #include "ardour/session.h"
 
 #include "gtkmm2ext/keyboard.h"
@@ -122,8 +126,8 @@ AutomationRegionView::get_fill_color() const
 void
 AutomationRegionView::mouse_mode_changed ()
 {
-	// Adjust sample colour (become more transparent for internal tools)
-	set_sample_color();
+	/* Adjust frame colour (become more transparent for internal tools) */
+	set_frame_color();
 }
 
 bool
@@ -178,18 +182,28 @@ AutomationRegionView::add_automation_event (GdkEvent *, samplepos_t when, double
 	AutomationTimeAxisView* const view = automation_view ();
 
 	/* compute vertical fractional position */
+	y = 1.0 - (y / _line->height());
 
-	const double h = trackview.current_height() - TimeAxisViewItem::NAME_HIGHLIGHT_SIZE - 2;
-	y = 1.0 - (y / h);
+	/* snap sample, prepare conversion to double beats */
+	double when_d = snap_sample_to_sample (when - _region->start ()).sample + _region->start ();
 
-	/* snap sample */
-
-	when = snap_sample_to_sample (when - _region->start ()).sample + _region->start ();
-
-	/* map using line */
-
-	double when_d = when;
+	/* convert 'when' to music-time relative to the region and scale y from interface to internal */
 	_line->view_to_model_coord (when_d, y);
+
+	if (UIConfiguration::instance().get_new_automation_points_on_lane()) {
+		boost::shared_ptr<Evoral::Control> c = _region->control (_parameter, false);
+		assert (c);
+		if (c->list()->size () == 0) {
+			/* we need the MidiTrack::MidiControl, not the region's (midi model source) control */
+			boost::shared_ptr<ARDOUR::MidiTrack> mt = boost::dynamic_pointer_cast<ARDOUR::MidiTrack> (view->parent_stripable ());
+			assert (mt);
+			boost::shared_ptr<Evoral::Control> mc = mt->control(_parameter);
+			assert (mc);
+			y = mc->user_double ();
+		} else {
+			y = c->list()->eval (when_d);
+		}
+	}
 
 	XMLNode& before = _line->the_list()->get_state();
 
@@ -206,7 +220,7 @@ AutomationRegionView::add_automation_event (GdkEvent *, samplepos_t when, double
 }
 
 bool
-AutomationRegionView::paste (samplepos_t                                      pos,
+AutomationRegionView::paste (samplepos_t                                     pos,
                              unsigned                                        paste_count,
                              float                                           times,
                              boost::shared_ptr<const ARDOUR::AutomationList> slist)

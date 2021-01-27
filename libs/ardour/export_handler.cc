@@ -1,24 +1,26 @@
 /*
-    Copyright (C) 2008-2009 Paul Davis
-    Author: Sakari Bergen
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
-
-#include "ardour/export_handler.h"
+ * Copyright (C) 2008-2013 Sakari Bergen <sakari.bergen@beatwaves.net>
+ * Copyright (C) 2008-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2009-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2013-2015 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2015-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 Johannes Mueller <github@johannes-mueller.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include "pbd/gstdio_compat.h"
 #include <glibmm.h>
@@ -31,6 +33,7 @@
 #include "ardour/audio_port.h"
 #include "ardour/debug.h"
 #include "ardour/export_graph_builder.h"
+#include "ardour/export_handler.h"
 #include "ardour/export_timespan.h"
 #include "ardour/export_channel_configuration.h"
 #include "ardour/export_status.h"
@@ -135,7 +138,7 @@ ExportHandler::add_export_config (ExportTimespanPtr timespan, ExportChannelConfi
 	return true;
 }
 
-void
+int
 ExportHandler::do_export ()
 {
 	/* Count timespans */
@@ -161,18 +164,26 @@ ExportHandler::do_export ()
 	/* Start export */
 
 	Glib::Threads::Mutex::Lock l (export_status->lock());
-	start_timespan ();
+	return start_timespan ();
 }
 
-void
+int
 ExportHandler::start_timespan ()
 {
 	export_status->timespan++;
 
+	/* stop freewheeling and wait for latency callbacks */
+	if (AudioEngine::instance()->freewheeling ()) {
+		AudioEngine::instance()->freewheel (false);
+		do {
+			Glib::usleep (AudioEngine::instance()->usecs_per_cycle ());
+		} while (AudioEngine::instance()->freewheeling ());
+	}
+
 	if (config_map.empty()) {
 		// freewheeling has to be stopped from outside the process cycle
 		export_status->set_running (false);
-		return;
+		return -1;
 	}
 
 	/* finish_timespan pops the config_map entry that has been done, so
@@ -199,7 +210,6 @@ ExportHandler::start_timespan ()
 		spec.filename->set_timespan (it->first);
 		switch (spec.channel_config->region_processing_type ()) {
 			case RegionExportChannelFactory::None:
-			case RegionExportChannelFactory::Processed:
 				region_export = false;
 				break;
 			default:
@@ -217,7 +227,7 @@ ExportHandler::start_timespan ()
 	session.ProcessExport.connect_same_thread (process_connection, boost::bind (&ExportHandler::process, this, _1));
 	process_position = current_timespan->get_start();
 	// TODO check if it's a RegionExport.. set flag to skip  process_without_events()
-	session.start_audio_export (process_position, realtime, region_export);
+	return session.start_audio_export (process_position, realtime, region_export);
 }
 
 void
@@ -227,7 +237,16 @@ ExportHandler::handle_duplicate_format_extensions()
 
 	ExtCountMap counts;
 	for (ConfigMap::iterator it = timespan_bounds.first; it != timespan_bounds.second; ++it) {
-		counts[it->second.format->extension()]++;
+		if (it->second.filename->include_channel_config && it->second.channel_config) {
+			/* stem-export has multiple files in the same timestamp, but a different channel_config for each.
+			 * However channel_config is only set in ExportGraphBuilder::Encoder::init_writer()
+			 * so we cannot yet use   it->second.filename->get_path(it->second.format).
+			 * We have to explicily check uniqueness of "channel-config + extension" here:
+			 */
+			counts[it->second.channel_config->name() + it->second.format->extension()]++;
+		} else {
+			counts[it->second.format->extension()]++;
+		}
 	}
 
 	bool duplicates_found = false;
@@ -254,10 +273,11 @@ ExportHandler::process (samplecnt_t samples)
 			// wait until we're freewheeling
 			return 0;
 		}
-	} else {
+	} else if (samples > 0) {
 		Glib::Threads::Mutex::Lock l (export_status->lock());
 		return process_timespan (samples);
 	}
+	return 0;
 }
 
 int
@@ -278,12 +298,13 @@ ExportHandler::process_timespan (samplecnt_t samples)
 		samples_to_read = samples;
 	}
 
-	process_position += samples_to_read;
-	export_status->processed_samples += samples_to_read;
-	export_status->processed_samples_current_timespan += samples_to_read;
-
 	/* Do actual processing */
-	int ret = graph_builder->process (samples_to_read, last_cycle);
+	samplecnt_t ret = graph_builder->process (samples_to_read, last_cycle);
+	if (ret > 0) {
+		process_position += ret;
+		export_status->processed_samples += ret;
+		export_status->processed_samples_current_timespan += ret;
+	}
 
 	/* Start post-processing/normalizing if necessary */
 	if (last_cycle) {
@@ -293,11 +314,11 @@ ExportHandler::process_timespan (samplecnt_t samples)
 			export_status->current_postprocessing_cycle = 0;
 		} else {
 			finish_timespan ();
-			return 0;
 		}
+		return 1; /* trigger realtime_stop() */
 	}
 
-	return ret;
+	return 0;
 }
 
 int
@@ -324,6 +345,16 @@ ExportHandler::command_output(std::string output, size_t size)
 {
 	std::cerr << "command: " << size << ", " << output << std::endl;
 	info << output << endmsg;
+}
+
+void*
+ExportHandler::start_timespan_bg (void* eh)
+{
+	ExportHandler* self = static_cast<ExportHandler*> (eh);
+	self->process_connection.disconnect ();
+	Glib::Threads::Mutex::Lock l (self->export_status->lock());
+	self->start_timespan ();
+	return 0;
 }
 
 void
@@ -366,7 +397,7 @@ ExportHandler::finish_timespan ()
 		if (!fmt->command().empty()) {
 			SessionMetadata const & metadata (*SessionMetadata::Metadata());
 
-#if 0	// would be nicer with C++11 initialiser...
+#if 0 // would be nicer with C++11 initialiser...
 			std::map<char, std::string> subs {
 				{ 'f', filename },
 				{ 'd', Glib::path_get_dirname(filename)  + G_DIR_SEPARATOR },
@@ -413,7 +444,7 @@ ExportHandler::finish_timespan ()
 			ARDOUR::SystemExec *se = new ARDOUR::SystemExec(fmt->command(), subs);
 			info << "Post-export command line : {" << se->to_s () << "}" << endmsg;
 			se->ReadStdout.connect_same_thread(command_connection, boost::bind(&ExportHandler::command_output, this, _1, _2));
-			int ret = se->start (2);
+			int ret = se->start (SystemExec::MergeWithStdin);
 			if (ret == 0) {
 				// successfully started
 				while (se->is_running ()) {
@@ -462,7 +493,19 @@ ExportHandler::finish_timespan ()
 		config_map.erase (config_map.begin());
 	}
 
-	start_timespan ();
+	/* finish timespan is called in freewheeling rt-context,
+	 * we cannot start a new export from here */
+	assert (AudioEngine::instance()->freewheeling ());
+	pthread_t tid;
+	pthread_create (&tid, NULL, ExportHandler::start_timespan_bg, this);
+	pthread_detach (tid);
+}
+
+void
+ExportHandler::reset ()
+{
+	config_map.clear ();
+	graph_builder->reset ();
 }
 
 /*** CD Marker stuff ***/
@@ -729,11 +772,11 @@ ExportHandler::write_track_info_cue (CDMarkerStatus & status)
 	}
 
 	if (status.track_position != status.track_start_sample) {
-		samples_to_cd_samples_string (buf, status.track_position);
+		samples_to_cd_frame_string (buf, status.track_position);
 		status.out << "    INDEX 00" << buf << endl;
 	}
 
-	samples_to_cd_samples_string (buf, status.track_start_sample);
+	samples_to_cd_frame_string (buf, status.track_start_sample);
 	status.out << "    INDEX 01" << buf << endl;
 
 	status.index_number = 2;
@@ -786,13 +829,13 @@ ExportHandler::write_track_info_toc (CDMarkerStatus & status)
 
 	status.out << "  }" << endl << "}" << endl;
 
-	samples_to_cd_samples_string (buf, status.track_position);
+	samples_to_cd_frame_string (buf, status.track_position);
 	status.out << "FILE " << toc_escape_filename (status.filename) << ' ' << buf;
 
-	samples_to_cd_samples_string (buf, status.track_duration);
+	samples_to_cd_frame_string (buf, status.track_duration);
 	status.out << buf << endl;
 
-	samples_to_cd_samples_string (buf, status.track_start_sample - status.track_position);
+	samples_to_cd_frame_string (buf, status.track_start_sample - status.track_position);
 	status.out << "START" << buf << endl;
 }
 
@@ -811,7 +854,7 @@ ExportHandler::write_index_info_cue (CDMarkerStatus & status)
 
 	snprintf (buf, sizeof(buf), "    INDEX %02d", cue_indexnum);
 	status.out << buf;
-	samples_to_cd_samples_string (buf, status.index_position);
+	samples_to_cd_frame_string (buf, status.index_position);
 	status.out << buf << endl;
 
 	cue_indexnum++;
@@ -822,7 +865,7 @@ ExportHandler::write_index_info_toc (CDMarkerStatus & status)
 {
 	gchar buf[18];
 
-	samples_to_cd_samples_string (buf, status.index_position - status.track_position);
+	samples_to_cd_frame_string (buf, status.index_position - status.track_start_sample);
 	status.out << "INDEX" << buf << endl;
 }
 
@@ -832,7 +875,7 @@ ExportHandler::write_index_info_mp4ch (CDMarkerStatus & status)
 }
 
 void
-ExportHandler::samples_to_cd_samples_string (char* buf, samplepos_t when)
+ExportHandler::samples_to_cd_frame_string (char* buf, samplepos_t when)
 {
 	samplecnt_t remainder;
 	samplecnt_t fr = session.nominal_sample_rate();
@@ -940,6 +983,12 @@ ExportHandler::cue_escape_cdtext (const std::string& txt)
 	out = '"' + latin1_txt + '"';
 
 	return out;
+}
+
+ExportHandler::CDMarkerStatus::~CDMarkerStatus () {
+	if (!g_file_set_contents (path.c_str(), out.str().c_str(), -1, NULL)) {
+		PBD::error << string_compose(("Editor: cannot open \"%1\" as export file for CD marker file"), path) << endmsg;
+	}
 }
 
 } // namespace ARDOUR

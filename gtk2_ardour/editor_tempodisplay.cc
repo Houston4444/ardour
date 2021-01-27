@@ -1,21 +1,28 @@
 /*
-    Copyright (C) 2002 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2006-2015 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006-2015 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2007 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2008-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2015 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2017-2018 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "gtk2ardour-config.h"
@@ -48,7 +55,7 @@
 #include "rgb_macros.h"
 #include "gui_thread.h"
 #include "time_axis_view.h"
-#include "tempo_lines.h"
+#include "grid_lines.h"
 #include "ui_config.h"
 
 #include "pbd/i18n.h"
@@ -180,18 +187,12 @@ Editor::tempo_map_changed (const PropertyChange& /*ignored*/)
 
 	ENSURE_GUI_THREAD (*this, &Editor::tempo_map_changed, ignored);
 
-	if (tempo_lines) {
-		tempo_lines->tempo_map_changed(_session->tempo_map().music_origin());
-	}
-
 	compute_bbt_ruler_scale (_leftmost_sample, _leftmost_sample + current_page_samples());
-	std::vector<TempoMap::BBTPoint> grid;
-	if (bbt_ruler_scale != bbt_show_many) {
-		compute_current_bbt_points (grid, _leftmost_sample, _leftmost_sample + current_page_samples());
-	}
+
 	_session->tempo_map().apply_with_metrics (*this, &Editor::draw_metric_marks); // redraw metric markers
-	draw_measures (grid);
 	update_tempo_based_rulers ();
+
+	maybe_draw_grid_lines ();
 }
 
 void
@@ -202,10 +203,6 @@ Editor::tempometric_position_changed (const PropertyChange& /*ignored*/)
 	}
 
 	ENSURE_GUI_THREAD (*this, &Editor::tempo_map_changed);
-
-	if (tempo_lines) {
-		tempo_lines->tempo_map_changed(_session->tempo_map().music_origin());
-	}
 
 	TempoSection* prev_ts = 0;
 	double max_tempo = 0.0;
@@ -281,18 +278,14 @@ Editor::tempometric_position_changed (const PropertyChange& /*ignored*/)
 	}
 
 	compute_bbt_ruler_scale (_leftmost_sample, _leftmost_sample + current_page_samples());
-	std::vector<TempoMap::BBTPoint> grid;
 
-	if (bbt_ruler_scale != bbt_show_many) {
-		compute_current_bbt_points (grid, _leftmost_sample, _leftmost_sample + current_page_samples());
-	}
-
-	draw_measures (grid);
 	update_tempo_based_rulers ();
+
+	maybe_draw_grid_lines ();
 }
 
 void
-Editor::redisplay_tempo (bool immediate_redraw)
+Editor::redisplay_grid (bool immediate_redraw)
 {
 	if (!_session) {
 		return;
@@ -300,20 +293,12 @@ Editor::redisplay_tempo (bool immediate_redraw)
 
 	if (immediate_redraw) {
 
-//only recalculate bbt_ruler_scale on a zoom or snap-change; not every redraw; if a case is found where this is necessary, uncomment this line.
-//		compute_bbt_ruler_scale (_leftmost_sample, _leftmost_sample + current_page_samples());
+		update_tempo_based_rulers ();
 
-		std::vector<TempoMap::BBTPoint> grid;
-
-		if (bbt_ruler_scale != bbt_show_many) {
-			compute_current_bbt_points (grid, _leftmost_sample, _leftmost_sample + current_page_samples());
-		}
-
-		draw_measures (grid);
-		update_tempo_based_rulers (); // redraw rulers and measure lines
-
+		update_grid();
+		
 	} else {
-		Glib::signal_idle().connect (sigc::bind_return (sigc::bind (sigc::mem_fun (*this, &Editor::redisplay_tempo), true), false));
+		Glib::signal_idle().connect (sigc::bind_return (sigc::bind (sigc::mem_fun (*this, &Editor::redisplay_grid), true), false));
 	}
 }
 void
@@ -348,10 +333,10 @@ Editor::compute_current_bbt_points (std::vector<TempoMap::BBTPoint>& grid, sampl
 	const double lower_beat = floor (max (0.0, _session->tempo_map().beat_at_sample (leftmost))) - 1.0;
 	switch (bbt_ruler_scale) {
 
-	case bbt_show_beats:
-	case bbt_show_ticks:
-	case bbt_show_ticks_detail:
-	case bbt_show_ticks_super_detail:
+	case bbt_show_quarters:
+	case bbt_show_eighths:
+	case bbt_show_sixteenths:
+	case bbt_show_thirtyseconds:
 		_session->tempo_map().get_grid (grid, max (_session->tempo_map().sample_at_beat (lower_beat), (samplepos_t) 0), rightmost);
 		break;
 
@@ -379,26 +364,39 @@ Editor::compute_current_bbt_points (std::vector<TempoMap::BBTPoint>& grid, sampl
 }
 
 void
-Editor::hide_measures ()
+Editor::hide_grid_lines ()
 {
-	if (tempo_lines) {
-		tempo_lines->hide();
+	if (grid_lines) {
+		grid_lines->hide();
 	}
 }
 
 void
-Editor::draw_measures (std::vector<ARDOUR::TempoMap::BBTPoint>& grid)
+Editor::maybe_draw_grid_lines ()
 {
-	if (_session == 0 || _show_measures == false || distance (grid.begin(), grid.end()) == 0) {
+	if ( _session == 0 ) {
 		return;
 	}
 
-	if (tempo_lines == 0) {
-		tempo_lines = new TempoLines (time_line_group, ArdourCanvas::LineSet::Vertical, new BeatsSamplesConverter (_session->tempo_map(), _session->tempo_map().music_origin()));
+	if (grid_lines == 0) {
+		grid_lines = new GridLines (time_line_group, ArdourCanvas::LineSet::Vertical);
 	}
 
-	const unsigned divisions = get_grid_beat_divisions(_leftmost_sample);
-	tempo_lines->draw (grid, divisions, _leftmost_sample, _session->sample_rate());
+	grid_marks.clear();
+	samplepos_t rightmost_sample = _leftmost_sample + current_page_samples();
+
+	if ( grid_musical() ) {
+		 metric_get_bbt (grid_marks, _leftmost_sample, rightmost_sample, 12);
+	} else if (_grid_type== GridTypeTimecode) {
+		 metric_get_timecode (grid_marks, _leftmost_sample, rightmost_sample, 12);
+	} else if (_grid_type == GridTypeCDFrame) {
+		metric_get_minsec (grid_marks, _leftmost_sample, rightmost_sample, 12);
+	} else if (_grid_type == GridTypeMinSec) {
+		metric_get_minsec (grid_marks, _leftmost_sample, rightmost_sample, 12);
+	}
+
+	grid_lines->draw ( grid_marks );
+	grid_lines->show();
 }
 
 void

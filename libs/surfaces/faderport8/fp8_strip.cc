@@ -1,19 +1,19 @@
 /*
- * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2017-2018 Robin Gareus <robin@gareus.org>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include "ardour/automation_control.h"
@@ -30,30 +30,63 @@
 #include "fp8_strip.h"
 
 using namespace ARDOUR;
-using namespace ArdourSurface;
-using namespace ArdourSurface::FP8Types;
+using namespace ArdourSurface::FP_NAMESPACE;
+using namespace ArdourSurface::FP_NAMESPACE::FP8Types;
 
 uint8_t /* static */
 FP8Strip::midi_ctrl_id (CtrlElement type, uint8_t id)
 {
 	assert (id < N_STRIPS);
-	switch (type) {
-		case BtnSolo:
-			return 0x08 + id;
-		case BtnMute:
-			return 0x10 + id;
-		case BtnSelect:
-			return 0x18 + id;
-		case Fader:
-			return 0xe0 + id;
-		case Meter:
-			return 0xd0 + id;
-		case Redux:
-			return 0xd8 + id;
-		case BarVal:
-			return 0x30 + id;
-		case BarMode:
-			return 0x38 + id;
+	if (id < 8) {
+		switch (type) {
+			case BtnSolo:
+				return 0x08 + id;
+			case BtnMute:
+				return 0x10 + id;
+			case BtnSelect:
+				return 0x18 + id;
+			case Fader:
+				return 0xe0 + id;
+			case Meter:
+				return 0xd0 + id;
+			case Redux:
+				return 0xd8 + id;
+			case BarVal:
+				return 0x30 + id;
+			case BarMode:
+				return 0x38 + id;
+		}
+	} else {
+		id -= 8;
+		switch (type) {
+			case BtnSolo:
+				switch (id) {
+					case 3:
+						return 0x58;
+					case 6:
+						return 0x59;
+					default:
+						return 0x50 + id;
+				}
+			case BtnMute:
+				return 0x78 + id;
+			case BtnSelect:
+				if (id == 0) { // strip 8
+					return 0x07;
+				} else {
+					return 0x20 + id;
+				}
+			case Fader:
+				return 0xe8 + id;
+			case Meter:
+				return 0xc0 + id;
+			case Redux:
+				return 0xc8 + id;
+			case BarVal:
+				return 0x40 + id;
+			case BarMode:
+				return 0x48 + id;
+		}
 	}
 	assert (0);
 	return 0;
@@ -295,7 +328,8 @@ FP8Strip::set_stripable (boost::shared_ptr<Stripable> s, bool panmode)
 
 	set_select_controllable (boost::shared_ptr<AutomationControl>());
 	select_button ().set_active (s->is_selected ());
-	select_button ().set_color (s->presentation_info ().color());
+
+	set_select_button_color (s->presentation_info ().color());
 	//select_button ().set_blinking (false);
 
 	_stripable_name = s->name ();
@@ -377,7 +411,9 @@ FP8Strip::set_solo (bool on)
 		return;
 	}
 	_solo_ctrl->start_touch (_solo_ctrl->session().transport_sample());
-	_solo_ctrl->set_value (on ? 1.0 : 0.0, group_mode ());
+	PBD::Controllable::GroupControlDisposition gcd = group_mode ();
+	Session& s = const_cast<Session&> (_solo_ctrl->session());
+	s.set_control (_solo_ctrl, on ? 1.0 : 0.0, gcd);
 }
 
 void
@@ -581,7 +617,7 @@ FP8Strip::periodic_update_meter ()
 		}
 	} else if (_pan_ctrl) {
 		have_panner = _base.show_panner ();
-		float panpos = _pan_ctrl->internal_to_interface (_pan_ctrl->get_value());
+		float panpos = _pan_ctrl->internal_to_interface (_pan_ctrl->get_value(), true);
 		int val = std::min (127.f, std::max (0.f, panpos * 128.f));
 		set_bar_mode (have_panner ? 1 : 4); // Bipolar or Off
 		if (val != _last_barpos && have_panner) {
@@ -609,7 +645,10 @@ FP8Strip::periodic_update_meter ()
 		set_strip_mode (5); // small meters + 3 lines of text (3rd is large)  + value-bar
 	}
 	else if (have_meter) {
-		set_strip_mode (4); // big meters + 3 lines of text (3rd line is large)
+		/* we cannot use "big meters" mode 4, since that implies
+		 * 2 "Large" (4char) text lines, followed by a HUGE 2 char line
+		 * and hides timecode-clock */
+		set_strip_mode (5);
 	}
 	else if (have_panner) {
 		set_strip_mode (0); // 3 lines of text (3rd line is large + long) + value-bar
@@ -696,8 +735,10 @@ void
 FP8Strip::periodic ()
 {
 	periodic_update_fader ();
+#ifndef FADERPORT2
 	periodic_update_meter ();
 	if (_displaymode != PluginSelect && _displaymode != PluginParam) {
 		periodic_update_timecode (_base.clock_mode ());
 	}
+#endif
 }

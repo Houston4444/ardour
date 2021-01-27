@@ -1,21 +1,27 @@
 /*
-    Copyright (C) 2005 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006-2015 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2017 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2007 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2014-2019 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2015-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "gtk2ardour-config.h"
@@ -52,6 +58,7 @@
 #include "editor_cursors.h"
 #include "mouse_cursors.h"
 #include "note_base.h"
+#include "region_peak_cursor.h"
 #include "ui_config.h"
 #include "verbose_cursor.h"
 
@@ -99,6 +106,7 @@ Editor::initialize_canvas ()
 	_track_canvas->add_scroller (*cg);
 
 	_verbose_cursor = new VerboseCursor (this);
+	_region_peak_cursor = new RegionPeakCursor (get_noscroll_group ());
 
 	/*a group to hold global rects like punch/loop indicators */
 	global_rect_group = new ArdourCanvas::Container (hv_scroll_group);
@@ -215,7 +223,9 @@ Editor::initialize_canvas ()
 	range_marker_bar->Event.connect (sigc::bind (sigc::mem_fun (*this, &Editor::canvas_range_marker_bar_event), range_marker_bar));
 	transport_marker_bar->Event.connect (sigc::bind (sigc::mem_fun (*this, &Editor::canvas_transport_marker_bar_event), transport_marker_bar));
 
-	playhead_cursor = new EditorCursor (*this, &Editor::canvas_playhead_cursor_event);
+	_playhead_cursor = new EditorCursor (*this, &Editor::canvas_playhead_cursor_event);
+
+	_snapped_cursor = new EditorCursor (*this);
 
 	_canvas_drop_zone = new ArdourCanvas::Rectangle (hv_scroll_group, ArdourCanvas::Rect (0.0, 0.0, ArdourCanvas::COORD_MAX, 0.0));
 	/* this thing is transparent */
@@ -247,11 +257,10 @@ Editor::initialize_canvas ()
 
 	vector<TargetEntry> target_table;
 
-	// Drag-N-Drop from the region list can generate this target
-	target_table.push_back (TargetEntry ("regions"));
-
-	target_table.push_back (TargetEntry ("text/plain"));
+	target_table.push_back (TargetEntry ("regions")); // DnD from the region list will generate this target
+	target_table.push_back (TargetEntry ("sources")); // DnD from the source list will generate this target
 	target_table.push_back (TargetEntry ("text/uri-list"));
+	target_table.push_back (TargetEntry ("text/plain"));
 	target_table.push_back (TargetEntry ("application/x-rootwin-drop"));
 
 	_track_canvas->drag_dest_set (target_table);
@@ -304,7 +313,7 @@ Editor::track_canvas_viewport_size_allocated ()
 	}
 
 	update_fixed_rulers();
-	redisplay_tempo (false);
+	redisplay_grid (false);
 	_summary->set_overlays_dirty ();
 }
 
@@ -371,8 +380,13 @@ Editor::track_canvas_drag_data_received (const RefPtr<Gdk::DragContext>& context
 					 const SelectionData& data,
 					 guint info, guint time)
 {
-	if (data.get_target() == "regions") {
-		drop_regions (context, x, y, data, info, time);
+	if (!ARDOUR_UI_UTILS::engine_is_running ()) {
+		return;
+	}
+	if (data.get_target() == X_("regions")) {
+		drop_regions (context, x, y, data, info, time, true);
+	} else if (data.get_target() == X_("sources")) {
+		drop_regions (context, x, y, data, info, time, false);
 	} else {
 		drop_paths (context, x, y, data, info, time);
 	}
@@ -412,7 +426,6 @@ Editor::drop_paths_part_two (const vector<string>& paths, samplepos_t sample, do
 
 		/* drop onto canvas background: create new tracks */
 
-		sample = 0;
 		InstrumentSelector is; // instantiation builds instrument-list and sets default.
 		do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, SMFTrackName, SMFTempoIgnore, sample, is.selected_instrument());
 
@@ -520,7 +533,7 @@ Editor::maybe_autoscroll (bool allow_horiz, bool allow_vert, bool from_headers)
 
 		controls_layout.get_parent()->translate_coordinates (*toplevel,
 		                                                     alloc.get_x(), alloc.get_y(),
-		        		                             wx, wy);
+		                                                     wx, wy);
 
 		scrolling_boundary = ArdourCanvas::Rect (wx, wy, wx + alloc.get_width(), wy + alloc.get_height());
 
@@ -576,60 +589,73 @@ Editor::maybe_autoscroll (bool allow_horiz, bool allow_vert, bool from_headers)
 }
 
 bool
+Editor::drag_active () const
+{
+	return _drags->active();
+}
+
+bool
+Editor::preview_video_drag_active () const
+{
+	return _drags->preview_video ();
+}
+
+bool
 Editor::autoscroll_active () const
 {
 	return autoscroll_connection.connected ();
 }
 
 std::pair <samplepos_t,samplepos_t>
-Editor::session_gui_extents ( bool use_extra ) const
+Editor::session_gui_extents (bool use_extra) const
 {
 	if (!_session) {
 		return std::pair <samplepos_t,samplepos_t>(max_samplepos,0);
 	}
-	
+
 	samplecnt_t session_extent_start = _session->current_start_sample();
 	samplecnt_t session_extent_end = _session->current_end_sample();
 
-	//calculate the extents of all regions in every playlist
-	//NOTE:  we should listen to playlists, and cache these values so we don't calculate them every time.
+	/* calculate the extents of all regions in every playlist
+	 * NOTE: we should listen to playlists, and cache these values so we don't calculate them every time.
+	 */
 	{
 		boost::shared_ptr<RouteList> rl = _session->get_routes();
 		for (RouteList::iterator r = rl->begin(); r != rl->end(); ++r) {
 			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*r);
-			if (tr) {
-				boost::shared_ptr<Playlist> pl = tr->playlist();
-				if ( pl && !pl->all_regions_empty() ) {
-					pair<samplepos_t, samplepos_t> e;
-					e = pl->get_extent();
-					if (e.first < session_extent_start) {
-						session_extent_start = e.first;
-					}
-					if (e.second > session_extent_end) {
-						session_extent_end = e.second;
-					}
-				}
+			if (!tr) {
+				continue;
 			}
+			if (tr->presentation_info ().hidden ()) {
+				continue;
+			}
+			pair<samplepos_t, samplepos_t> e = tr->playlist()->get_extent ();
+			if (e.first == e.second) {
+				/* no regions present */
+				continue;
+			}
+			session_extent_start = std::min (session_extent_start, e.first);
+			session_extent_end   = std::max (session_extent_end, e.second);
 		}
 	}
 
-	//ToDo: also incorporate automation regions (in case the session has no audio/midi but is just used for automating plugins or the like)
+	/* ToDo: also incorporate automation regions (in case the session has no audio/midi but is just used for automating plugins or the like) */
 
-	//add additional time to the ui extents ( user-defined in config )
+	/* add additional time to the ui extents (user-defined in config) */
 	if (use_extra) {
 		samplecnt_t const extra = UIConfiguration::instance().get_extra_ui_extents_time() * 60 * _session->nominal_sample_rate();
 		session_extent_end += extra;
 		session_extent_start -= extra;
 	}
-			
-	//range-check
+
+	/* range-check */
 	if (session_extent_end > max_samplepos) {
 		session_extent_end = max_samplepos;
 	}
 	if (session_extent_start < 0) {
 		session_extent_start = 0;
 	}
-	
+
 	std::pair <samplepos_t,samplepos_t> ret (session_extent_start, session_extent_end);
 	return ret;
 }
@@ -665,7 +691,7 @@ Editor::autoscroll_canvas ()
 			dx += 10 + (2 * (autoscroll_cnt/2));
 
 			dx = pixel_to_sample (dx);
-			
+
 			dx *= UIConfiguration::instance().get_draggable_playhead_speed();
 
 			if (_leftmost_sample < max_samplepos - dx) {
@@ -898,6 +924,15 @@ Editor::entered_track_canvas (GdkEventCrossing* ev)
 	reset_canvas_action_sensitivity (true);
 
 	if (!was_within) {
+
+		if (internal_editing()) {
+			/* ensure that key events go here because there are
+			   internal editing bindings associated only with the
+			   canvas. if the focus is elsewhere, we cannot find them.
+			*/
+			_track_canvas->grab_focus ();
+		}
+
 		if (ev->detail == GDK_NOTIFY_NONLINEAR ||
 		    ev->detail == GDK_NOTIFY_NONLINEAR_VIRTUAL) {
 			/* context menu or something similar */
@@ -960,6 +995,7 @@ void
 Editor::tie_vertical_scrolling ()
 {
 	if (pending_visual_change.idle_handler_id < 0) {
+		_region_peak_cursor->hide ();
 		_summary->set_overlays_dirty ();
 	}
 }
@@ -986,7 +1022,7 @@ Editor::color_handler()
 	bbt_ruler->set_fill_color (base);
 	bbt_ruler->set_outline_color (text);
 
-	playhead_cursor->set_color (UIConfiguration::instance().color ("play head"));
+	_playhead_cursor->set_color (UIConfiguration::instance().color ("play head"));
 
 	meter_bar->set_fill_color (UIConfiguration::instance().color_mod ("meter bar", "marker bar"));
 	meter_bar->set_outline_color (UIConfiguration::instance().color ("marker bar separator"));
@@ -1042,7 +1078,7 @@ Editor::color_handler()
 	_track_canvas->queue_draw ();
 
 /*
-	redisplay_tempo (true);
+	redisplay_grid (true);
 
 	if (_session)
 	      _session->tempo_map().apply_with_metrics (*this, &Editor::draw_metric_marks); // redraw metric markers
@@ -1147,26 +1183,6 @@ Editor::pop_canvas_cursor ()
 }
 
 Gdk::Cursor*
-Editor::which_grabber_cursor () const
-{
-	Gdk::Cursor* c = _cursors->grabber;
-
-	switch (_edit_point) {
-	case EditAtMouse:
-		c = _cursors->grabber_edit_point;
-		break;
-	default:
-		boost::shared_ptr<Movable> m = _movable.lock();
-		if (m && m->locked()) {
-			c = _cursors->speaker;
-		}
-		break;
-	}
-
-	return c;
-}
-
-Gdk::Cursor*
 Editor::which_trim_cursor (bool left) const
 {
 	if (!entered_regionview) {
@@ -1176,7 +1192,6 @@ Editor::which_trim_cursor (bool left) const
 	Trimmable::CanTrim ct = entered_regionview->region()->can_trim ();
 
 	if (left) {
-
 		if (ct & Trimmable::FrontTrimEarlier) {
 			return _cursors->left_side_trim;
 		} else {
@@ -1265,7 +1280,7 @@ Editor::which_track_cursor () const
 	switch (_join_object_range_state) {
 	case JOIN_OBJECT_RANGE_NONE:
 	case JOIN_OBJECT_RANGE_OBJECT:
-		cursor = which_grabber_cursor ();
+		cursor = _cursors->grabber;
 		break;
 	case JOIN_OBJECT_RANGE_RANGE:
 		cursor = _cursors->selector;
@@ -1297,29 +1312,19 @@ Editor::which_canvas_cursor(ItemType type) const
 	    mouse_mode == MouseContent) {
 
 		/* find correct cursor to use in object/smart mode */
-
 		switch (type) {
 		case RegionItem:
 		/* We don't choose a cursor for these items on top of a region view,
 		   because this would push a new context on the enter stack which
 		   means switching the region context for things like smart mode
 		   won't actualy change the cursor. */
-		// case RegionViewNameHighlight:
-		// case RegionViewName:
 		// case WaveItem:
 		case StreamItem:
 		case AutomationTrackItem:
 			cursor = which_track_cursor ();
 			break;
 		case PlayheadCursorItem:
-			switch (_edit_point) {
-			case EditAtMouse:
-				cursor = _cursors->grabber_edit_point;
-				break;
-			default:
-				cursor = _cursors->grabber;
-				break;
-			}
+			cursor = _cursors->grabber;
 			break;
 		case SelectionItem:
 			cursor = _cursors->selector;
@@ -1361,16 +1366,30 @@ Editor::which_canvas_cursor(ItemType type) const
 			cursor = _cursors->cross_hair;
 			break;
 		case LeftFrameHandle:
-			if ( effective_mouse_mode() == MouseObject )  // (smart mode): if the user is in the btm half, show the trim cursor
+			if (effective_mouse_mode() == MouseObject) // (smart mode): if the user is in the btm half, show the trim cursor
 				cursor = which_trim_cursor (true);
 			else
-				cursor = _cursors->selector;  // (smart mode): in the top half, just show the selection (range) cursor
+				cursor = _cursors->selector; // (smart mode): in the top half, just show the selection (range) cursor
 			break;
 		case RightFrameHandle:
-			if ( effective_mouse_mode() == MouseObject )  //see above
+			if (effective_mouse_mode() == MouseObject) // see above
 				cursor = which_trim_cursor (false);
 			else
 				cursor = _cursors->selector;
+			break;
+		case RegionViewName:
+		case RegionViewNameHighlight:
+			/* the trim bar is used for trimming, but we have to determine if we are on the left or right side of the region */
+			cursor = MouseCursors::invalid_cursor ();
+			if (entered_regionview) {
+				samplepos_t where;
+				bool in_track_canvas;
+				if (mouse_sample (where, in_track_canvas)) {
+					samplepos_t start = entered_regionview->region()->first_sample();
+					samplepos_t end = entered_regionview->region()->last_sample();
+					cursor = which_trim_cursor ((where - start) < (end - where));
+				}
+			}
 			break;
 		case StartCrossFadeItem:
 			cursor = _cursors->fade_in;
@@ -1429,7 +1448,7 @@ Editor::which_canvas_cursor(ItemType type) const
 	case VideoBarItem:
 	case TransportMarkerBarItem:
 	case DropZoneItem:
-		cursor = which_grabber_cursor();
+		cursor = _cursors->grabber;
 		break;
 
 	default:

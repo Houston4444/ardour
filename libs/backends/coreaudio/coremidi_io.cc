@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2019 Robin Gareus <robin@gareus.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -11,13 +11,14 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <sstream>
 #include <CoreAudio/HostTime.h>
+#undef nil
 
 #include "coremidi_io.h"
 #include "coreaudio_backend.h"
@@ -153,7 +154,7 @@ CoreMidiIo::CoreMidiIo()
 	pthread_mutex_init (&_discovery_lock, 0);
 
 #ifndef NDEBUG
-	const char *p = getenv ("COREMIDIDEBUG");
+	const char *p = getenv ("ARDOUR_COREMIDI_DEBUG");
 	if (p && *p) _debug_mode = atoi (p);
 #endif
 }

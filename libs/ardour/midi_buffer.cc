@@ -1,21 +1,24 @@
 /*
-    Copyright (C) 2006-2007 Paul Davis
-    Author: David Robillard
-
-    This program is free software; you can redistribute it and/or modify it
-    under the terms of the GNU General Public License as published by the Free
-    Software Foundation; either version 2 of the License, or (at your option)
-    any later version.
-
-    This program is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-    for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2007-2016 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2008-2009 Hans Baier <hansfbaier@googlemail.com>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2016 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <iostream>
 
@@ -50,7 +53,7 @@ MidiBuffer::~MidiBuffer()
 }
 
 void
-MidiBuffer::resize(size_t size)
+MidiBuffer::resize (size_t size)
 {
 	if (_data && size < _capacity) {
 
@@ -62,11 +65,16 @@ MidiBuffer::resize(size_t size)
 		return;
 	}
 
-	cache_aligned_free (_data);
+	uint8_t* old_data = _data;
 
 	cache_aligned_malloc ((void**) &_data, size);
 
-	_size = 0;
+	if (_size) {
+		assert (old_data);
+		memcpy (_data, old_data, _size);
+	}
+
+	cache_aligned_free (old_data);
 	_capacity = size;
 
 	assert(_data);
@@ -89,13 +97,8 @@ MidiBuffer::copy(MidiBuffer const * const copy)
 }
 
 
-/** Read events from @a src starting at time @a offset into the START of this buffer, for
- * time duration @a nframes.  Relative time, where 0 = start of buffer.
- *
- * Note that offset and nframes refer to sample time, NOT buffer offsets or event counts.
- */
 void
-MidiBuffer::read_from (const Buffer& src, samplecnt_t nframes, sampleoffset_t dst_offset, sampleoffset_t /* src_offset*/)
+MidiBuffer::read_from (const Buffer& src, samplecnt_t nframes, sampleoffset_t dst_offset, sampleoffset_t src_offset)
 {
 	assert (src.type() == DataType::MIDI);
 	assert (&src != this);
@@ -104,45 +107,21 @@ MidiBuffer::read_from (const Buffer& src, samplecnt_t nframes, sampleoffset_t ds
 
 	assert (_capacity >= msrc.size());
 
-	if (dst_offset == 0) {
-		clear ();
-		assert (_size == 0);
-	}
+	clear ();
+	assert (_size == 0);
 
 	for (MidiBuffer::const_iterator i = msrc.begin(); i != msrc.end(); ++i) {
 		const Evoral::Event<TimeType> ev(*i, false);
 
-		if (dst_offset >= 0) {
-			/* Positive offset: shifting events from internal
-			   buffer view of time (always relative to to start of
-			   current possibly split cycle) to from global/port
-			   view of time (always relative to start of process
-			   cycle).
-
-			   Check it is within range of this (split) cycle, then shift.
-			*/
-			if (ev.time() >= 0 && ev.time() < nframes) {
-				push_back (ev.time() + dst_offset, ev.size(), ev.buffer());
-			} else {
-				cerr << "\t!!!! MIDI event @ " <<  ev.time() << " skipped, not within range 0 .. " << nframes << ": ";
-			}
+		if (ev.time() >= src_offset && ev.time() < nframes + src_offset) {
+			push_back (ev.time() + dst_offset - src_offset, ev.event_type (), ev.size(), ev.buffer());
 		} else {
-			/* Negative offset: shifting events from global/port
-			   view of time (always relative to start of process
-			   cycle) back to internal buffer view of time (always
-			   relative to to start of current possibly split
-			   cycle.
-
-			   Shift first, then check it is within range of this
-			   (split) cycle.
-			*/
-			const samplepos_t evtime = ev.time() + dst_offset;
-
-			if (evtime >= 0 && evtime < nframes) {
-				push_back (evtime, ev.size(), ev.buffer());
-			} else {
-				cerr << "\t!!!! MIDI event @ " <<  evtime << " (based on " << ev.time() << " + " << dst_offset << ") skipped, not within range 0 .. " << nframes << ": ";
-			}
+			cerr << "\t!!!! MIDI event @ " <<  ev.time()
+			     << " skipped, not within range. nframes: " << nframes
+			     << " src_offset: " << src_offset
+			     << " dst_offset: " << dst_offset
+			     << "\n";
+			PBD::stacktrace (cerr, 30);
 		}
 	}
 
@@ -157,7 +136,10 @@ MidiBuffer::merge_from (const Buffer& src, samplecnt_t /*nframes*/, sampleoffset
 	assert (mbuf != this);
 
 	/* XXX use nframes, and possible offsets */
-	merge_in_place (*mbuf);
+	if (!merge_in_place (*mbuf)) {
+		cerr << string_compose ("MidiBuffer::merge_in_place failed (buffer is full: size: %1 capacity %2 new bytes %3)", _size, _capacity, mbuf->size()) << endl;
+		PBD::stacktrace (cerr, 20);
+	}
 }
 
 /** Push an event into the buffer.
@@ -170,7 +152,7 @@ MidiBuffer::merge_from (const Buffer& src, samplecnt_t /*nframes*/, sampleoffset
 bool
 MidiBuffer::push_back(const Evoral::Event<TimeType>& ev)
 {
-	return push_back (ev.time(), ev.size(), ev.buffer());
+	return push_back (ev.time(), ev.event_type (), ev.size(), ev.buffer());
 }
 
 
@@ -182,9 +164,10 @@ MidiBuffer::push_back(const Evoral::Event<TimeType>& ev)
  * @return false if operation failed (not enough room)
  */
 bool
-MidiBuffer::push_back(TimeType time, size_t size, const uint8_t* data)
+MidiBuffer::push_back(TimeType time, Evoral::EventType event_type, size_t size, const uint8_t* data)
 {
 	const size_t stamp_size = sizeof(TimeType);
+	const size_t etype_size = sizeof(Evoral::EventType);
 
 #ifndef NDEBUG
 	if (DEBUG_ENABLED(DEBUG::MidiIO)) {
@@ -201,7 +184,7 @@ MidiBuffer::push_back(TimeType time, size_t size, const uint8_t* data)
 	}
 #endif
 
-	if (_size + stamp_size + size >= _capacity) {
+	if (_size + stamp_size + etype_size + size >= _capacity) {
 		return false;
 	}
 
@@ -211,13 +194,16 @@ MidiBuffer::push_back(TimeType time, size_t size, const uint8_t* data)
 
 	uint8_t* const write_loc = _data + _size;
 	*(reinterpret_cast<TimeType*>((uintptr_t)write_loc)) = time;
-	memcpy(write_loc + stamp_size, data, size);
+	*(reinterpret_cast<Evoral::EventType*>((uintptr_t)(write_loc + stamp_size))) = event_type;
+	memcpy(write_loc + stamp_size + etype_size, data, size);
 
-	_size += stamp_size + size;
+	_size += align32 (stamp_size + etype_size + size);
 	_silent = false;
 
 	return true;
 }
+
+extern PBD::Timing minsert;
 
 bool
 MidiBuffer::insert_event(const Evoral::Event<TimeType>& ev)
@@ -227,10 +213,12 @@ MidiBuffer::insert_event(const Evoral::Event<TimeType>& ev)
 	}
 
 	const size_t stamp_size = sizeof(TimeType);
-	const size_t bytes_to_merge = stamp_size + ev.size();
+	const size_t etype_size = sizeof(Evoral::EventType);
+
+	const size_t bytes_to_merge = align32 (stamp_size + etype_size + ev.size());
 
 	if (_size + bytes_to_merge >= _capacity) {
-		cerr << "MidiBuffer::push_back failed (buffer is full)" << endl;
+		cerr << string_compose ("MidiBuffer::push_back failed (buffer is full: size: %1 capacity %2 new bytes %3)", _size, _capacity, bytes_to_merge) << endl;
 		PBD::stacktrace (cerr, 20);
 		return false;
 	}
@@ -243,7 +231,7 @@ MidiBuffer::insert_event(const Evoral::Event<TimeType>& ev)
 			continue;
 		}
 		if ((*m).time() == t) {
-			const uint8_t our_midi_status_byte = *(_data + m.offset + sizeof (TimeType));
+			const uint8_t our_midi_status_byte = *(_data + m.offset + stamp_size + etype_size);
 			if (second_simultaneous_midi_byte_is_first (ev.type(), our_midi_status_byte)) {
 				continue;
 			}
@@ -251,8 +239,10 @@ MidiBuffer::insert_event(const Evoral::Event<TimeType>& ev)
 		insert_offset = m.offset;
 		break;
 	}
+
 	if (insert_offset == -1) {
-		return push_back(ev);
+		bool r = push_back(ev);
+		return r;
 	}
 
 	// don't use memmove - it may use malloc(!)
@@ -262,8 +252,10 @@ MidiBuffer::insert_event(const Evoral::Event<TimeType>& ev)
 	}
 
 	uint8_t* const write_loc = _data + insert_offset;
+	assert((insert_offset + stamp_size + etype_size + ev.size()) <= _capacity);
 	*(reinterpret_cast<TimeType*>((uintptr_t)write_loc)) = t;
-	memcpy(write_loc + stamp_size, ev.buffer(), ev.size());
+	*(reinterpret_cast<Evoral::EventType*>((uintptr_t)(write_loc + stamp_size))) = ev.event_type ();
+	memcpy(write_loc + stamp_size + etype_size, ev.buffer(), ev.size());
 
 	_size += bytes_to_merge;
 
@@ -285,21 +277,23 @@ MidiBuffer::write(TimeType time, Evoral::EventType type, uint32_t size, const ui
  * location, or the buffer will be corrupted and very nasty things will happen.
  */
 uint8_t*
-MidiBuffer::reserve(TimeType time, size_t size)
+MidiBuffer::reserve(TimeType time, Evoral::EventType event_type, size_t size)
 {
 	const size_t stamp_size = sizeof(TimeType);
-	if (_size + stamp_size + size >= _capacity) {
+	const size_t etype_size = sizeof(Evoral::EventType);
+	if (align32 (_size + stamp_size + etype_size + size) >= _capacity) {
 		return 0;
 	}
 
-	// write timestamp
+	// write timestamp and event-type
 	uint8_t* write_loc = _data + _size;
 	*(reinterpret_cast<TimeType*>((uintptr_t)write_loc)) = time;
+	*(reinterpret_cast<Evoral::EventType*>((uintptr_t)(write_loc + stamp_size))) = event_type;
 
 	// move write_loc to begin of MIDI buffer data to write to
-	write_loc += stamp_size;
+	write_loc += stamp_size + etype_size;
 
-	_size += stamp_size + size;
+	_size += align32 (stamp_size + etype_size + size);
 	_silent = false;
 
 	return write_loc;
@@ -442,6 +436,8 @@ MidiBuffer::second_simultaneous_midi_byte_is_first (uint8_t a, uint8_t b)
 bool
 MidiBuffer::merge_in_place (const MidiBuffer &other)
 {
+	const size_t header_size = sizeof(TimeType) + sizeof(Evoral::EventType);
+
 	if (other.size() && size()) {
 		DEBUG_TRACE (DEBUG::MidiIO, string_compose ("merge in place, sizes %1/%2\n", size(), other.size()));
 	}
@@ -450,13 +446,13 @@ MidiBuffer::merge_in_place (const MidiBuffer &other)
 		return true;
 	}
 
+	if (size() + other.size() > _capacity) {
+		return false;
+	}
+
 	if (size() == 0) {
 		copy (other);
 		return true;
-	}
-
-	if (size() + other.size() > _capacity) {
-		return false;
 	}
 
 	const_iterator them = other.begin();
@@ -478,7 +474,7 @@ MidiBuffer::merge_in_place (const MidiBuffer &other)
 			if (merge_offset == -1) {
 				merge_offset = them.offset;
 			}
-			bytes_to_merge += sizeof (TimeType) + (*them).size();
+			bytes_to_merge += align32 (header_size + (*them).size());
 			++them;
 		}
 
@@ -525,11 +521,11 @@ MidiBuffer::merge_in_place (const MidiBuffer &other)
 			DEBUG_TRACE (DEBUG::MidiIO,
 				     string_compose ("simultaneous MIDI events discovered during merge, times %1/%2 status %3/%4\n",
 						     (*us).time(), (*them).time(),
-						     (int) *(_data + us.offset + sizeof (TimeType)),
-						     (int) *(other._data + them.offset + sizeof (TimeType))));
+						     (int) *(_data + us.offset + header_size),
+						     (int) *(other._data + them.offset + header_size)));
 
-			uint8_t our_midi_status_byte = *(_data + us.offset + sizeof (TimeType));
-			uint8_t their_midi_status_byte = *(other._data + them.offset + sizeof (TimeType));
+			uint8_t our_midi_status_byte = *(_data + us.offset + header_size);
+			uint8_t their_midi_status_byte = *(other._data + them.offset + header_size);
 			bool them_first = second_simultaneous_midi_byte_is_first (our_midi_status_byte, their_midi_status_byte);
 
 			DEBUG_TRACE (DEBUG::MidiIO, string_compose ("other message came first ? %1\n", them_first));
@@ -539,7 +535,7 @@ MidiBuffer::merge_in_place (const MidiBuffer &other)
 				++us;
 			}
 
-			bytes_to_merge = sizeof (TimeType) + (*them).size();
+			bytes_to_merge = align32 (header_size + (*them).size());
 
 			/* move our remaining events later in the buffer by
 			 * enough to fit the one message we're going to merge

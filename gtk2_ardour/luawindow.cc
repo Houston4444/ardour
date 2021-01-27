@@ -1,21 +1,21 @@
 /*
-    Copyright (C) 2016 Robin Gareus <robin@gareus.org>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2016-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2018 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef PLATFORM_WINDOWS
 #define random() rand()
@@ -50,6 +50,7 @@
 #include "luawindow.h"
 #include "public_editor.h"
 #include "utils.h"
+#include "ui_config.h"
 #include "utils_videotl.h"
 
 #include "pbd/i18n.h"
@@ -107,6 +108,16 @@ LuaWindow::LuaWindow ()
 	reinit_lua ();
 	update_title ();
 	set_wmclass (X_("ardour_mixer"), PROGRAM_NAME);
+
+#ifdef __APPLE__
+	set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
+#else
+	if (UIConfiguration::instance().get_all_floating_windows_are_dialogs()) {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
+	} else {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_UTILITY);
+	}
+#endif
 
 	script_select.disable_scrolling ();
 
@@ -318,6 +329,7 @@ LuaWindow::run_script ()
 			append_text (string_compose (_("C++ Exception: %1"), "..."));
 		}
 	}
+	lua->collect_garbage ();
 }
 
 void
@@ -406,7 +418,7 @@ LuaWindow::import_script ()
 	// TODO convert a few URL (eg. pastebin) to raw.
 #if 0
 	char *url = "http://pastebin.com/raw/3UMkZ6nV";
-	char *rv = ArdourCurl::http_get (url, 0);
+	char *rv = ArdourCurl::http_get (url, 0. true);
 	if (rv) {
 		new_script ();
 		Glib::RefPtr<Gtk::TextBuffer> tb (entry.get_buffer());
@@ -464,7 +476,7 @@ LuaWindow::save_script ()
 			update_gui_state (); // XXX here?
 			append_text (X_("> ") + string_compose (_("Saved as %1"), sb.path));
 			return; // OK
-		} catch (Glib::FileError e) {
+		} catch (Glib::FileError const& e) {
 			msg = string_compose (_("Error saving file: %1"), e.what());
 			goto errorout;
 		}
@@ -483,11 +495,12 @@ LuaWindow::save_script ()
 
 	// 5) construct filename -- TODO ask user for name, ask to replace file.
 	do {
-		char buf[80];
+		char tme[80];
+		char buf[100];
 		time_t t = time(0);
 		struct tm * timeinfo = localtime (&t);
-		strftime (buf, sizeof(buf), "%s%d", timeinfo);
-		sprintf (buf, "%s%ld", buf, random ()); // is this valid?
+		strftime (tme, sizeof(tme), "%s", timeinfo);
+		snprintf (buf, sizeof(buf), "%s%ld", tme, random ());
 		MD5 md5;
 		std::string fn = md5.digestString (buf);
 
@@ -515,7 +528,7 @@ LuaWindow::save_script ()
 		LuaScripting::instance().refresh (true);
 		append_text (X_("> ") + string_compose (_("Saved as %1"), path));
 		return; // OK
-	} catch (Glib::FileError e) {
+	} catch (Glib::FileError const& e) {
 		msg = string_compose (_("Error saving file: %1"), e.what());
 		goto errorout;
 	}
@@ -742,7 +755,7 @@ LuaWindow::ScriptBuffer::load ()
 		script = Glib::file_get_contents (path);
 		flags |= Buffer_Valid;
 		flags &= BufferFlags(~Buffer_Dirty);
-	} catch (Glib::FileError e) {
+	} catch (Glib::FileError const& e) {
 		return false;
 	}
 	return true;

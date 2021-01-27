@@ -1,21 +1,26 @@
 /*
-    Copyright (C) 2002 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Karsten Wiese <fzuuzf@googlemail.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2006-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2014-2015 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __ardour_route_ui__
 #define __ardour_route_ui__
@@ -95,6 +100,7 @@ public:
 	virtual void set_button_names () = 0;
 
 	bool is_track() const;
+	bool is_master() const;
 	bool is_audio_track() const;
 	bool is_midi_track() const;
 	bool has_audio_outputs () const;
@@ -205,6 +211,12 @@ public:
 	void build_mute_menu(void);
 	void init_mute_menu(ARDOUR::MuteMaster::MutePoint, Gtk::CheckMenuItem*);
 
+	/* The editor calls these when mapping an operation across multiple tracks */
+	void use_new_playlist (bool prompt, std::vector<boost::shared_ptr<ARDOUR::Playlist> > const &, bool copy);
+	void clear_playlist ();
+
+	std::string resolve_new_group_playlist_name(std::string const&, std::vector<boost::shared_ptr<ARDOUR::Playlist> > const&);
+
 	int  set_color_from_route ();
 
 	void route_rename();
@@ -230,8 +242,6 @@ public:
 	Gtk::CheckMenuItem *rec_safe_item;
 	void toggle_rec_safe ();
 
-	virtual void polarity_changed ();
-
 	Gtk::CheckMenuItem *denormal_menu_item;
 	void toggle_denormal_protection();
 	virtual void denormal_protection_changed ();
@@ -239,14 +249,6 @@ public:
 	void disconnect_input ();
 	void disconnect_output ();
 
-	virtual void blink_rec_display (bool onoff);
-	void update_mute_display ();
-
-	void update_solo_display ();
-
-	virtual void map_frozen ();
-
-	void adjust_latency ();
 	void save_as_template_dialog_response (int response, SaveTemplateDialog* d);
 	void save_as_template ();
 
@@ -285,6 +287,9 @@ protected:
 
 	void init ();
 	void reset ();
+
+	virtual void blink_rec_display (bool onoff);
+	virtual void map_frozen ();
 
 	void self_delete ();
 	virtual void start_step_editing () {}
@@ -334,16 +339,28 @@ protected:
 
 	ControlSlaveUI* csu;
 
+	std::string playlist_tip () const;
+	void build_playlist_menu ();
+	void use_playlist (Gtk::RadioMenuItem *item, boost::weak_ptr<ARDOUR::Playlist> wpl);
+	void show_playlist_selector ();
+	void rename_current_playlist ();
+
+	Gtk::Menu* playlist_action_menu;
+
 private:
 	void setup_invert_buttons ();
-	void set_invert_button_state ();
 	void invert_menu_toggled (uint32_t);
 	bool invert_press (GdkEventButton *);
 	bool invert_release (GdkEventButton *, uint32_t i);
 
+	void update_solo_display ();
+	void update_mute_display ();
+	void update_polarity_display ();
+
 	int _i_am_the_modifier;
 	std::vector<ArdourWidgets::ArdourButton*> _invert_buttons;
 	Gtk::Menu* _invert_menu;
+	uint32_t   _n_polarity_invert;
 
 	StripableColorDialog _color_picker;
 

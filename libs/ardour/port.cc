@@ -1,21 +1,23 @@
 /*
-    Copyright (C) 2009 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2006-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006-2019 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2007-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2015-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "libardour-config.h"
@@ -29,6 +31,7 @@
 #include "ardour/debug.h"
 #include "ardour/port.h"
 #include "ardour/port_engine.h"
+#include "ardour/rc_configuration.h"
 
 #include "pbd/i18n.h"
 
@@ -45,7 +48,7 @@ pframes_t    Port::_global_port_buffer_offset = 0;
 pframes_t    Port::_cycle_nframes = 0;
 double       Port::_speed_ratio = 1.0;
 std::string  Port::state_node_name = X_("Port");
-const uint32_t Port::_resampler_quality = 12;
+const uint32_t Port::_resampler_quality = 17;
 
 /* a handy define to shorten what would otherwise be a needlessly verbose
  * repeated phrase
@@ -58,6 +61,7 @@ Port::Port (std::string const & n, DataType t, PortFlags f)
 	: _name (n)
 	, _flags (f)
 	, _last_monitor (false)
+	, _externally_connected (0)
 {
 	_private_playback_latency.min = 0;
 	_private_playback_latency.max = 0;
@@ -71,27 +75,26 @@ Port::Port (std::string const & n, DataType t, PortFlags f)
 
 	assert (_name.find_first_of (':') == std::string::npos);
 
-	if (!port_engine.available ()) {
+	if (!port_manager->running ()) {
 		DEBUG_TRACE (DEBUG::Ports, string_compose ("port-engine n/a postpone registering %1\n", name()));
-		_port_handle = 0; // created during ::reestablish() later
+		_port_handle.reset (); // created during ::reestablish() later
 	} else if ((_port_handle = port_engine.register_port (_name, t, _flags)) == 0) {
 		cerr << "Failed to register port \"" << _name << "\", reason is unknown from here\n";
 		throw failed_constructor ();
 	}
 	DEBUG_TRACE (DEBUG::Ports, string_compose ("registed port %1 handle %2\n", name(), _port_handle));
 
-	PortDrop.connect_same_thread (drop_connection, boost::bind (&Port::drop, this));
+	PortDrop.connect_same_thread (drop_connection, boost::bind (&Port::session_global_drop, this));
 	PortSignalDrop.connect_same_thread (drop_connection, boost::bind (&Port::signal_drop, this));
-	port_manager->PortConnectedOrDisconnected.connect_same_thread (engine_connection,
-			boost::bind (&Port::port_connected_or_disconnected, this, _1, _3, _5));
+	port_manager->PortConnectedOrDisconnected.connect_same_thread (engine_connection, boost::bind (&Port::port_connected_or_disconnected, this, _1, _3, _5));
 }
 
 /** Port destructor */
 Port::~Port ()
 {
+	DEBUG_TRACE (PBD::DebugBits (DEBUG::Destruction|DEBUG::Ports), string_compose ("destroying port @ %1 named %2\n", this, name()));
 	drop ();
 }
-
 
 std::string
 Port::pretty_name(bool fallback_to_name) const
@@ -126,6 +129,16 @@ Port::set_pretty_name(const std::string& n)
 }
 
 void
+Port::session_global_drop()
+{
+	if (_flags & TransportMasterPort) {
+		return;
+	}
+
+	drop ();
+}
+
+void
 Port::signal_drop ()
 {
 	engine_connection.disconnect ();
@@ -137,7 +150,7 @@ Port::drop ()
 	if (_port_handle) {
 		DEBUG_TRACE (DEBUG::Ports, string_compose ("drop handle for port %1\n", name()));
 		port_engine.unregister_port (_port_handle);
-		_port_handle = 0;
+		_port_handle.reset ();;
 	}
 }
 
@@ -206,7 +219,7 @@ Port::connected_to (std::string const & o) const
 		return false;
 	}
 
-	if (!port_engine.available()) {
+	if (!port_manager->running()) {
 		return false;
 	}
 
@@ -216,7 +229,7 @@ Port::connected_to (std::string const & o) const
 int
 Port::get_connections (std::vector<std::string> & c) const
 {
-	if (!port_engine.available()) {
+	if (!port_manager->running()) {
 		c.insert (c.end(), _connections.begin(), _connections.end());
 		return c.size();
 	}
@@ -336,6 +349,7 @@ void
 Port::reset ()
 {
 	_last_monitor = false;
+	_externally_connected = 0;
 }
 
 void
@@ -351,20 +365,22 @@ Port::set_public_latency_range (LatencyRange const& range, bool playback) const
 	   port latency values are identical.
 	*/
 
-	DEBUG_TRACE (DEBUG::Latency,
+	DEBUG_TRACE (DEBUG::LatencyIO,
 	             string_compose ("SET PORT %1 %4 PUBLIC latency now [%2 - %3]\n",
 	                             name(), range.min, range.max,
 	                             (playback ? "PLAYBACK" : "CAPTURE")));;
 
 	if (_port_handle) {
 		LatencyRange r (range);
-		if (externally_connected ()) {
+		if (externally_connected () && 0 == (_flags & TransportSyncPort)) {
 #if 0
 			r.min *= _speed_ratio;
 			r.max *= _speed_ratio;
 #endif
-			r.min += (_resampler_quality - 1);
-			r.max += (_resampler_quality - 1);
+			if (type () == DataType::AUDIO) {
+				r.min += (_resampler_quality - 1);
+				r.max += (_resampler_quality - 1);
+			}
 		}
 		port_engine.set_latency_range (_port_handle, playback, r);
 	}
@@ -375,14 +391,14 @@ Port::set_private_latency_range (LatencyRange& range, bool playback)
 {
 	if (playback) {
 		_private_playback_latency = range;
-		DEBUG_TRACE (DEBUG::Latency, string_compose (
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 			             "SET PORT %1 playback PRIVATE latency now [%2 - %3]\n",
 			             name(),
 			             _private_playback_latency.min,
 			             _private_playback_latency.max));
 	} else {
 		_private_capture_latency = range;
-		DEBUG_TRACE (DEBUG::Latency, string_compose (
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 			             "SET PORT %1 capture PRIVATE latency now [%2 - %3]\n",
 			             name(),
 			             _private_capture_latency.min,
@@ -398,14 +414,14 @@ const LatencyRange&
 Port::private_latency_range (bool playback) const
 {
 	if (playback) {
-		DEBUG_TRACE (DEBUG::Latency, string_compose (
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 			             "GET PORT %1 playback PRIVATE latency now [%2 - %3]\n",
 			             name(),
 			             _private_playback_latency.min,
 			             _private_playback_latency.max));
 		return _private_playback_latency;
 	} else {
-		DEBUG_TRACE (DEBUG::Latency, string_compose (
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 			             "GET PORT %1 capture PRIVATE latency now [%2 - %3]\n",
 			             name(),
 			             _private_playback_latency.min,
@@ -422,16 +438,18 @@ Port::public_latency_range (bool /*playback*/) const
 
 	if (_port_handle) {
 		r = port_engine.get_latency_range (_port_handle, sends_output() ? true : false);
-		if (externally_connected ()) {
+		if (externally_connected () && 0 == (_flags & TransportSyncPort)) {
 #if 0
 			r.min /= _speed_ratio;
 			r.max /= _speed_ratio;
 #endif
-			r.min += (_resampler_quality - 1);
-			r.max += (_resampler_quality - 1);
+			if (type () == DataType::AUDIO) {
+				r.min += (_resampler_quality - 1);
+				r.max += (_resampler_quality - 1);
+			}
 		}
 
-		DEBUG_TRACE (DEBUG::Latency, string_compose (
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 				     "GET PORT %1: %4 PUBLIC latency range %2 .. %3\n",
 				     name(), r.min, r.max,
 				     sends_output() ? "PLAYBACK" : "CAPTURE"));
@@ -452,7 +470,7 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 		range.min = ~((pframes_t) 0);
 		range.max = 0;
 
-		DEBUG_TRACE (DEBUG::Latency, string_compose ("%1: %2 connections to check for latency range\n", name(), connections.size()));
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose ("%1: %2 connections to check for latency range\n", name(), connections.size()));
 
 		for (vector<string>::const_iterator c = connections.begin();
 				c != connections.end(); ++c) {
@@ -469,16 +487,18 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 
 				if (remote_port) {
 					lr = port_engine.get_latency_range (remote_port, playback);
-					if (externally_connected ()) {
+					if (externally_connected () && 0 == (_flags & TransportSyncPort)) {
 #if 0
 						lr.min /= _speed_ratio;
 						lr.max /= _speed_ratio;
 #endif
-						lr.min += (_resampler_quality - 1);
-						lr.max += (_resampler_quality - 1);
+						if (type () == DataType::AUDIO) {
+							lr.min += (_resampler_quality - 1);
+							lr.max += (_resampler_quality - 1);
+						}
 					}
 
-					DEBUG_TRACE (DEBUG::Latency, string_compose (
+					DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 								"\t%1 <-> %2 : latter has latency range %3 .. %4\n",
 								name(), *c, lr.min, lr.max));
 
@@ -489,16 +509,16 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 			} else {
 
 				/* port belongs to this instance of ardour,
-					 so look up its latency information
-					 internally, because our published/public
-					 values already contain our plugin
-					 latency compensation.
-					 */
+				 * so look up its latency information
+				 * internally, because our published/public
+				 * values already contain our plugin
+				 * latency compensation.
+				 */
 
 				boost::shared_ptr<Port> remote_port = AudioEngine::instance()->get_port_by_name (*c);
 				if (remote_port) {
 					lr = remote_port->private_latency_range ((playback ? true : false));
-					DEBUG_TRACE (DEBUG::Latency, string_compose (
+					DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 								"\t%1 <-LOCAL-> %2 : latter has latency range %3 .. %4\n",
 								name(), *c, lr.min, lr.max));
 
@@ -509,12 +529,12 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 		}
 
 	} else {
-		DEBUG_TRACE (DEBUG::Latency, string_compose ("%1: not connected to anything\n", name()));
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose ("%1: not connected to anything\n", name()));
 		range.min = 0;
 		range.max = 0;
 	}
 
-	DEBUG_TRACE (DEBUG::Latency, string_compose ("%1: final connected latency range [ %2 .. %3 ] \n", name(), range.min, range.max));
+	DEBUG_TRACE (DEBUG::LatencyIO, string_compose ("%1: final connected latency range [ %2 .. %3 ] \n", name(), range.min, range.max));
 }
 
 int
@@ -532,8 +552,7 @@ Port::reestablish ()
 
 	reset ();
 
-	port_manager->PortConnectedOrDisconnected.connect_same_thread (engine_connection,
-			boost::bind (&Port::port_connected_or_disconnected, this, _1, _3, _5));
+	port_manager->PortConnectedOrDisconnected.connect_same_thread (engine_connection, boost::bind (&Port::port_connected_or_disconnected, this, _1, _3, _5));
 	return 0;
 }
 
@@ -581,15 +600,6 @@ Port::physically_connected () const
 	}
 
 	return port_engine.physically_connected (_port_handle);
-}
-
-bool
-Port::externally_connected () const
-{
-	if (!_port_handle) {
-		return false;
-	}
-	return port_engine.externally_connected (_port_handle);
 }
 
 XMLNode&
@@ -653,10 +663,16 @@ Port::set_state (const XMLNode& node, int)
 /*static*/ void
 Port::set_speed_ratio (double s) {
 	/* see VMResampler::set_rratio() for min/max range */
-	_speed_ratio = std::min (16.0, std::max (0.5, s));
+	if (s == 0.0) {
+		/* no resampling when stopped */
+		_speed_ratio = 1.0;
+	} else {
+		_speed_ratio = std::min ((double) Config->get_max_transport_speed(), std::max (0.02, fabs (s)));
+	}
 }
 
 /*static*/ void
-Port::set_cycle_samplecnt (pframes_t n) {
+Port::set_cycle_samplecnt (pframes_t n)
+{
 	_cycle_nframes = floor (n * _speed_ratio);
 }

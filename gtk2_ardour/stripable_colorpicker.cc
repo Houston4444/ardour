@@ -1,27 +1,29 @@
 /*
- * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2017-2018 Robin Gareus <robin@gareus.org>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include "pbd/compose.h"
-#include "pbd/i18n.h"
 
+#include "public_editor.h"
 #include "stripable_colorpicker.h"
 #include "ui_config.h"
 #include "utils.h"
+
+#include "pbd/i18n.h"
 
 using namespace Gtk;
 using namespace ARDOUR_UI_UTILS;
@@ -142,10 +144,15 @@ StripableColorDialog::popup (boost::shared_ptr<ARDOUR::Stripable> s)
 void
 StripableColorDialog::finish_color_edit (int response)
 {
+	ARDOUR::RouteList rl = PublicEditor::instance().get_selection().tracks.routelist();
+
 	if (response == RESPONSE_OK) {
 		ColorChanged (gdk_color_to_rgba (get_colorsel()->get_current_color())); /* EMIT SIGNAL */
 	}
 	if (_stripable && response == RESPONSE_OK) {
+		for (ARDOUR::RouteList::iterator i = rl.begin(); i != rl.end(); ++i) {
+			(*i)->presentation_info().set_color (gdk_color_to_rgba (get_colorsel()->get_current_color()));
+		}
 		_stripable->presentation_info().set_color (gdk_color_to_rgba (get_colorsel()->get_current_color()));
 	} else if (_stripable) {
 		_stripable->presentation_info().set_color (_initial_color);

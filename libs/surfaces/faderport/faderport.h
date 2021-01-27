@@ -1,21 +1,21 @@
 /*
-    Copyright (C) 2006 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2015-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2015 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef ardour_surface_faderport_h
 #define ardour_surface_faderport_h
@@ -34,7 +34,6 @@
 
 namespace PBD {
 	class Controllable;
-	class ControllableDescriptor;
 }
 
 #include <midi++/types.h>
@@ -184,7 +183,7 @@ class FaderPort : public ARDOUR::ControlProtocol, public AbstractUI<FaderPortReq
 	void build_gui ();
 
 	bool connection_handler (boost::weak_ptr<ARDOUR::Port>, std::string name1, boost::weak_ptr<ARDOUR::Port>, std::string name2, bool yn);
-	PBD::ScopedConnection port_connection;
+	PBD::ScopedConnectionList port_connections;
 
 	enum ConnectionState {
 		InputConnected = 0x1,
@@ -232,7 +231,7 @@ class FaderPort : public ARDOUR::ControlProtocol, public AbstractUI<FaderPortReq
 		std::string get_action (bool press, FaderPort::ButtonState bs = ButtonState (0));
 
 		void set_led_state (boost::shared_ptr<MIDI::Port>, bool onoff);
-		void invoke (ButtonState bs, bool press);
+		bool invoke (ButtonState bs, bool press);
 		bool uses_flash () const { return flash; }
 		void set_flash (bool yn) { flash = yn; }
 
@@ -329,9 +328,8 @@ class FaderPort : public ARDOUR::ControlProtocol, public AbstractUI<FaderPortReq
 	void mute ();
 	void rec_enable ();
 
-	void ardour_pan_azimuth (int);
-	void ardour_pan_width (int);
-	void mixbus_pan (int);
+	void pan_azimuth (int);
+	void pan_width (int);
 
 	void punch ();
 };

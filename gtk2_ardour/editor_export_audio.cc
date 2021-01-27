@@ -1,21 +1,27 @@
 /*
-    Copyright (C) 2001 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2006-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2010 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2007-2017 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2008-2012 Sakari Bergen <sakari.bergen@beatwaves.net>
+ * Copyright (C) 2014-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 André Nusser <andre.nusser@googlemail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 /* Note: public Editor methods are documented in public_editor.h */
 
@@ -40,10 +46,16 @@
 #include "ardour/source_factory.h"
 #include "ardour/types.h"
 
+#include "ardour_ui.h"
+#include "ardour_message.h"
+
+#include "widgets/prompter.h"
+
 #include "audio_region_view.h"
 #include "audio_time_axis.h"
 #include "editor.h"
 #include "export_dialog.h"
+#include "loudness_dialog.h"
 #include "midi_export_dialog.h"
 #include "midi_region_view.h"
 #include "public_editor.h"
@@ -80,6 +92,58 @@ Editor::export_selection ()
 	ExportSelectionDialog dialog (*this);
 	dialog.set_session (_session);
 	dialog.run();
+}
+
+void
+Editor::measure_master_loudness (bool range_selection)
+{
+	if (!Config->get_use_master_volume ()) {
+		ArdourMessageDialog md (_("Master bus output gain control is disabled.\nVisit preferences to enable it?"), false,
+				MESSAGE_QUESTION, BUTTONS_YES_NO);
+		if (md.run () == RESPONSE_YES) {
+			ARDOUR_UI::instance()->show_mixer_prefs ();
+		}
+		return;
+	}
+
+	samplepos_t start, end;
+	TimeSelection const& ts (get_selection().time);
+	if (range_selection && !ts.empty ()) {
+		start = ts.start();
+		end = ts.end_sample();
+	} else {
+		start = _session->current_start_sample();
+		end   = _session->current_end_sample();
+	}
+
+	if (start >= end) {
+		if (range_selection) {
+			ArdourMessageDialog (_("Loudness Analysis requires a session-range or range-selection."), false, MESSAGE_ERROR).run ();
+		} else {
+			ArdourMessageDialog (_("Loudness Analysis requires a session-range."), false, MESSAGE_ERROR).run ();
+		}
+		return;
+	}
+
+	if (!_session->master_volume()) {
+		ArdourMessageDialog (_("Loudness Analysis is only available for sessions with a master-bus"), false, MESSAGE_ERROR).run ();
+		return;
+	}
+	assert (_session->master_out());
+	if (_session->master_out()->output()->n_ports().n_audio() != 2) {
+		ArdourMessageDialog (_("Loudness Analysis is only available for sessions with a stereo master-bus"), false, MESSAGE_ERROR).run ();
+		return;
+	}
+
+	ARDOUR::AudioRange ar (start, end, 0);
+
+	LoudnessDialog ld (_session, ar, range_selection);
+
+	if (own_window ()) {
+		ld.set_transient_for (*own_window ());
+	}
+
+	ld.run ();
 }
 
 void
@@ -191,6 +255,37 @@ Editor::bounce_region_selection (bool with_processing)
 	 * its results back in the playlist (only in the region list).
 	 */
 
+	/*prompt the user for a new name*/
+	string bounce_name;
+	{
+		ArdourWidgets::Prompter dialog (true);
+
+		dialog.set_prompt (_("Name for Bounced Region:"));
+
+		dialog.set_name ("BounceNameWindow");
+		dialog.set_size_request (400, -1);
+		dialog.set_position (Gtk::WIN_POS_MOUSE);
+
+		dialog.add_button (_("Rename"), RESPONSE_ACCEPT);
+		dialog.set_initial_text (bounce_name);
+
+		Label label;
+		label.set_text (_("Bounced Region will appear in the Source list."));
+		dialog.get_vbox()->set_spacing (8);
+		dialog.get_vbox()->pack_start (label);
+		label.show();
+
+		dialog.show ();
+
+		switch (dialog.run ()) {
+		case RESPONSE_ACCEPT:
+			break;
+		default:
+			return;
+		}
+		dialog.get_result(bounce_name);
+	}
+
 	for (RegionSelection::iterator i = selection->regions.begin(); i != selection->regions.end(); ++i) {
 
 		boost::shared_ptr<Region> region ((*i)->region());
@@ -202,9 +297,9 @@ Editor::bounce_region_selection (bool with_processing)
 		boost::shared_ptr<Region> r;
 
 		if (with_processing) {
-			r = track->bounce_range (region->position(), region->position() + region->length(), itt, track->main_outs(), false);
+			r = track->bounce_range (region->position(), region->position() + region->length(), itt, track->main_outs(), false, bounce_name);
 		} else {
-			r = track->bounce_range (region->position(), region->position() + region->length(), itt, boost::shared_ptr<Processor>(), false);
+			r = track->bounce_range (region->position(), region->position() + region->length(), itt, boost::shared_ptr<Processor>(), false, bounce_name);
 		}
 	}
 }
@@ -241,11 +336,11 @@ Editor::write_region (string path, boost::shared_ptr<AudioRegion> region)
 			for (cnt = 0; cnt < 999999; ++cnt) {
 				if (nchans == 1) {
 					snprintf (s, sizeof(s), "%s/%s_%" PRIu32 ".wav", sound_directory.c_str(),
-						  legalize_for_path(region->name()).c_str(), cnt);
+						  legalize_for_universal_path(region->name()).c_str(), cnt);
 				}
 				else {
 					snprintf (s, sizeof(s), "%s/%s_%" PRIu32 "-%" PRId32 ".wav", sound_directory.c_str(),
-						  legalize_for_path(region->name()).c_str(), cnt, n);
+						  legalize_for_universal_path(region->name()).c_str(), cnt, n);
 				}
 
 				path = s;
@@ -263,10 +358,7 @@ Editor::write_region (string path, boost::shared_ptr<AudioRegion> region)
 
 
 			try {
-				fs = boost::dynamic_pointer_cast<AudioFileSource> (
-					SourceFactory::createWritable (DataType::AUDIO, *_session,
-					                               path, true,
-					                               false, _session->sample_rate()));
+				fs = boost::dynamic_pointer_cast<AudioFileSource> (SourceFactory::createWritable (DataType::AUDIO, *_session, path, _session->sample_rate()));
 			}
 
 			catch (failed_constructor& err) {
@@ -382,11 +474,11 @@ Editor::write_audio_range (AudioPlaylist& playlist, const ChanCount& count, list
 		for (cnt = 0; cnt < 999999; ++cnt) {
 			if (channels == 1) {
 				snprintf (s, sizeof(s), "%s/%s_%" PRIu32 ".wav", sound_directory.c_str(),
-					  legalize_for_path(playlist.name()).c_str(), cnt);
+					  legalize_for_universal_path(playlist.name()).c_str(), cnt);
 			}
 			else {
 				snprintf (s, sizeof(s), "%s/%s_%" PRIu32 "-%" PRId32 ".wav", sound_directory.c_str(),
-					  legalize_for_path(playlist.name()).c_str(), cnt, n);
+					  legalize_for_universal_path(playlist.name()).c_str(), cnt, n);
 			}
 
 			if (!Glib::file_test (s, Glib::FILE_TEST_EXISTS)) {
@@ -402,10 +494,7 @@ Editor::write_audio_range (AudioPlaylist& playlist, const ChanCount& count, list
 		path = s;
 
 		try {
-			fs = boost::dynamic_pointer_cast<AudioFileSource> (
-				SourceFactory::createWritable (DataType::AUDIO, *_session,
-				                               path, true,
-				                               false, _session->sample_rate()));
+			fs = boost::dynamic_pointer_cast<AudioFileSource> (SourceFactory::createWritable (DataType::AUDIO, *_session, path, _session->sample_rate()));
 		}
 
 		catch (failed_constructor& err) {

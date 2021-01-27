@@ -1,12 +1,33 @@
+/*
+ * Copyright (C) 2015-2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
 #include <iostream>
 #include <cstdlib>
 #include <glibmm.h>
+
 
 #include "pbd/debug.h"
 #include "pbd/event_loop.h"
 #include "pbd/error.h"
 #include "pbd/failed_constructor.h"
 #include "pbd/pthread_utils.h"
+#include "pbd/receiver.h"
+#include "pbd/transmitter.h"
 
 #include "ardour/audioengine.h"
 #include "ardour/filename_extensions.h"
@@ -19,41 +40,46 @@ using namespace ARDOUR;
 using namespace PBD;
 
 static const char* localedir = LOCALEDIR;
-TestReceiver test_receiver;
 
-void
-TestReceiver::receive (Transmitter::Channel chn, const char * str)
+class LogReceiver : public Receiver
 {
-	const char *prefix = "";
+protected:
+	void receive (Transmitter::Channel chn, const char * str) {
+		const char *prefix = "";
+		switch (chn) {
+			case Transmitter::Debug:
+				/* ignore */
+				return;
+			case Transmitter::Info:
+				/* ignore */
+				return;
+			case Transmitter::Warning:
+				prefix = ": [WARNING]: ";
+				break;
+			case Transmitter::Error:
+				prefix = ": [ERROR]: ";
+				break;
+			case Transmitter::Fatal:
+				prefix = ": [FATAL]: ";
+				break;
+			case Transmitter::Throw:
+				/* this isn't supposed to happen */
+				abort ();
+		}
 
-	switch (chn) {
-	case Transmitter::Error:
-		prefix = ": [ERROR]: ";
-		break;
-	case Transmitter::Info:
-		/* ignore */
-		return;
-	case Transmitter::Warning:
-		prefix = ": [WARNING]: ";
-		break;
-	case Transmitter::Fatal:
-		prefix = ": [FATAL]: ";
-		break;
-	case Transmitter::Throw:
-		/* this isn't supposed to happen */
-		abort ();
+		/* note: iostreams are already thread-safe: no external
+			 lock required.
+			 */
+
+		std::cout << prefix << str << std::endl;
+
+		if (chn == Transmitter::Fatal) {
+			::exit (9);
+		}
 	}
+};
 
-	/* note: iostreams are already thread-safe: no external
-	   lock required.
-	*/
-
-	std::cout << prefix << str << std::endl;
-
-	if (chn == Transmitter::Fatal) {
-		::exit (9);
-	}
-}
+LogReceiver log_receiver;
 
 /* temporarily required due to some code design confusion (Feb 2014) */
 
@@ -98,10 +124,9 @@ SessionUtils::init (bool print_log)
 	SessionEvent::create_per_thread_pool ("util", 512);
 
 	if (print_log) {
-		test_receiver.listen_to (error);
-		test_receiver.listen_to (info);
-		test_receiver.listen_to (fatal);
-		test_receiver.listen_to (warning);
+		log_receiver.listen_to (warning);
+		log_receiver.listen_to (error);
+		log_receiver.listen_to (fatal);
 	}
 }
 
@@ -138,8 +163,6 @@ static Session * _load_session (string dir, string state)
 		std::cerr << "Cannot get samplerate from session.\n";
 		return 0;
 	}
-
-	init_post_engine ();
 
 	if (engine->start () != 0) {
 		std::cerr << "Cannot start Audio/MIDI engine\n";
@@ -193,8 +216,6 @@ SessionUtils::create_session (string dir, string state, float sample_rate)
 		std::cerr << "Cannot set session's samplerate.\n";
 		return 0;
 	}
-
-	init_post_engine ();
 
 	if (engine->start () != 0) {
 		std::cerr << "Cannot start Audio/MIDI engine\n";

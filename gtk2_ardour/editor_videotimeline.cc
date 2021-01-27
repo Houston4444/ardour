@@ -1,22 +1,22 @@
 /*
-    Copyright (C) 2010 Paul Davis
-    Author: Robin Gareus <robin@gareus.org>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2013-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2013 John Emmas <john@creativepost.co.uk>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include "pbd/gstdio_compat.h"
 
@@ -55,6 +55,9 @@ Editor::update_video_timeline (bool flush)
 {
 	// catch GUIIdle -> Editor::idle_visual_changer during quit/close
 	assert (ARDOUR_UI::instance()->video_timeline);
+	if (!ARDOUR_UI::instance()->video_timeline) {
+		return;
+	}
 
 	if (flush) {
 		ARDOUR_UI::instance()->video_timeline->flush_local_cache();
@@ -101,7 +104,7 @@ Editor::embed_audio_from_video (std::string path, samplepos_t n, bool lock_posit
 			boost::shared_ptr<ARDOUR::Playlist> pl = track->playlist();
 			pl->find_next_region(n, ARDOUR::End, 0)->set_video_locked(true);
 		}
-		_session->save_state ("");
+		_session->save_state ("", true);
 	}
 
 	import_status.all_done = true;

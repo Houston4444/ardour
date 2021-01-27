@@ -63,6 +63,39 @@ VaildateYesNoQuestion ()
 	
 }
 
+VaildateYesNoEnterQuestion ()
+{
+	# $1 = Question Text
+	# $2 = default y/n
+
+	local INPUT_OK="n"
+	local USER_INPUT=""
+	local PRMT="[Y/n]"
+	local DFLT="y"
+
+	if [ "$2" = "n" ]; then
+		PRMT="[y/N]"
+		DFLT="n"
+	fi
+
+	until test "y" = $INPUT_OK; do
+		echo ""
+		read -p "$1 $PRMT: " USER_INPUT
+		echo ""
+
+		if [ -z $USER_INPUT ]; then
+			INPUT_OK="y"
+			USER_INPUT=$DFLT
+		else
+			if [ "Y" = $USER_INPUT -o "y" = $USER_INPUT -o "n" = $USER_INPUT -o "N" = $USER_INPUT ]; then
+				INPUT_OK="y"
+			fi
+		fi
+	done
+
+	echo $USER_INPUT | tr '[:upper:]' '[:lower:]'
+}
+
 SystemInstall ()
 {
 
@@ -119,7 +152,21 @@ cd "${PKG_PATH}"
 
 echo ""
 echo "Welcome to the ${PGM_NAME} installer"
-echo ""
+
+case `uname -s` in
+	Linux)
+		echo ""
+		;;
+	*)
+		echo ""
+		echo "!!! ERROR !!! - Unsupported Operating System `uname -s`."
+		echo "This installer is for 'Linux' kernel based systems only."
+		echo ""
+		read -p "Press ENTER to exit installer:" BLAH
+		exit 1
+		;;
+esac
+
 echo "${PGM_NAME} will be installed for user ${USER_NAME} in ${INSTALL_DEST_BASE}"
 echo ""
 #############################
@@ -221,6 +268,16 @@ case `uname -m` in
 		echo "Architecture is x86_64"
 		ARCH='x86_64'
 		;;
+	arm|armv7l|aarch32)
+		echo "Architecture is armhf"
+		ARCH='armhf'
+		NOABICHECK=1
+		;;
+	aarch64|armv8b)
+		echo "Architecture is arm64"
+		ARCH='arm64'
+		NOABICHECK=1
+		;;
 	*)
 		echo ""
 		echo "!!! ERROR !!! - Unknown architecture `uname -m`"
@@ -314,11 +371,11 @@ else
 	fi
 fi
 
-#############################
-# Determine C11 stdlibc++ ABI
-#############################
+###############################
+# Determine C++11 stdlibc++ ABI
+###############################
 
-if test -z "$ABI"; then
+if test -z "$ABI" -a -z "$NOABICHECK"; then
 	if %REPLACE_GCC5%; then
 		# Ardour was compiled with gcc5, warn on gcc4 systems
 		if ! "${PKG_PATH}/.gcc-glibmm-abi-check" --gcc5; then
@@ -478,8 +535,8 @@ echo ""
 LIB_ERROR="F"
 LD_PATH=`pwd`/${BUNDLE_DIR}/lib
 
-# check the main App
-LDD_RESULT=$(LD_LIBRARY_PATH=${LD_PATH} ldd ${BUNDLE_DIR}/bin/${PGM_NAME_LOWER}-* 2>&1 > /dev/null | grep -v "no version information")
+# check the main App(s)
+LDD_RESULT=$(LANG=C LD_LIBRARY_PATH=${LD_PATH} ldd ${BUNDLE_DIR}/*/${PGM_NAME_LOWER}-* 2>&1 | grep "not found/")
 
 if [ -n "$LDD_RESULT" ];
 then
@@ -488,11 +545,11 @@ then
 fi
 	
 # check the libs
-LIB_FILES=$(find ${BUNDLE_DIR}/lib -name "*.so")
+LIB_FILES=$(find ${BUNDLE_DIR}/lib -name "*.so" -type f | grep -v backends)
 
 for path in $LIB_FILES
 do
-	LDD_RESULT=$(LD_LIBRARY_PATH=${LD_PATH} ldd $path 2>&1 > /dev/null | grep -v "no version information")
+	LDD_RESULT=$(LANG=C LD_LIBRARY_PATH=${LD_PATH} ldd $path 2>&1 | grep "not found")
 	if [ -n "$LDD_RESULT" ];
 	then
 		echo "$LDD_RESULT"
@@ -642,6 +699,20 @@ if [ -d "${USER_BIN_DIR}" ]; then
 	
 else
 	echo "Can not create link because ${USER_BIN_DIR} does not exist"
+fi
+
+############################################
+# Allow to remove non-free stuff for purists
+############################################
+
+if test "${PGM_VENDOR}" = "Ardour" -a -d "${INSTALL_DEST_BASE}/${PGM_FULL_NAME}/lib/LV2/Harrison.lv2"; then
+	ANSWER=$(VaildateYesNoEnterQuestion "Install Harrison XT plugins?" "y")
+
+	if test "n" = $ANSWER; then
+		${SUPER} rm -rf "${INSTALL_DEST_BASE}/${PGM_FULL_NAME}/lib/LV2/Harrison.lv2"
+	else
+		echo "Deploying Harrison plugins to ${INSTALL_DEST_BASE}/${PGM_FULL_NAME}/lib/LV2/Harrison.lv2"
+	fi
 fi
 
 ###########################

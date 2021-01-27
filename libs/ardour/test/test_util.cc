@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2011 Paul Davis
-    Copyright (C) 2011 Tim Mayberry
-
-    This program is free software; you can redistribute it and/or modify it
-    under the terms of the GNU General Public License as published by the Free
-    Software Foundation; either version 2 of the License, or (at your option)
-    any later version.
-
-    This program is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-    for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2014-2015 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 #include <sstream>
 
 #include <glibmm/fileutils.h>
@@ -105,8 +106,6 @@ create_and_start_dummy_backend ()
 	CPPUNIT_ASSERT (engine);
 	CPPUNIT_ASSERT (engine->set_backend ("None (Dummy)", "Unit-Test", ""));
 
-	init_post_engine ();
-
 	CPPUNIT_ASSERT (engine->start () == 0);
 }
 
@@ -124,7 +123,7 @@ stop_and_destroy_backend ()
 Session *
 load_session (string dir, string state)
 {
-	Session* session = new Session (*AudioEngine::instance(), dir, state);
+	Session* session = new Session (*AudioEngine::instance(), dir, state, 0, "", true);
 	AudioEngine::instance ()->set_session (session);
 	return session;
 }

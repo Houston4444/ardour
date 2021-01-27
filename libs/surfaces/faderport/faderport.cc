@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2015 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2015-2018 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2015-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2016-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cstdlib>
 #include <sstream>
@@ -39,7 +40,6 @@
 #include "ardour/audioengine.h"
 #include "ardour/amp.h"
 #include "ardour/bundle.h"
-#include "ardour/controllable_descriptor.h"
 #include "ardour/debug.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/midi_port.h"
@@ -109,7 +109,8 @@ FaderPort::FaderPort (Session& s)
 		);
 
 	/* Catch port connections and disconnections */
-	ARDOUR::AudioEngine::instance()->PortConnectedOrDisconnected.connect (port_connection, MISSING_INVALIDATOR, boost::bind (&FaderPort::connection_handler, this, _1, _2, _3, _4, _5), this);
+	ARDOUR::AudioEngine::instance()->PortConnectedOrDisconnected.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort::connection_handler, this, _1, _2, _3, _4, _5), this);
+	ARDOUR::AudioEngine::instance()->PortPrettyNameChanged.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort::ConnectionChange, this), this); /* notify GUI */
 
 	buttons.insert (std::make_pair (Mute, Button (*this, _("Mute"), Mute, 21)));
 	buttons.insert (std::make_pair (Solo, Button (*this, _("Solo"), Solo, 22)));
@@ -182,7 +183,7 @@ FaderPort::FaderPort (Session& s)
 	get_button (Loop).set_action (boost::bind (&BasicUI::add_marker, this, string()), true, ShiftDown);
 
 	get_button (Punch).set_action (boost::bind (&BasicUI::prev_marker, this), true, ShiftDown);
-	get_button (User).set_action (boost::bind (&BasicUI::next_marker, this), true, ButtonState(ShiftDown|UserDown));
+	get_button (User).set_action (boost::bind (&BasicUI::next_marker, this), true, ShiftDown);
 
 	get_button (Mute).set_action (boost::bind (&FaderPort::mute, this), true);
 	get_button (Solo).set_action (boost::bind (&FaderPort::solo, this), true);
@@ -314,15 +315,15 @@ bool
 FaderPort::button_long_press_timeout (ButtonID id)
 {
 	if (buttons_down.find (id) != buttons_down.end()) {
-		get_button (id).invoke (ButtonState (LongPress|button_state), false);
+		if (get_button (id).invoke (ButtonState (LongPress|button_state), false)) {
+			/* whichever button this was, we've used it ... don't invoke the
+			   release action.
+			*/
+			consumed.insert (id);
+		}
 	} else {
 		/* release happened and somehow we were not cancelled */
 	}
-
-	/* whichever button this was, we've used it ... don't invoke the
-	   release action.
-	*/
-	consumed.insert (id);
 
 	return false; /* don't get called again */
 }
@@ -362,9 +363,6 @@ FaderPort::button_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 	case Rewind:
 		bs = RewindDown;
 		break;
-	case User:
-		bs = UserDown;
-		break;
 	case FaderTouch:
 		fader_is_touched = tb->value;
 		if (_current_stripable) {
@@ -398,7 +396,7 @@ FaderPort::button_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 	set<ButtonID>::iterator c = consumed.find (id);
 
 	if (c == consumed.end()) {
-		button.invoke (button_state, tb->value ? true : false);
+		(void) button.invoke (button_state, tb->value ? true : false);
 	} else {
 		DEBUG_TRACE (DEBUG::FaderPort, "button was consumed, ignored\n");
 		consumed.erase (c);
@@ -459,23 +457,11 @@ FaderPort::encoder_handler (MIDI::Parser &, MIDI::pitchbend_t pb)
 				trim->set_value (dB_to_coefficient (val), Controllable::UseGroup);
 			}
 		} else if (width_modifier && ((button_state & width_modifier) == width_modifier)) {
-			ardour_pan_width (delta);
+			pan_width (delta);
 
 		} else {  // pan/balance
-			if (!Profile->get_mixbus()) {
-				ardour_pan_azimuth (delta);
-			} else {
-				mixbus_pan (delta);
-			}
+			pan_azimuth (delta);
 		}
-	}
-
-	/* if the user button was pressed, mark it as consumed so that its
-	 * release action has no effect.
-	 */
-
-	if (!Profile->get_mixbus() && (button_state & UserDown)) {
-		consumed.insert (User);
 	}
 }
 
@@ -644,7 +630,7 @@ FaderPort::close ()
 
 	stop_midi_handling ();
 	session_connections.drop_connections ();
-	port_connection.disconnect ();
+	port_connections.drop_connections ();
 	blink_connection.disconnect ();
 	selection_connection.disconnect ();
 	stripable_connections.drop_connections ();
@@ -700,7 +686,7 @@ FaderPort::map_transport_state ()
 {
 	get_button (Loop).set_led_state (_output_port, session->get_play_loop());
 
-	float ts = session->transport_speed();
+	float ts = get_transport_speed();
 
 	if (ts == 0) {
 		stop_blinking (Play);
@@ -711,9 +697,9 @@ FaderPort::map_transport_state ()
 		start_blinking (Play);
 	}
 
-	get_button (Stop).set_led_state (_output_port, session->transport_stopped ());
-	get_button (Rewind).set_led_state (_output_port, session->transport_speed() < 0.0);
-	get_button (Ffwd).set_led_state (_output_port, session->transport_speed() > 1.0);
+	get_button (Stop).set_led_state (_output_port, stop_button_onoff());
+	get_button (Rewind).set_led_state (_output_port, rewind_button_onoff ());
+	get_button (Ffwd).set_led_state (_output_port, ffwd_button_onoff());
 }
 
 void
@@ -915,7 +901,7 @@ FaderPort::connected ()
 	_output_port->write (buf, 6, 0);
 }
 
-void
+bool
 FaderPort::Button::invoke (FaderPort::ButtonState bs, bool press)
 {
 	DEBUG_TRACE (DEBUG::FaderPort, string_compose ("invoke button %1 for %2 state %3%4%5\n", id, (press ? "press":"release"), hex, bs, dec));
@@ -925,12 +911,12 @@ FaderPort::Button::invoke (FaderPort::ButtonState bs, bool press)
 	if (press) {
 		if ((x = on_press.find (bs)) == on_press.end()) {
 			DEBUG_TRACE (DEBUG::FaderPort, string_compose ("no press action for button %1 state %2 @ %3 in %4\n", id, bs, this, &on_press));
-			return;
+			return false;
 		}
 	} else {
 		if ((x = on_release.find (bs)) == on_release.end()) {
 			DEBUG_TRACE (DEBUG::FaderPort, string_compose ("no release action for button %1 state %2 @%3 in %4\n", id, bs, this, &on_release));
-			return;
+			return false;
 		}
 	}
 
@@ -938,13 +924,17 @@ FaderPort::Button::invoke (FaderPort::ButtonState bs, bool press)
 	case NamedAction:
 		if (!x->second.action_name.empty()) {
 			fp.access_action (x->second.action_name);
+			return true;
 		}
 		break;
 	case InternalFunction:
 		if (x->second.function) {
 			x->second.function ();
+			return true;
 		}
 	}
+
+	return false;
 }
 
 void
@@ -958,7 +948,7 @@ FaderPort::Button::set_action (string const& name, bool when_pressed, FaderPort:
 		if (name.empty()) {
 			on_press.erase (bs);
 		} else {
-			DEBUG_TRACE (DEBUG::FaderPort, string_compose ("set button %1 to action %2 on press + %3%4%5\n", id, name, bs));
+			DEBUG_TRACE (DEBUG::FaderPort, string_compose ("set button %1 to action %2 on press + %3\n", id, name, bs));
 			todo.action_name = name;
 			on_press[bs] = todo;
 		}
@@ -966,7 +956,7 @@ FaderPort::Button::set_action (string const& name, bool when_pressed, FaderPort:
 		if (name.empty()) {
 			on_release.erase (bs);
 		} else {
-			DEBUG_TRACE (DEBUG::FaderPort, string_compose ("set button %1 to action %2 on release + %3%4%5\n", id, name, bs));
+			DEBUG_TRACE (DEBUG::FaderPort, string_compose ("set button %1 to action %2 on release + %3\n", id, name, bs));
 			todo.action_name = name;
 			on_release[bs] = todo;
 		}
@@ -1176,6 +1166,7 @@ FaderPort::map_auto ()
 			get_button (FP_Touch).set_led_state (_output_port, false);
 		break;
 		case ARDOUR::Touch:
+		case ARDOUR::Latch: // XXX
 			get_button (FP_Read).set_led_state (_output_port, false);
 			get_button (FP_Write).set_led_state (_output_port, false);
 			get_button (FP_Touch).set_led_state (_output_port, true);

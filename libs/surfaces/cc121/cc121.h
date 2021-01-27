@@ -1,24 +1,24 @@
 /*
-    Copyright (C) 2006 Paul Davis
-    Copyright (C) 2016 W.P. van Paassen
-
-    Thanks to Rolf Meyerhoff for reverse engineering the CC121 protocol.
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2016 W.P. van Paass
+ * Copyright (C) 2017-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2018 Robin Gareus <robin@gareus.org>
+ *
+ * Thanks to Rolf Meyerhoff for reverse engineering the CC121 protocol.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef ardour_surface_cc121_h
 #define ardour_surface_cc121_h
@@ -37,7 +37,6 @@
 
 namespace PBD {
 	class Controllable;
-	class ControllableDescriptor;
 }
 
 #include <midi++/types.h>
@@ -151,7 +150,7 @@ class CC121 : public ARDOUR::ControlProtocol, public AbstractUI<CC121Request> {
 	};
 
 	enum ButtonState {
-	  ShiftDown = 0x1,
+		ShiftDown = 0x1,
 		RewindDown = 0x2,
 		StopDown = 0x4,
 		UserDown = 0x8,
@@ -310,6 +309,7 @@ class CC121 : public ARDOUR::ControlProtocol, public AbstractUI<CC121Request> {
 	void map_gain ();
 	void map_cut ();
 	void map_auto ();
+	void map_monitoring ();
 
 	/* operations (defined in operations.cc) */
 
@@ -330,9 +330,7 @@ class CC121 : public ARDOUR::ControlProtocol, public AbstractUI<CC121Request> {
 	void jog ();
 	void rec_enable ();
 
-	void ardour_pan_azimuth (float);
-	void ardour_pan_width (float);
-	void mixbus_pan (float);
+	void set_controllable (boost::shared_ptr<ARDOUR::AutomationControl>, float);
 
 	void punch ();
 };

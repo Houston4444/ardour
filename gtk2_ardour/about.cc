@@ -1,21 +1,27 @@
 /*
-    Copyright (C) 2003 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2006 Sampo Savolainen <v2@iki.fi>
+ * Copyright (C) 2005-2006 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2007-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2008-2012 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <algorithm>
 #include <unistd.h>
@@ -141,6 +147,7 @@ static const char* authors[] = {
 	N_("Sam Chessman"),
 	N_("André Colomb"),
 	N_("Paul Davis"),
+	N_("Simon Dixon"),
 	N_("Gerard van Dongen"),
 	N_("John Emmas"),
 	N_("Colin Fletcher"),
@@ -154,6 +161,7 @@ static const char* authors[] = {
 	N_("Jeremy Hall"),
 	N_("Audun Halland"),
 	N_("David Halter"),
+	N_("Christopher Hampson"),
 	N_("Steve Harris"),
 	N_("Melvin Ray Herr"),
 	N_("Carl Hetherington"),
@@ -167,11 +175,14 @@ static const char* authors[] = {
 	N_("Nick Lanham"),
 	N_("Colin Law"),
 	N_("Joshua Leach"),
+	N_("Jan Lentfer"),
 	N_("Ben Loftis"),
+	N_("Matthias Mauch"),
 	N_("Nick Mainsbridge"),
 	N_("Tim Mayberry"),
 	N_("Doug Mclain"),
 	N_("Johannes Mueller"),
+	N_("Edward Tomasz Napierała"),
 	N_("Todd Naugle"),
 	N_("André Nusser"),
 	N_("Bent Bisballe Nyeng"),
@@ -186,6 +197,7 @@ static const char* authors[] = {
 	N_("Andreas Ruge"),
 	N_("Sampo Savolainen"),
 	N_("Rodrigo Severo"),
+	N_("Ayan Shafqat"),
 	N_("Daniel Sheeler"),
 	N_("Per Sigmond"),
 	N_("Lincoln Spiteri"),
@@ -203,7 +215,7 @@ static const char* authors[] = {
 };
 
 static const char* translators[] = {
-	N_("French:\n\tAlain Fréhel <alain.frehel@free.fr>\n\tChristophe Combelles <ccomb@free.fr>\n\tMartin Blanchard\n\tRomain Arnaud <roming22@gmail.com>\n\tOlivier Humbert <trebmuh@tuxfamily.org>\n"),
+	N_("French:\n\tAlain Fréhel <alain.frehel@free.fr>\n\tChristophe Combelles <ccomb@free.fr>\n\tMartin Blanchard\n\tRomain Arnaud <roming22@gmail.com>\n\tOlivier Humbert <trebmuh@tuxfamily.org>\n\tFrédéric Rech <fred_rech@laposte.net>\n"),
 	N_("German:\n\tKarsten Petersen <kapet@kapet.de>\
 \n\tSebastian Arnold <mail@sebastian-arnold.net>\
 \n\tRobert Schwede <schwede@ironshark.com>\
@@ -211,7 +223,7 @@ static const char* translators[] = {
 \n\tEdgar Aichinger <edogawa@aon.at>\
 \n\tRichard Oax <richard@pagliacciempire.de>\
 \n\tRobin Gloster <robin@loc-com.de>\n"),
-	N_("Italian:\n\tFilippo Pappalardo <filippo@email.it>\n\tRaffaele Morelli <raffaele.morelli@gmail.com>\n"),
+	N_("Italian:\n\tVincenzo Reale <smart2128@baslug.org>\n\tFilippo Pappalardo <filippo@email.it>\n\tRaffaele Morelli <raffaele.morelli@gmail.com>\n"),
 	N_("Portuguese:\n\tRui Nuno Capela <rncbc@rncbc.org>\n"),
 	N_("Brazilian Portuguese:\n\tAlexander da Franca Fernandes <alexander@nautae.eti.br>\
 \n\tChris Ross <chris@tebibyte.org>\n"),
@@ -552,13 +564,19 @@ About::About ()
 	const std::string cpu_arch = _("PowerPC 64-bit");
 #elif defined __ppc__
 	const std::string cpu_arch = _("PowerPC 32-bit");
+#elif defined  __aarch64__
+	const std::string cpu_arch = _("ARM 64-bit (aarch64)");
+#elif defined  __arm__ && defined __ARM_NEON
+	const std::string cpu_arch = _("ARM 32-bit (armhf)");
+#elif defined  __arm__
+	const std::string cpu_arch = _("ARM 32-bit");
 #elif defined  __LP64__
 	const std::string cpu_arch = _("64-bit");
 #else
-	const std::string cpu_arch = _("32-bit"); // ARM, ALPHA,..
+	const std::string cpu_arch = _("32-bit");
 #endif
 	std::string codename = CODENAME;
-	if (ARDOUR::Profile->get_mixbus() || ARDOUR::Profile->get_trx()) {
+	if (ARDOUR::Profile->get_mixbus()) {
 		codename = "";
 	}
 
@@ -569,7 +587,7 @@ About::About ()
 #endif
 
 	set_translator_credits (t);
-	set_copyright (_("Copyright (C) 1999-2017 Paul Davis\n"));
+	set_copyright (_("Copyright (C) 1999-2021 Paul Davis\n"));
 	set_license (gpl);
 	set_name (X_("Ardour"));
 	set_website (X_("http://ardour.org/"));

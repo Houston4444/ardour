@@ -1,21 +1,22 @@
 /*
-    Copyright (C) 2014 Paul Davis
-    Author: Carl Hetherington <cth@carlh.net>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2014-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2015-2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <algorithm>
 #include <cairomm/context.h>
@@ -37,6 +38,7 @@ Ruler::Ruler (Canvas* c, const Metric& m)
 	, _upper (0)
 	, _divide_height (-1.0)
 	, _font_description (0)
+	, _second_font_description (0)
 	, _need_marks (true)
 {
 }
@@ -48,6 +50,7 @@ Ruler::Ruler (Canvas* c, const Metric& m, Rect const& r)
 	, _upper (0)
 	, _divide_height (-1.0)
 	, _font_description (0)
+	, _second_font_description (0)
 	, _need_marks (true)
 {
 }
@@ -59,6 +62,7 @@ Ruler::Ruler (Item* parent, const Metric& m)
 	, _upper (0)
 	, _divide_height (-1.0)
 	, _font_description (0)
+	, _second_font_description (0)
 	, _need_marks (true)
 {
 }
@@ -70,6 +74,7 @@ Ruler::Ruler (Item* parent, const Metric& m, Rect const& r)
 	, _upper (0)
 	, _divide_height (-1.0)
 	, _font_description (0)
+	, _second_font_description (0)
 	, _need_marks (true)
 {
 }
@@ -92,6 +97,16 @@ Ruler::set_font_description (Pango::FontDescription fd)
 	_font_description = new Pango::FontDescription (fd);
 	end_visual_change ();
 }
+
+void
+Ruler::set_second_font_description (Pango::FontDescription fd)
+{
+	begin_visual_change ();
+	delete _second_font_description;
+	_second_font_description = new Pango::FontDescription (fd);
+	end_visual_change ();
+}
+
 
 void
 Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
@@ -143,12 +158,12 @@ Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
 	/* draw ticks + text */
 
 	Glib::RefPtr<Pango::Layout> layout = Pango::Layout::create (cr);
-	if (_font_description) {
-		layout->set_font_description (*_font_description);
-	}
+
+	Pango::FontDescription* last_font_description = 0;
 
 	for (vector<Mark>::const_iterator m = marks.begin(); m != marks.end(); ++m) {
 		Duple pos;
+		Pango::FontDescription* fd = _font_description;
 
 		pos.x = floor ((m->position - _lower) / _metric->units_per_pixel);
 		pos.y = self.y1; /* bottom edge */
@@ -167,6 +182,9 @@ Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
 				} else {
 					cr->rel_line_to (0, -height);
 				}
+				if (_second_font_description) {
+					fd = _second_font_description;
+				}
 				break;
 			case Mark::Minor:
 				cr->rel_line_to (0, -height/3.0);
@@ -176,6 +194,11 @@ Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
 				break;
 		}
 		cr->stroke ();
+
+		if (fd != last_font_description) {
+			layout->set_font_description (*fd);
+			last_font_description = fd;
+		}
 
 		/* and the text */
 

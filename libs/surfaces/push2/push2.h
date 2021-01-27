@@ -1,20 +1,20 @@
 /*
-    Copyright (C) 2016 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2016-2018 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __ardour_push2_h__
 #define __ardour_push2_h__
@@ -352,7 +352,7 @@ class Push2 : public ARDOUR::ControlProtocol
 
 	ModifierState modifier_state() const { return _modifier_state; }
 
-	Button* button_by_id (ButtonID);
+	boost::shared_ptr<Button> button_by_id (ButtonID);
 	static std::string button_name_by_id (ButtonID);
 
 	void strip_buttons_off ();
@@ -387,16 +387,16 @@ class Push2 : public ARDOUR::ControlProtocol
 	void relax () {}
 
 	/* map of Buttons by CC */
-	typedef std::map<int,Button*> CCButtonMap;
+	typedef std::map<int,boost::shared_ptr<Button> > CCButtonMap;
 	CCButtonMap cc_button_map;
 	/* map of Buttons by ButtonID */
-	typedef std::map<ButtonID,Button*> IDButtonMap;
+	typedef std::map<ButtonID,boost::shared_ptr<Button> > IDButtonMap;
 	IDButtonMap id_button_map;
 	std::set<ButtonID> buttons_down;
 	std::set<ButtonID> consumed;
 
 	bool button_long_press_timeout (ButtonID id);
-	void start_press_timeout (Button&, ButtonID);
+	void start_press_timeout (boost::shared_ptr<Button>, ButtonID);
 
 	void init_buttons (bool startup);
 	void init_touch_strip ();
@@ -404,12 +404,12 @@ class Push2 : public ARDOUR::ControlProtocol
 	/* map of Pads by note number (the "fixed" note number sent by the
 	 * hardware, not the note number generated if the pad is touched)
 	 */
-	typedef std::map<int,Pad*> NNPadMap;
+	typedef std::map<int,boost::shared_ptr<Pad> > NNPadMap;
 	NNPadMap nn_pad_map;
 
 	/* map of Pads by note number they generate (their "filtered" value)
 	 */
-	typedef std::multimap<int,Pad*> FNPadMap;
+	typedef std::multimap<int,boost::shared_ptr<Pad> > FNPadMap;
 	FNPadMap fn_pad_map;
 
 	void set_button_color (ButtonID, uint8_t color_index);
@@ -549,7 +549,6 @@ class Push2 : public ARDOUR::ControlProtocol
 
 	boost::weak_ptr<ARDOUR::MidiTrack> current_pad_target;
 
-	PBD::ScopedConnection port_reg_connection;
 	void port_registration_handler ();
 
 	enum ConnectionState {
@@ -559,7 +558,7 @@ class Push2 : public ARDOUR::ControlProtocol
 
 	int connection_state;
 	bool connection_handler (boost::weak_ptr<ARDOUR::Port>, std::string name1, boost::weak_ptr<ARDOUR::Port>, std::string name2, bool yn);
-	PBD::ScopedConnection port_connection;
+	PBD::ScopedConnectionList port_connections;
 	void connected ();
 
 	/* GUI */

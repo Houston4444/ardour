@@ -1,21 +1,21 @@
 /*
-    Copyright (C) 2010 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2010 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <iostream>
 #include <cmath>
@@ -111,7 +111,7 @@ ArdourKnob::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*
 
 	bool arc = (_elements & Arc)==Arc;
 	bool bevel = (_elements & Bevel)==Bevel;
-	bool flat = _flat_buttons;
+	bool flat = flat_buttons ();
 
 	if ( arc ) {
 		center_radius = scale*0.33;
@@ -260,9 +260,17 @@ ArdourKnob::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*
 	cairo_line_to (cr, ((center_radius*0.4) * value_x), ((center_radius*0.4) * value_y));
 	cairo_stroke (cr);
 
+	// a transparent overlay to indicate insensitivity
+	if (!sensitive ()) {
+		cairo_arc (cr, 0, 0, center_radius, 0, 2.0*G_PI);
+		uint32_t ins_color = UIConfigurationBase::instance().color ("gtk_background");
+		Gtkmm2ext::set_source_rgb_a (cr, ins_color, 0.6);
+		cairo_fill (cr);
+	}
+
 	//highlight if grabbed or if mouse is hovering over me
 	if (_tooltip.dragging() || (_hovering && UIConfigurationBase::instance().get_widget_prelight() ) ) {
-		cairo_set_source_rgba (cr, 1,1,1, 0.12 );
+		cairo_set_source_rgba (cr, 1,1,1, 0.12);
 		cairo_arc (cr, 0, 0, center_radius, 0, 2.0*G_PI);
 		cairo_fill (cr);
 	}
@@ -301,14 +309,14 @@ ArdourKnob::on_scroll_event (GdkEventScroll* ev)
 
 	boost::shared_ptr<PBD::Controllable> c = binding_proxy.get_controllable();
 	if (c) {
-		float val = c->get_interface();
+		float val = c->get_interface (true);
 
 		if ( ev->direction == GDK_SCROLL_UP )
 			val += scale;
 		else
 			val -= scale;
 
-		c->set_interface(val);
+		c->set_interface (val, true);
 	}
 
 	return true;
@@ -347,7 +355,7 @@ ArdourKnob::on_motion_notify_event (GdkEventMotion *ev)
 
 	_grabbed_x = ev->x;
 	_grabbed_y = ev->y;
-	float val = c->get_interface();
+	float val = c->get_interface (true);
 
 	if (_flags & Detent) {
 		const float px_deadzone = 42.f * ui_scale;
@@ -378,7 +386,7 @@ ArdourKnob::on_motion_notify_event (GdkEventMotion *ev)
 	}
 
 	val += delta * scale;
-	c->set_interface(val);
+	c->set_interface (val, true);
 
 	return true;
 }
@@ -474,7 +482,7 @@ ArdourKnob::controllable_changed (bool force_update)
 	boost::shared_ptr<PBD::Controllable> c = binding_proxy.get_controllable();
 	if (!c) return;
 
-	float val = c->get_interface();
+	float val = c->get_interface (true);
 	val = min( max(0.0f, val), 1.0f); // clamp
 
 	if (val == _val && !force_update) {

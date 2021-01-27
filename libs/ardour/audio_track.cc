@@ -1,28 +1,34 @@
 /*
-    Copyright (C) 2002 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2002-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2005-2006 Jesse Chappell <jesse@essej.net>
+ * Copyright (C) 2006-2009 Sampo Savolainen <v2@iki.fi>
+ * Copyright (C) 2006-2014 David Robillard <d@drobilla.net>
+ * Copyright (C) 2007-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015-2018 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2016 Tim Mayberry <mojofunk@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <boost/scoped_array.hpp>
 
 #include "pbd/enumwriter.h"
 #include "pbd/error.h"
 
-#include "evoral/Curve.hpp"
+#include "evoral/Curve.h"
 
 #include "ardour/amp.h"
 #include "ardour/audio_buffer.h"
@@ -71,12 +77,9 @@ AudioTrack::set_state (const XMLNode& node, int version)
 		_mode = Normal;
 	}
 
-	if (Profile->get_trx() && _mode == Destructive) {
-		/* Tracks does not support destructive tracks and trying to
-		   handle it as a normal track would be wrong.
-		*/
-		error << string_compose (_("%1: this session uses destructive tracks, which are not supported"), PROGRAM_NAME) << endmsg;
-		return -1;
+	if (_mode == Destructive) {
+		/* XXX warn user */
+		_mode = Normal;
 	}
 
 	if (Track::set_state (node, version)) {
@@ -85,7 +88,7 @@ AudioTrack::set_state (const XMLNode& node, int version)
 
 	pending_state = const_cast<XMLNode*> (&node);
 
-	if (_session.state_of_the_state() & Session::Loading) {
+	if (_session.loading ()) {
 		_session.StateReady.connect_same_thread (*this, boost::bind (&AudioTrack::set_state_part_two, this));
 	} else {
 		set_state_part_two ();
@@ -147,7 +150,7 @@ AudioTrack::set_state_part_two ()
 		_freeze_record.processor_info.clear ();
 
 		if ((prop = fnode->property (X_("playlist"))) != 0) {
-			boost::shared_ptr<Playlist> pl = _session.playlists->by_name (prop->value());
+			boost::shared_ptr<Playlist> pl = _session.playlists()->by_name (prop->value());
 			if (pl) {
 				_freeze_record.playlist = boost::dynamic_pointer_cast<AudioPlaylist> (pl);
 				_freeze_record.playlist->use();
@@ -180,9 +183,20 @@ AudioTrack::set_state_part_two ()
 	}
 }
 
+MonitorState
+AudioTrack::get_input_monitoring_state (bool recording, bool talkback) const
+{
+	if (Config->get_monitoring_model() == SoftwareMonitoring && (recording || talkback)) {
+		return MonitoringInput;
+	} else {
+		return MonitoringSilence;
+	}
+}
+
 int
 AudioTrack::export_stuff (BufferSet& buffers, samplepos_t start, samplecnt_t nframes,
-			  boost::shared_ptr<Processor> endpoint, bool include_endpoint, bool for_export, bool for_freeze)
+                          boost::shared_ptr<Processor> endpoint, bool include_endpoint, bool for_export, bool for_freeze,
+                          MidiStateTracker& /* ignored, this is audio */)
 {
 	boost::scoped_array<gain_t> gain_buffer (new gain_t[nframes]);
 	boost::scoped_array<Sample> mix_buffer (new Sample[nframes]);
@@ -251,6 +265,10 @@ AudioTrack::bounceable (boost::shared_ptr<Processor> endpoint, bool include_endp
 			continue;
 		}
 
+		if (boost::dynamic_pointer_cast<PeakMeter>(*r)) {
+			continue;
+		}
+
 		/* does the output from the last considered processor match the
 		 * input to this one?
 		 */
@@ -278,17 +296,21 @@ AudioTrack::bounceable (boost::shared_ptr<Processor> endpoint, bool include_endp
 }
 
 boost::shared_ptr<Region>
-AudioTrack::bounce (InterThreadInfo& itt)
+AudioTrack::bounce (InterThreadInfo& itt, std::string const& name)
 {
-	return bounce_range (_session.current_start_sample(), _session.current_end_sample(), itt, main_outs(), false);
+	return bounce_range (_session.current_start_sample(), _session.current_end_sample(), itt, main_outs(), false, name);
 }
 
 boost::shared_ptr<Region>
-AudioTrack::bounce_range (samplepos_t start, samplepos_t end, InterThreadInfo& itt,
-			  boost::shared_ptr<Processor> endpoint, bool include_endpoint)
+AudioTrack::bounce_range (samplepos_t start,
+                          samplepos_t end,
+                          InterThreadInfo& itt,
+                          boost::shared_ptr<Processor> endpoint,
+                          bool include_endpoint,
+                          std::string const& name)
 {
 	vector<boost::shared_ptr<Source> > srcs;
-	return _session.write_one_track (*this, start, end, false, srcs, itt, endpoint, include_endpoint, false, false);
+	return _session.write_one_track (*this, start, end, false, srcs, itt, endpoint, include_endpoint, false, false, name);
 }
 
 void
@@ -312,7 +334,7 @@ AudioTrack::freeze_me (InterThreadInfo& itt)
 
 		candidate = string_compose ("<F%2>%1", _freeze_record.playlist->name(), n);
 
-		if (_session.playlists->by_name (candidate) == 0) {
+		if (_session.playlists()->by_name (candidate) == 0) {
 			new_playlist_name = candidate;
 			break;
 		}
@@ -331,7 +353,7 @@ AudioTrack::freeze_me (InterThreadInfo& itt)
 	boost::shared_ptr<Region> res;
 
 	if ((res = _session.write_one_track (*this, _session.current_start_sample(), _session.current_end_sample(),
-					true, srcs, itt, main_outs(), false, false, true)) == 0) {
+					true, srcs, itt, main_outs(), false, false, true, "")) == 0) {
 		return;
 	}
 
@@ -342,21 +364,23 @@ AudioTrack::freeze_me (InterThreadInfo& itt)
 
 		for (ProcessorList::iterator r = _processors.begin(); r != _processors.end(); ++r) {
 
-			if ((*r)->does_routing() && (*r)->active()) {
+			if (boost::dynamic_pointer_cast<PeakMeter>(*r)) {
+				continue;
+			}
+
+			if (!can_freeze_processor (*r)) {
 				break;
 			}
-			if (!boost::dynamic_pointer_cast<PeakMeter>(*r)) {
 
-				FreezeRecordProcessorInfo* frii  = new FreezeRecordProcessorInfo ((*r)->get_state(), (*r));
+			FreezeRecordProcessorInfo* frii  = new FreezeRecordProcessorInfo ((*r)->get_state(), (*r));
 
-				frii->id = (*r)->id();
+			frii->id = (*r)->id();
 
-				_freeze_record.processor_info.push_back (frii);
+			_freeze_record.processor_info.push_back (frii);
 
-				/* now deactivate the processor, */
-				if (!boost::dynamic_pointer_cast<Amp>(*r)) {
-					(*r)->deactivate ();
-				}
+			/* now deactivate the processor, */
+			if (!boost::dynamic_pointer_cast<Amp>(*r) && *r != _disk_reader && *r != main_outs()) {
+				(*r)->deactivate ();
 			}
 
 			_session.set_dirty ();
@@ -374,7 +398,7 @@ AudioTrack::freeze_me (InterThreadInfo& itt)
 	PropertyList plist;
 
 	plist.add (Properties::start, 0);
-	plist.add (Properties::length, srcs[0]->length(srcs[0]->timeline_position()));
+	plist.add (Properties::length, srcs[0]->length(srcs[0]->natural_position()));
 	plist.add (Properties::name, region_name);
 	plist.add (Properties::whole_file, true);
 
@@ -423,6 +447,11 @@ AudioTrack::unfreeze ()
 		_freeze_record.playlist.reset ();
 		/* XXX need to use _main_outs _panner->set_automation_state (_freeze_record.pan_automation_state); */
 	}
+
+	for (vector<FreezeRecordProcessorInfo*>::iterator ii = _freeze_record.processor_info.begin(); ii != _freeze_record.processor_info.end(); ++ii) {
+		delete *ii;
+	}
+	_freeze_record.processor_info.clear ();
 
 	_freeze_record.state = UnFrozen;
 	FreezeChange (); /* EMIT SIGNAL */

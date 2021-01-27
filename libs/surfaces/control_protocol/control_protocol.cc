@@ -1,22 +1,23 @@
 /*
-    Copyright (C) 2006 Paul Davis
-
-    This program is free software; you can redistribute it
-    and/or modify it under the terms of the GNU Lesser
-    General Public License as published by the Free Software
-    Foundation; either version 2 of the License, or (at your
-    option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2006-2009 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2015-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2015-2017 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include "pbd/convert.h"
 #include "pbd/error.h"
@@ -29,6 +30,7 @@
 #include "ardour/audio_track.h"
 #include "ardour/meter.h"
 #include "ardour/amp.h"
+#include "ardour/selection.h"
 #include "control_protocol/control_protocol.h"
 
 using namespace ARDOUR;
@@ -51,15 +53,6 @@ PBD::Signal0<void> ControlProtocol::VerticalZoomOutSelected;
 PBD::Signal0<void>          ControlProtocol::StepTracksDown;
 PBD::Signal0<void>          ControlProtocol::StepTracksUp;
 
-PBD::Signal1<void,boost::shared_ptr<ARDOUR::Stripable> > ControlProtocol::AddStripableToSelection;
-PBD::Signal1<void,boost::shared_ptr<ARDOUR::Stripable> > ControlProtocol::SetStripableSelection;
-PBD::Signal1<void,boost::shared_ptr<ARDOUR::Stripable> > ControlProtocol::ToggleStripableSelection;
-PBD::Signal1<void,boost::shared_ptr<ARDOUR::Stripable> > ControlProtocol::RemoveStripableFromSelection;
-PBD::Signal0<void>          ControlProtocol::ClearStripableSelection;
-
-Glib::Threads::Mutex ControlProtocol::special_stripable_mutex;
-boost::weak_ptr<Stripable> ControlProtocol::_first_selected_stripable;
-boost::weak_ptr<Stripable> ControlProtocol::_leftmost_mixer_stripable;
 StripableNotificationList ControlProtocol::_last_selected;
 PBD::ScopedConnection ControlProtocol::selection_connection;
 bool ControlProtocol::selection_connected = false;
@@ -294,8 +287,7 @@ ControlProtocol::route_set_soloed (uint32_t table_index, bool yn)
 	boost::shared_ptr<Route> r = route_table[table_index];
 
 	if (r != 0) {
-		r->solo_control()->set_value (yn ? 1.0 : 0.0, Controllable::UseGroup); // XXX does not propagate
-		//_session->set_control (r->solo_control(), yn ? 1.0 : 0.0, Controllable::UseGroup); // << correct way, needs a session ptr
+		session->set_control (r->solo_control(), yn ? 1.0 : 0.0, Controllable::UseGroup);
 	}
 }
 
@@ -344,49 +336,43 @@ ControlProtocol::set_state (XMLNode const & node, int /* version */)
 }
 
 boost::shared_ptr<Stripable>
-ControlProtocol::first_selected_stripable ()
+ControlProtocol::first_selected_stripable () const
 {
-	Glib::Threads::Mutex::Lock lm (special_stripable_mutex);
-	return _first_selected_stripable.lock();
-}
-
-boost::shared_ptr<Stripable>
-ControlProtocol::leftmost_mixer_stripable ()
-{
-	Glib::Threads::Mutex::Lock lm (special_stripable_mutex);
-	return _leftmost_mixer_stripable.lock();
+	return session->selection().first_selected_stripable ();
 }
 
 void
-ControlProtocol::set_leftmost_mixer_stripable (boost::shared_ptr<Stripable> s)
+ControlProtocol::add_stripable_to_selection (boost::shared_ptr<ARDOUR::Stripable> s)
 {
-	Glib::Threads::Mutex::Lock lm (special_stripable_mutex);
-	_leftmost_mixer_stripable = s;
+	session->selection().add (s, boost::shared_ptr<AutomationControl>());
 }
 
 void
-ControlProtocol::set_first_selected_stripable (boost::shared_ptr<Stripable> s)
+ControlProtocol::set_stripable_selection (boost::shared_ptr<ARDOUR::Stripable> s)
 {
-	Glib::Threads::Mutex::Lock lm (special_stripable_mutex);
-	_first_selected_stripable = s;
+	session->selection().select_stripable_and_maybe_group (s, true, true, 0);
+}
+
+void
+ControlProtocol::toggle_stripable_selection (boost::shared_ptr<ARDOUR::Stripable> s)
+{
+	session->selection().toggle (s, boost::shared_ptr<AutomationControl>());
+}
+
+void
+ControlProtocol::remove_stripable_from_selection (boost::shared_ptr<ARDOUR::Stripable> s)
+{
+	session->selection().remove (s, boost::shared_ptr<AutomationControl>());
+}
+
+void
+ControlProtocol::clear_stripable_selection ()
+{
+	session->selection().clear_stripables ();
 }
 
 void
 ControlProtocol::notify_stripable_selection_changed (StripableNotificationListPtr sp)
 {
-	bool had_selection = !_last_selected.empty();
-
 	_last_selected = *sp;
-
-	{
-		Glib::Threads::Mutex::Lock lm (special_stripable_mutex);
-
-		if (!_last_selected.empty()) {
-			if (!had_selection) {
-				_first_selected_stripable = _last_selected.front().lock();
-			}
-		} else {
-			_first_selected_stripable = boost::weak_ptr<Stripable>();
-		}
-	}
 }

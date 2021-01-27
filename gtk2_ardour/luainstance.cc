@@ -1,30 +1,38 @@
 /*
- * Copyright (C) 2016 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2019 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2016-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2017-2018 Ben Loftis <ben@harrisonconsoles.com>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <cairomm/context.h>
 #include <cairomm/surface.h>
 #include <pango/pangocairo.h>
 
+#include "pbd/file_utils.h"
+#include "pbd/strsplit.h"
+
+#include "gtkmm2ext/bindings.h"
 #include "gtkmm2ext/gui_thread.h"
 
 #include "ardour/audioengine.h"
 #include "ardour/disk_reader.h"
 #include "ardour/disk_writer.h"
+#include "ardour/filesystem_paths.h"
 #include "ardour/plugin_manager.h"
 #include "ardour/route.h"
 #include "ardour/session.h"
@@ -40,6 +48,7 @@
 #include "luainstance.h"
 #include "luasignal.h"
 #include "marker.h"
+#include "mixer_ui.h"
 #include "region_view.h"
 #include "processor_box.h"
 #include "time_axis_view.h"
@@ -47,9 +56,12 @@
 #include "selection.h"
 #include "script_selector.h"
 #include "timers.h"
+#include "ui_config.h"
 #include "utils_videotl.h"
 
 #include "pbd/i18n.h"
+
+static const char* ui_scripts_file_name = "ui_scripts";
 
 namespace LuaCairo {
 /** wrap RefPtr< Cairo::ImageSurface >
@@ -66,9 +78,9 @@ class ImageSurface {
 		 * color or alpha channel belonging to format will be 0. The contents of bits
 		 * within a pixel, but not belonging to the given format are undefined).
 		 *
-		 * @param format 	format of pixels in the surface to create
-		 * @param width 	width of the surface, in pixels
-		 * @param height 	height of the surface, in pixels
+		 * @param format  format of pixels in the surface to create
+		 * @param width   width of the surface, in pixels
+		 * @param height  height of the surface, in pixels
 		 */
 		ImageSurface (Cairo::Format format, int width, int height)
 			: _surface (Cairo::ImageSurface::create (format, width, height))
@@ -140,10 +152,10 @@ class ImageSurface {
 
 		/** Marks a rectangular area of the given surface dirty.
 		 *
-		 * @param x 	 X coordinate of dirty rectangle
-		 * @param y 	Y coordinate of dirty rectangle
-		 * @param width 	width of dirty rectangle
-		 * @param height 	height of dirty rectangle
+		 * @param x X coordinate of dirty rectangle
+		 * @param y Y coordinate of dirty rectangle
+		 * @param width width of dirty rectangle
+		 * @param height height of dirty rectangle
 		 */
 		void mark_dirty (int x, int y, int width, int height) {
 			_surface->mark_dirty (x, y, width, height);
@@ -199,7 +211,7 @@ class PangoLayout {
 		 * @param width The desired width in Pango units, or -1 to indicate that no
 		 * wrapping or ellipsization should be performed.
 		 */
-		void set_width (int width) {
+		void set_width (float width) {
 			_layout->set_width (width * PANGO_SCALE);
 		}
 
@@ -255,6 +267,22 @@ class PangoLayout {
 			return _layout->is_ellipsized ();
 		}
 
+		/** Sets the alignment for the layout: how partial lines are
+		 * positioned within the horizontal space available.
+		 * @param alignment The alignment.
+		 */
+		void set_alignment(Pango::Alignment alignment) {
+			_layout->set_alignment (alignment);
+		}
+
+		/** Gets the alignment for the layout: how partial lines are
+		 * positioned within the horizontal space available.
+		 * @return The alignment.
+		 */
+		Pango::Alignment get_alignment() const {
+			return _layout->get_alignment ();
+		}
+
 		/** Sets the wrap mode; the wrap mode only has effect if a width
 		 * is set on the layout with set_width().
 		 * To turn off wrapping, set the width to -1.
@@ -300,7 +328,6 @@ class PangoLayout {
 			luabridge::Stack<int>::push (L, height);
 			return 2;
 		}
-
 
 		/** Draws a Layout in the specified Cairo @a context. The top-left
 		 *  corner of the Layout will be drawn at the current point of the
@@ -360,6 +387,8 @@ const char *luasignalstr[] = {
 }; // namespace
 
 
+static std::string http_get_unlogged (const std::string& url) { return ArdourCurl::http_get (url, false); }
+
 /** special cases for Ardour's Mixer UI */
 namespace LuaMixer {
 
@@ -369,6 +398,16 @@ namespace LuaMixer {
 	}
 
 };
+
+static void mixer_screenshot (const std::string& fn) {
+	Mixer_UI::instance()->screenshot (fn);
+}
+
+/** Access libardour global configuration */
+static UIConfiguration* _ui_config () {
+	return &UIConfiguration::instance();
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -424,6 +463,63 @@ lua_exec (std::string cmd)
 	return 0;
 }
 #endif
+
+////////////////////////////////////////////////////////////////////////////////
+
+static int
+lua_actionlist (lua_State *L)
+{
+	using namespace std;
+
+	vector<string> paths;
+	vector<string> labels;
+	vector<string> tooltips;
+	vector<string> keys;
+	vector<Glib::RefPtr<Gtk::Action> > actions;
+	ActionManager::get_all_actions (paths, labels, tooltips, keys, actions);
+
+	vector<string>::iterator p;
+	vector<string>::iterator l;
+
+	luabridge::LuaRef action_tbl (luabridge::newTable (L));
+
+	for (l = labels.begin(), p = paths.begin(); l != labels.end(); ++p, ++l) {
+		if (l->empty ()) {
+			continue;
+		}
+
+		vector<string> parts;
+		split (*p, parts, '/');
+
+		if (parts.empty()) {
+			continue;
+		}
+
+		//kinda kludgy way to avoid displaying menu items as mappable
+		if (parts[1] == _("Main_menu"))
+			continue;
+		if (parts[1] == _("JACK"))
+			continue;
+		if (parts[1] == _("redirectmenu"))
+			continue;
+		if (parts[1] == _("RegionList"))
+			continue;
+		if (parts[1] == _("ProcessorMenu"))
+			continue;
+
+		if (!action_tbl[parts[1]].isTable()) {
+			action_tbl[parts[1]] = luabridge::newTable (L);
+		}
+		assert (action_tbl[parts[1]].isTable());
+		luabridge::LuaRef tbl (action_tbl[parts[1]]);
+		assert (tbl.isTable());
+		tbl[*l] = *p;
+	}
+
+	luabridge::push (L, action_tbl);
+	return 1;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 // ARDOUR_UI and instance() are not exposed.
@@ -440,6 +536,7 @@ lua_translate_order (RouteDialogs::InsertAt place)
 
 using namespace ARDOUR;
 
+PBD::Signal0<void> LuaInstance::LuaTimerS;
 PBD::Signal0<void> LuaInstance::LuaTimerDS;
 PBD::Signal0<void> LuaInstance::SetSession;
 
@@ -482,6 +579,7 @@ LuaInstance::bind_cairo (lua_State* L)
 	 */
 	luabridge::getGlobalNamespace (L)
 		.beginNamespace ("C")
+		.registerArray <double> ("DoubleArray")
 		.beginStdVector <double> ("DoubleVector")
 		.endClass ()
 		.endNamespace ();
@@ -575,6 +673,8 @@ LuaInstance::bind_cairo (lua_State* L)
 		.addFunction ("set_ellipsize", &LuaCairo::PangoLayout::set_ellipsize)
 		.addFunction ("get_ellipsize", &LuaCairo::PangoLayout::get_ellipsize)
 		.addFunction ("is_ellipsized", &LuaCairo::PangoLayout::is_ellipsized)
+		.addFunction ("set_alignment", &LuaCairo::PangoLayout::set_alignment)
+		.addFunction ("get_alignment", &LuaCairo::PangoLayout::get_alignment)
 		.addFunction ("set_wrap", &LuaCairo::PangoLayout::set_wrap)
 		.addFunction ("get_wrap", &LuaCairo::PangoLayout::get_wrap)
 		.addFunction ("is_wrapped", &LuaCairo::PangoLayout::is_wrapped)
@@ -586,6 +686,12 @@ LuaInstance::bind_cairo (lua_State* L)
 		.addConst ("Start", Pango::ELLIPSIZE_START)
 		.addConst ("Middle", Pango::ELLIPSIZE_MIDDLE)
 		.addConst ("End", Pango::ELLIPSIZE_END)
+		.endNamespace ()
+
+		.beginNamespace ("Alignment")
+		.addConst ("Left", Pango::ALIGN_LEFT)
+		.addConst ("Center", Pango::ALIGN_CENTER)
+		.addConst ("Right", Pango::ALIGN_RIGHT)
 		.endNamespace ()
 
 		.beginNamespace ("WrapMode")
@@ -660,8 +766,14 @@ LuaInstance::bind_dialog (lua_State* L)
 		.addConst ("None", -1)
 		.endNamespace ()
 
-		.endNamespace ();
+		.beginClass <LuaDialog::ProgressWindow> ("ProgressWindow")
+		.addConstructor <void (*) (std::string const&, bool)> ()
+		.addFunction ("progress", &LuaDialog::ProgressWindow::progress)
+		.addFunction ("done", &LuaDialog::ProgressWindow::done)
+		.addFunction ("canceled", &LuaDialog::ProgressWindow::canceled)
+		.endClass ()
 
+		.endNamespace ();
 }
 
 void
@@ -678,11 +790,13 @@ LuaInstance::register_classes (lua_State* L)
 	luabridge::getGlobalNamespace (L)
 		.beginNamespace ("ArdourUI")
 
-		.addFunction ("http_get", (std::string (*)(const std::string&))&ArdourCurl::http_get)
+		.addFunction ("http_get", &http_get_unlogged)
+
+		.addFunction ("mixer_screenshot", &mixer_screenshot)
 
 		.addFunction ("processor_selection", &LuaMixer::processor_selection)
 
-		.beginStdList <ArdourMarker*> ("ArdourMarkerList")
+		.beginStdCPtrList <ArdourMarker> ("ArdourMarkerList")
 		.endClass ()
 
 		.beginClass <ArdourMarker> ("ArdourMarker")
@@ -695,6 +809,11 @@ LuaInstance::register_classes (lua_State* L)
 		.endClass ()
 
 		.deriveClass <TimeAxisView, AxisView> ("TimeAxisView")
+		.addFunction ("order", &TimeAxisView::order)
+		.addFunction ("y_position", &TimeAxisView::y_position)
+		.addFunction ("effective_height", &TimeAxisView::effective_height)
+		.addFunction ("current_height", &TimeAxisView::current_height)
+		.addFunction ("set_height", &TimeAxisView::set_height)
 		.endClass ()
 
 		.deriveClass <StripableTimeAxisView, TimeAxisView> ("StripableTimeAxisView")
@@ -722,7 +841,7 @@ LuaInstance::register_classes (lua_State* L)
 		.endClass ()
 
 		// std::list<TimeAxisView*>
-		.beginStdCPtrList <TimeAxisView> ("TrackViewStdList")
+		.beginConstStdCPtrList <TimeAxisView> ("TrackViewStdList")
 		.endClass ()
 
 
@@ -742,7 +861,8 @@ LuaInstance::register_classes (lua_State* L)
 		.deriveClass <MarkerSelection, std::list<ArdourMarker*> > ("MarkerSelection")
 		.endClass ()
 
-		.deriveClass <TrackViewList, std::list<TimeAxisView*> > ("TrackViewList")
+		.beginClass <TrackViewList> ("TrackViewList")
+		.addCast<std::list<TimeAxisView*> > ("to_tav_list")
 		.addFunction ("contains", &TrackViewList::contains)
 		.addFunction ("routelist", &TrackViewList::routelist)
 		.endClass ()
@@ -768,10 +888,9 @@ LuaInstance::register_classes (lua_State* L)
 		.endClass ()
 
 		.beginClass <PublicEditor> ("Editor")
-		.addFunction ("snap_type", &PublicEditor::snap_type)
+		.addFunction ("grid_type", &PublicEditor::grid_type)
 		.addFunction ("snap_mode", &PublicEditor::snap_mode)
 		.addFunction ("set_snap_mode", &PublicEditor::set_snap_mode)
-		.addFunction ("set_snap_threshold", &PublicEditor::set_snap_threshold)
 
 		.addFunction ("undo", &PublicEditor::undo)
 		.addFunction ("redo", &PublicEditor::redo)
@@ -799,9 +918,9 @@ LuaInstance::register_classes (lua_State* L)
 
 		.addFunction ("add_location_from_playhead_cursor", &PublicEditor::add_location_from_playhead_cursor)
 		.addFunction ("remove_location_at_playhead_cursor", &PublicEditor::remove_location_at_playhead_cursor)
+		.addFunction ("add_location_mark", &PublicEditor::add_location_mark)
 
-		.addFunction ("set_show_measures", &PublicEditor::set_show_measures)
-		.addFunction ("show_measures", &PublicEditor::show_measures)
+		.addFunction ("update_grid", &PublicEditor::update_grid)
 		.addFunction ("remove_tracks", &PublicEditor::remove_tracks)
 
 		.addFunction ("set_loop_range", &PublicEditor::set_loop_range)
@@ -827,6 +946,7 @@ LuaInstance::register_classes (lua_State* L)
 		.addFunction ("copy_playlists", &PublicEditor::copy_playlists)
 		.addFunction ("clear_playlists", &PublicEditor::clear_playlists)
 
+		.addFunction ("select_all_visible_lanes", &PublicEditor::select_all_visible_lanes)
 		.addFunction ("select_all_tracks", &PublicEditor::select_all_tracks)
 		.addFunction ("deselect_all", &PublicEditor::deselect_all)
 
@@ -949,6 +1069,29 @@ LuaInstance::register_classes (lua_State* L)
 		.addConst ("Add", Selection::Operation(Selection::Add))
 		.endNamespace ()
 
+		.beginNamespace ("TrackHeightMode")
+		.addConst ("OnlySelf", TimeAxisView::TrackHeightMode(TimeAxisView::OnlySelf))
+		.addConst ("TotalHeight", TimeAxisView::TrackHeightMode(TimeAxisView::TotalHeight))
+		.addConst ("HeightPerLane,", TimeAxisView::TrackHeightMode(TimeAxisView::HeightPerLane))
+		.endNamespace ()
+
+		.addCFunction ("actionlist", &lua_actionlist)
+
+
+		.beginClass <UIConfiguration> ("UIConfiguration")
+#undef  UI_CONFIG_VARIABLE
+#define UI_CONFIG_VARIABLE(Type,var,name,value) \
+		.addFunction ("get_" # var, &UIConfiguration::get_##var) \
+		.addFunction ("set_" # var, &UIConfiguration::set_##var) \
+		.addProperty (#var, &UIConfiguration::get_##var, &UIConfiguration::set_##var)
+
+#include "ui_config_vars.h"
+
+#undef UI_CONFIG_VARIABLE
+		.endClass()
+
+		.addFunction ("config", &_ui_config)
+
 		.endNamespace () // end ArdourUI
 
 		.beginNamespace ("os")
@@ -961,7 +1104,7 @@ LuaInstance::register_classes (lua_State* L)
 	// Editing Symbols
 
 #undef ZOOMFOCUS
-#undef SNAPTYPE
+#undef GRIDTYPE
 #undef SNAPMODE
 #undef MOUSEMODE
 #undef DISPLAYCONTROL
@@ -970,7 +1113,7 @@ LuaInstance::register_classes (lua_State* L)
 #undef IMPORTDISPOSITION
 
 #define ZOOMFOCUS(NAME) .addConst (stringify(NAME), (Editing::ZoomFocus)Editing::NAME)
-#define SNAPTYPE(NAME) .addConst (stringify(NAME), (Editing::SnapType)Editing::NAME)
+#define GRIDTYPE(NAME) .addConst (stringify(NAME), (Editing::GridType)Editing::NAME)
 #define SNAPMODE(NAME) .addConst (stringify(NAME), (Editing::SnapMode)Editing::NAME)
 #define MOUSEMODE(NAME) .addConst (stringify(NAME), (Editing::MouseMode)Editing::NAME)
 #define DISPLAYCONTROL(NAME) .addConst (stringify(NAME), (Editing::DisplayControl)Editing::NAME)
@@ -1023,8 +1166,6 @@ LuaInstance::LuaInstance ()
 {
 	lua.Print.connect (&_lua_print);
 	init ();
-
-	LuaScriptParamList args;
 }
 
 LuaInstance::~LuaInstance ()
@@ -1198,6 +1339,65 @@ LuaInstance::init ()
 	lua_setglobal (L, "Editor");
 }
 
+int
+LuaInstance::load_state ()
+{
+	std::string uiscripts;
+	if (!find_file (ardour_config_search_path(), ui_scripts_file_name, uiscripts)) {
+		pre_seed_scripts ();
+		return -1;
+	}
+	XMLTree tree;
+
+	info << string_compose (_("Loading user ui scripts file %1"), uiscripts) << endmsg;
+
+	if (!tree.read (uiscripts)) {
+		error << string_compose(_("cannot read ui scripts file \"%1\""), uiscripts) << endmsg;
+		return -1;
+	}
+
+	if (set_state (*tree.root())) {
+		error << string_compose(_("user ui scripts file \"%1\" not loaded successfully."), uiscripts) << endmsg;
+		return -1;
+	}
+
+	return 0;
+}
+
+int
+LuaInstance::save_state ()
+{
+	if (!_session) {
+		/* action scripts are un-registered with the session */
+		return -1;
+	}
+
+	std::string uiscripts = Glib::build_filename (user_config_directory(), ui_scripts_file_name);
+
+	XMLNode* node = new XMLNode (X_("UIScripts"));
+	node->add_child_nocopy (get_action_state ());
+	node->add_child_nocopy (get_hook_state ());
+
+	XMLTree tree;
+	tree.set_root (node);
+
+	if (!tree.write (uiscripts.c_str())){
+		error << string_compose (_("UI script file %1 not saved"), uiscripts) << endmsg;
+		return -1;
+	}
+	return 0;
+}
+
+void
+LuaInstance::set_dirty ()
+{
+	if (!_session || _session->deletion_in_progress()) {
+		return;
+	}
+	save_state ();
+	_session->set_dirty (); // XXX is this reasonable?
+}
+
 void LuaInstance::set_session (Session* s)
 {
 	SessionHandlePtr::set_session (s);
@@ -1205,12 +1405,15 @@ void LuaInstance::set_session (Session* s)
 		return;
 	}
 
+	load_state ();
+
 	lua_State* L = lua.getState();
 	LuaBindings::set_session (L, _session);
 
 	for (LuaCallbackMap::iterator i = _callbacks.begin(); i != _callbacks.end(); ++i) {
 		i->second->set_session (s);
 	}
+	second_connection = Timers::rapid_connect (sigc::mem_fun(*this, & LuaInstance::every_second));
 	point_one_second_connection = Timers::rapid_connect (sigc::mem_fun(*this, & LuaInstance::every_point_one_seconds));
 	SetSession (); /* EMIT SIGNAL */
 }
@@ -1219,10 +1422,11 @@ void
 LuaInstance::session_going_away ()
 {
 	ENSURE_GUI_THREAD (*this, &LuaInstance::session_going_away);
+	second_connection.disconnect ();
 	point_one_second_connection.disconnect ();
 
 	(*_lua_clear)();
-	for (int i = 0; i < 9; ++i) {
+	for (int i = 0; i < MAX_LUA_ACTION_SCRIPTS; ++i) {
 		ActionChanged (i, ""); /* EMIT SIGNAL */
 	}
 	SessionHandlePtr::session_going_away ();
@@ -1230,7 +1434,13 @@ LuaInstance::session_going_away ()
 
 	lua_State* L = lua.getState();
 	LuaBindings::set_session (L, _session);
-	lua.do_command ("collectgarbage();");
+	lua.collect_garbage ();
+}
+
+void
+LuaInstance::every_second ()
+{
+	LuaTimerS (); // emit signal
 }
 
 void
@@ -1252,9 +1462,12 @@ LuaInstance::set_state (const XMLNode& node)
 			try {
 				(*_lua_load)(std::string ((const char*)buf, size));
 			} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 				cerr << "LuaException:" << e.what () << endl;
+#endif
+				PBD::warning << "LuaException: " << e.what () << endmsg;
 			} catch (...) { }
-			for (int i = 0; i < 9; ++i) {
+			for (int i = 0; i < MAX_LUA_ACTION_SCRIPTS; ++i) {
 				std::string name;
 				if (lua_action_name (i, name)) {
 					ActionChanged (i, name); /* EMIT SIGNAL */
@@ -1264,6 +1477,7 @@ LuaInstance::set_state (const XMLNode& node)
 		}
 	}
 
+	assert (_callbacks.empty());
 	if ((child = find_named_node (node, "ActionHooks"))) {
 		for (XMLNodeList::const_iterator n = child->children ().begin (); n != child->children ().end (); ++n) {
 			try {
@@ -1272,12 +1486,40 @@ LuaInstance::set_state (const XMLNode& node)
 				p->drop_callback.connect (_slotcon, MISSING_INVALIDATOR, boost::bind (&LuaInstance::unregister_lua_slot, this, p->id()), gui_context());
 				SlotChanged (p->id(), p->name(), p->signals()); /* EMIT SIGNAL */
 			} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 				cerr << "LuaException:" << e.what () << endl;
+#endif
+				PBD::warning << "LuaException: " << e.what () << endmsg;
 			} catch (...) { }
 		}
 	}
 
 	return 0;
+}
+
+void
+LuaInstance::pre_seed_script (std::string const& name, int& id)
+{
+	LuaScriptInfoPtr spi = LuaScripting::instance ().by_name (name, LuaScriptInfo::EditorAction);
+	if (spi) {
+		try {
+			std::string script = Glib::file_get_contents (spi->path);
+			LuaState ls;
+			register_classes (ls.getState ());
+			LuaScriptParamList lsp = LuaScriptParams::script_params (ls, spi->path, "action_params");
+			LuaScriptParamPtr lspp (new LuaScriptParam("x-script-origin", "", spi->path, false, true));
+			lsp.push_back (lspp);
+			set_lua_action (id++, name, script, lsp);
+		} catch (...) { }
+	}
+}
+
+void
+LuaInstance::pre_seed_scripts ()
+{
+	int id = 0;
+	pre_seed_script ("Mixer Screenshot", id);
+	pre_seed_script ("List Plugins", id);
 }
 
 bool
@@ -1290,7 +1532,7 @@ LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 	switch (type) {
 		case LuaScriptInfo::EditorAction:
 			reg = lua_action_names ();
-			title = _("Add Lua Action");
+			title = _("Add Shortcut or Lua Script");
 			break;
 		case LuaScriptInfo::EditorHook:
 			reg = lua_slot_names ();
@@ -1323,18 +1565,27 @@ LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 
 	try {
 		script = Glib::file_get_contents (spi->path);
-	} catch (Glib::FileError e) {
+	} catch (Glib::FileError const& e) {
 		string msg = string_compose (_("Cannot read script '%1': %2"), spi->path, e.what());
 		Gtk::MessageDialog am (msg);
 		am.run ();
 		return false;
 	}
 
-	LuaScriptParamList lsp = LuaScriptParams::script_params (spi, param_function);
+	LuaState ls;
+	register_classes (ls.getState ());
+	LuaScriptParamList lsp = LuaScriptParams::script_params (ls, spi->path, param_function);
+
+	/* allow cancel */
+	for (size_t i = 0; i < lsp.size(); ++i) {
+		if (lsp[i]->preseeded && lsp[i]->name == "x-script-abort") {
+			return false;
+		}
+	}
 
 	ScriptParameterDialog spd (_("Set Script Parameters"), spi, reg, lsp);
 
-	if (!spd.need_interation ()) {
+	if (spd.need_interation ()) {
 		switch (spd.run ()) {
 			case Gtk::RESPONSE_ACCEPT:
 				break;
@@ -1343,7 +1594,7 @@ LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 		}
 	}
 
-	LuaScriptParamPtr lspp (new LuaScriptParam("x-script-origin", "", spi->path, false));
+	LuaScriptParamPtr lspp (new LuaScriptParam("x-script-origin", "", spi->path, false, true));
 	lsp.push_back (lspp);
 
 	switch (type) {
@@ -1360,7 +1611,7 @@ LuaInstance::interactive_add (LuaScriptInfo::ScriptType type, int id)
 				string msg = string_compose (_("Session script '%1' instantiation failed: %2"), spd.name(), e.what ());
 				Gtk::MessageDialog am (msg);
 				am.run ();
-			} catch (SessionException e) {
+			} catch (SessionException const& e) {
 				string msg = string_compose (_("Loading Session script '%1' failed: %2"), spd.name(), e.what ());
 				Gtk::MessageDialog am (msg);
 				am.run ();
@@ -1413,7 +1664,10 @@ LuaInstance::call_action (const int id)
 		(*_lua_call_action)(id + 1);
 		lua.collect_garbage_step ();
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 	} catch (...) { }
 }
 
@@ -1430,7 +1684,10 @@ LuaInstance::render_icon (int i, cairo_t* cr, int w, int h, uint32_t clr)
 	 try {
 		 (*_lua_render_icon)(i + 1, (Cairo::Context *)&ctx, w, h, clr);
 	 } catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		 cerr << "LuaException:" << e.what () << endl;
+#endif
+		 PBD::warning << "LuaException: " << e.what () << endmsg;
 	 } catch (...) { }
 }
 
@@ -1455,12 +1712,15 @@ LuaInstance::set_lua_action (
 		(*_lua_add_action)(id + 1, name, script, bytecode, iconfunc, tbl_arg);
 		ActionChanged (id, name); /* EMIT SIGNAL */
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 		return false;
 	} catch (...) {
 		return false;
 	}
-	_session->set_dirty ();
+	set_dirty ();
 	return true;
 }
 
@@ -1470,13 +1730,16 @@ LuaInstance::remove_lua_action (const int id)
 	try {
 		(*_lua_del_action)(id + 1);
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 		return false;
 	} catch (...) {
 		return false;
 	}
 	ActionChanged (id, ""); /* EMIT SIGNAL */
-	_session->set_dirty ();
+	set_dirty ();
 	return true;
 }
 
@@ -1494,7 +1757,10 @@ LuaInstance::lua_action_name (const int id, std::string& rv)
 		}
 		return true;
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 	} catch (...) { }
 	return false;
 }
@@ -1503,7 +1769,7 @@ std::vector<std::string>
 LuaInstance::lua_action_names ()
 {
 	std::vector<std::string> rv;
-	for (int i = 0; i < 9; ++i) {
+	for (int i = 0; i < MAX_LUA_ACTION_SCRIPTS; ++i) {
 		std::string name;
 		if (lua_action_name (i, name)) {
 			rv.push_back (name);
@@ -1524,7 +1790,10 @@ LuaInstance::lua_action_has_icon (const int id)
 			return ref["icon"].cast<bool>();
 		}
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 	} catch (...) { }
 	return false;
 }
@@ -1559,7 +1828,10 @@ LuaInstance::lua_action (const int id, std::string& name, std::string& script, L
 		LuaScriptParams::ref_to_params (args, &rargs);
 		return true;
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 	} catch (...) { }
 	return false;
 }
@@ -1582,7 +1854,10 @@ LuaInstance::register_lua_slot (const std::string& name, const std::string& scri
 			ah = signals();
 		}
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 	} catch (...) { }
 
 	if (ah.none ()) {
@@ -1597,11 +1872,14 @@ LuaInstance::register_lua_slot (const std::string& name, const std::string& scri
 		_callbacks.insert (std::make_pair(p->id(), p));
 		p->drop_callback.connect (_slotcon, MISSING_INVALIDATOR, boost::bind (&LuaInstance::unregister_lua_slot, this, p->id()), gui_context());
 		SlotChanged (p->id(), p->name(), p->signals()); /* EMIT SIGNAL */
+		set_dirty ();
 		return true;
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 	} catch (...) { }
-	_session->set_dirty ();
 	return false;
 }
 
@@ -1612,9 +1890,9 @@ LuaInstance::unregister_lua_slot (const PBD::ID& id)
 	if (i != _callbacks.end()) {
 		SlotChanged (id, "", ActionHook()); /* EMIT SIGNAL */
 		_callbacks.erase (i);
+		set_dirty ();
 		return true;
 	}
-	_session->set_dirty ();
 	return false;
 }
 
@@ -1689,7 +1967,10 @@ LuaCallback::LuaCallback (Session *s,
 		const std::string& bytecode = LuaScripting::get_factory_bytecode (script);
 		(*_lua_add)(name, script, bytecode, tbl_arg);
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 		throw failed_constructor ();
 	} catch (...) {
 		throw failed_constructor ();
@@ -1730,7 +2011,10 @@ LuaCallback::LuaCallback (Session *s, XMLNode & node)
 	try {
 		(*_lua_load)(std::string ((const char*)buf, size));
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 	} catch (...) { }
 	g_free (buf);
 
@@ -1942,7 +2226,10 @@ LuaCallback::lua_slot (std::string& name, std::string& script, ActionHook& ah, A
 		LuaScriptParams::ref_to_params (args, &rargs);
 		return true;
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 		return false;
 	} catch (...) { }
 	return false;
@@ -2048,6 +2335,14 @@ LuaCallback::connect_2 (enum LuaSignal::LuaSignal ls, T ref, PBD::Signal2<void, 
 			gui_context());
 }
 
+template <typename T, typename C1, typename C2, typename C3> void
+LuaCallback::connect_3 (enum LuaSignal::LuaSignal ls, T ref, PBD::Signal3<void, C1, C2, C3> *signal) {
+	signal->connect (
+			_connections, invalidator (*this),
+			boost::bind (&LuaCallback::proxy_3<T, C1, C2, C3>, this, ls, ref, _1, _2, _3),
+			gui_context());
+}
+
 template <typename T> void
 LuaCallback::proxy_0 (enum LuaSignal::LuaSignal ls, T ref) {
 	bool ok = true;
@@ -2082,6 +2377,20 @@ LuaCallback::proxy_2 (enum LuaSignal::LuaSignal ls, T ref, C1 a1, C2 a2) {
 	bool ok = true;
 	{
 		const luabridge::LuaRef& rv ((*_lua_call)((int)ls, ref, a1, a2));
+		if (! rv.cast<bool> ()) {
+			ok = false;
+		}
+	}
+	if (!ok) {
+		drop_callback (); /* EMIT SIGNAL */
+	}
+}
+
+template <typename T, typename C1, typename C2, typename C3> void
+LuaCallback::proxy_3 (enum LuaSignal::LuaSignal ls, T ref, C1 a1, C2 a2, C3 a3) {
+	bool ok = true;
+	{
+		const luabridge::LuaRef& rv ((*_lua_call)((int)ls, ref, a1, a2, a3));
 		if (! rv.cast<bool> ()) {
 			ok = false;
 		}

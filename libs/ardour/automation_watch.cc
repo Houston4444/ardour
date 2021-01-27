@@ -1,21 +1,23 @@
 /*
-    Copyright (C) 2012 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2012-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2015-2018 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2015 Nick Mainsbridge <mainsbridge@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <iostream>
 
@@ -24,6 +26,7 @@
 #include "pbd/compose.h"
 #include "pbd/pthread_utils.h"
 
+#include "ardour/audioengine.h"
 #include "ardour/automation_control.h"
 #include "ardour/automation_watch.h"
 #include "ardour/debug.h"
@@ -172,7 +175,7 @@ AutomationWatch::timer ()
 										(*aw)->alist()->automation_write()));
 				(*aw)->list()->set_in_write_pass (false);
 				if ( (*aw)->alist()->automation_write() ) {
-					(*aw)->list()->set_in_write_pass (true, time);
+					(*aw)->list()->set_in_write_pass (true, true, time);
 				}
 			}
 		}
@@ -186,7 +189,8 @@ AutomationWatch::timer ()
 void
 AutomationWatch::thread ()
 {
-	pbd_set_thread_priority (pthread_self(), PBD_SCHED_FIFO, -25);
+	pbd_set_thread_priority (pthread_self(), PBD_SCHED_FIFO, AudioEngine::instance()->client_real_time_priority() - 3);
+	pthread_set_name ("AutomationWatch");
 	while (_run_thread) {
 		Glib::usleep ((gulong) floor (Config->get_automation_interval_msecs() * 1000));
 		timer ();
@@ -221,7 +225,7 @@ AutomationWatch::transport_state_change ()
 		return;
 	}
 
-	bool rolling = _session->transport_rolling();
+	bool rolling = _session->transport_state_rolling ();
 
 	_last_time = _session->audible_sample ();
 

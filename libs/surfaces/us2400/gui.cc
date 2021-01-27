@@ -1,21 +1,22 @@
 /*
-	Copyright (C) 2010 Paul Davis
-	Copyright (C) 2017 Ben Loftis
-
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2017-2018 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2018-2019 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <gtkmm/comboboxtext.h>
 #include <gtkmm/box.h>
@@ -35,6 +36,7 @@
 #include "pbd/stacktrace.h"
 
 #include "gtkmm2ext/actions.h"
+#include "gtkmm2ext/action_model.h"
 #include "gtkmm2ext/bindings.h"
 #include "gtkmm2ext/gui_thread.h"
 #include "gtkmm2ext/utils.h"
@@ -89,12 +91,12 @@ US2400Protocol::build_gui ()
 US2400ProtocolGUI::US2400ProtocolGUI (US2400Protocol& p)
 	: _cp (p)
 	, table (2, 9)
+	, action_model (ActionManager::ActionModel::instance ())
 	, _device_dependent_widget (0)
 	, _ignore_profile_changed (false)
 	, ignore_active_change (false)
 {
 	Gtk::Label* l;
-	Gtk::Alignment* align;
 	int row = 0;
 
 	set_border_width (12);
@@ -156,7 +158,6 @@ US2400ProtocolGUI::US2400ProtocolGUI (US2400Protocol& p)
 	function_key_scroller.add (function_key_editor);
 	append_page (*fkey_packer, _("Function Keys"));
 
-	build_available_action_menu ();
 	build_function_key_editor ();
 	refresh_function_key_editor ();
 	fkey_packer->show_all();
@@ -193,9 +194,9 @@ US2400ProtocolGUI::connection_handler ()
 
 void
 US2400ProtocolGUI::update_port_combos (vector<string> const& midi_inputs, vector<string> const& midi_outputs,
-                                              Gtk::ComboBox* input_combo,
-                                              Gtk::ComboBox* output_combo,
-                                              boost::shared_ptr<Surface> surface)
+                                       Gtk::ComboBox* input_combo,
+                                       Gtk::ComboBox* output_combo,
+                                       boost::shared_ptr<Surface> surface)
 {
 	Glib::RefPtr<Gtk::ListStore> input = build_midi_port_list (midi_inputs, true);
 	Glib::RefPtr<Gtk::ListStore> output = build_midi_port_list (midi_outputs, false);
@@ -251,7 +252,6 @@ US2400ProtocolGUI::device_dependent_widget ()
 	int row = 0;
 
 	uint32_t n_surfaces = 1 + _cp.device_info().extenders();
-	uint32_t main_pos = _cp.device_info().master_position();
 
 	dd_table = Gtk::manage (new Gtk::Table (2, n_surfaces));
 	dd_table->set_row_spacings (4);
@@ -269,13 +269,13 @@ US2400ProtocolGUI::device_dependent_widget ()
 
 	int portcount = n_surfaces;
 
-	for (uint32_t n = 0; n < portcount; ++n) {
+	for (int32_t n = 0; n < portcount; ++n) {
 
 		boost::shared_ptr<Surface> surface = _cp.nth_surface (n);
 
 		if (!surface) {
 			PBD::fatal << string_compose (_("programming error: %1\n"), string_compose ("n=%1 surface not found!", n)) << endmsg;
-			/*NOTREACHED*/
+			abort (); /*NOTREACHED*/
 		}
 
 		Gtk::ComboBox* input_combo = manage (new Gtk::ComboBox);
@@ -296,11 +296,11 @@ US2400ProtocolGUI::device_dependent_widget ()
 
 		string send_string;
 		string receive_string;
-		
+
 		//port 1,2,3 are faders & pan knobs. like mackie MCU
 		//port 4 is the joystick
-		//port 5 sends "chan" knobs (24 of them )
-		//port 6 --- ???  ( could be send to knobs... ? )
+		//port 5 sends "chan" knobs (24 of them)
+		//port 6 --- ???  (could be send to knobs... ?)
 
 		send_string = string_compose(_("US-2400 send port #%1 (faders %2 to %3):"), n + 1, n*8+1, n*8+8);
 		receive_string = string_compose(_("US-2400 receive port #%1 (faders %2 to %3):"), n + 1, n*8+1, n*8+8);
@@ -308,7 +308,7 @@ US2400ProtocolGUI::device_dependent_widget ()
 			send_string = string_compose(_("US-2400 send port #%1 (joystick):"), n + 1);
 			receive_string = string_compose(_("US-2400 receive port #%1 (joystick):"), n + 1);
 		}
-		
+
 		l = manage (new Gtk::Label (send_string));
 		l->set_alignment (1.0, 0.5);
 		dd_table->attach (*l, 0, 1, row, row+1, AttachOptions(FILL|EXPAND), AttachOptions(0));
@@ -323,7 +323,7 @@ US2400ProtocolGUI::device_dependent_widget ()
 	}
 
 	row++;
-	
+
 	l = manage (new Gtk::Label ("US-2400 Port #5 is reserved for use as a generic USB device. (click the CHAN button to activate)"));
 	l->set_alignment (1.0, 0.5);
 	dd_table->attach (*l, 0, 2, row, row+1, AttachOptions(FILL|EXPAND), AttachOptions(0));
@@ -353,122 +353,9 @@ US2400ProtocolGUI::make_action_renderer (Glib::RefPtr<TreeStore> model, Gtk::Tre
 	renderer->property_editable() = true;
 	renderer->property_text_column() = 0;
 	renderer->property_has_entry() = false;
-	renderer->signal_edited().connect (sigc::bind (sigc::mem_fun(*this, &US2400ProtocolGUI::action_changed), column));
+	renderer->signal_changed().connect (sigc::bind (sigc::mem_fun(*this, &US2400ProtocolGUI::action_changed), column));
 
 	return renderer;
-}
-
-void
-US2400ProtocolGUI::build_available_action_menu ()
-{
-	/* build a model of all available actions (needs to be tree structured
-	 * more)
-	 */
-
-	available_action_model = TreeStore::create (available_action_columns);
-
-	vector<string> paths;
-	vector<string> labels;
-	vector<string> tooltips;
-	vector<string> keys;
-	vector<Glib::RefPtr<Gtk::Action> > actions;
-
-	typedef std::map<string,TreeIter> NodeMap;
-	NodeMap nodes;
-	NodeMap::iterator r;
-
-	Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
-
-	vector<string>::iterator k;
-	vector<string>::iterator p;
-	vector<string>::iterator t;
-	vector<string>::iterator l;
-
-	available_action_model->clear ();
-
-	/* Because there are button bindings built in that are not
-	   in the key binding map, there needs to be a way to undo
-	   a profile edit.
-	*/
-	TreeIter rowp;
-	TreeModel::Row parent;
-	rowp = available_action_model->append();
-	parent = *(rowp);
-	parent[available_action_columns.name] = _("Remove Binding");
-
-	/* Key aliasing */
-
-	rowp = available_action_model->append();
-	parent = *(rowp);
-	parent[available_action_columns.name] = _("Shift");
-	rowp = available_action_model->append();
-	parent = *(rowp);
-	parent[available_action_columns.name] = _("Control");
-	rowp = available_action_model->append();
-	parent = *(rowp);
-	parent[available_action_columns.name] = _("Option");
-	rowp = available_action_model->append();
-	parent = *(rowp);
-	parent[available_action_columns.name] = _("CmdAlt");
-
-	for (l = labels.begin(), k = keys.begin(), p = paths.begin(), t = tooltips.begin(); l != labels.end(); ++k, ++p, ++t, ++l) {
-
-		TreeModel::Row row;
-		vector<string> parts;
-
-		parts.clear ();
-
-		split (*p, parts, '/');
-
-		if (parts.empty()) {
-			continue;
-		}
-
-		//kinda kludgy way to avoid displaying menu items as mappable
-		if ( parts[1] == _("Main_menu") )
-			continue;
-		if ( parts[1] == _("JACK") )
-			continue;
-		if ( parts[1] == _("redirectmenu") )
-			continue;
-		if ( parts[1] == _("Editor_menus") )
-			continue;
-		if ( parts[1] == _("RegionList") )
-			continue;
-		if ( parts[1] == _("ProcessorMenu") )
-			continue;
-
-		if ((r = nodes.find (parts[1])) == nodes.end()) {
-
-			/* top level is missing */
-
-			TreeIter rowp;
-			TreeModel::Row parent;
-			rowp = available_action_model->append();
-			nodes[parts[1]] = rowp;
-			parent = *(rowp);
-			parent[available_action_columns.name] = parts[1];
-
-			row = *(available_action_model->append (parent.children()));
-
-		} else {
-
-			row = *(available_action_model->append ((*r->second)->children()));
-
-		}
-
-		/* add this action */
-
-		if (l->empty ()) {
-			row[available_action_columns.name] = *t;
-			action_map[*t] = *p;
-		} else {
-			row[available_action_columns.name] = *l;
-			action_map[*l] = *p;
-		}
-
-		row[available_action_columns.path] = (*p);
-	}
 }
 
 void
@@ -479,37 +366,15 @@ US2400ProtocolGUI::build_function_key_editor ()
 	TreeViewColumn* col;
 	CellRendererCombo* renderer;
 
-	renderer = make_action_renderer (available_action_model, function_key_columns.plain);
+	renderer = make_action_renderer (action_model.model(), function_key_columns.plain);
 	col = manage (new TreeViewColumn (_("Plain"), *renderer));
 	col->add_attribute (renderer->property_text(), function_key_columns.plain);
 	function_key_editor.append_column (*col);
 
-	renderer = make_action_renderer (available_action_model, function_key_columns.shift);
+	renderer = make_action_renderer (action_model.model(), function_key_columns.shift);
 	col = manage (new TreeViewColumn (_("Shift"), *renderer));
 	col->add_attribute (renderer->property_text(), function_key_columns.shift);
 	function_key_editor.append_column (*col);
-
-/*
- * 	renderer = make_action_renderer (available_action_model, function_key_columns.control);
-	col = manage (new TreeViewColumn (_("Control"), *renderer));
-	col->add_attribute (renderer->property_text(), function_key_columns.control);
-	function_key_editor.append_column (*col);
-
-	renderer = make_action_renderer (available_action_model, function_key_columns.option);
-	col = manage (new TreeViewColumn (_("Option"), *renderer));
-	col->add_attribute (renderer->property_text(), function_key_columns.option);
-	function_key_editor.append_column (*col);
-
-	renderer = make_action_renderer (available_action_model, function_key_columns.cmdalt);
-	col = manage (new TreeViewColumn (_("Cmd/Alt"), *renderer));
-	col->add_attribute (renderer->property_text(), function_key_columns.cmdalt);
-	function_key_editor.append_column (*col);
-
-	renderer = make_action_renderer (available_action_model, function_key_columns.shiftcontrol);
-	col = manage (new TreeViewColumn (_("Shift+Control"), *renderer));
-	col->add_attribute (renderer->property_text(), function_key_columns.shiftcontrol);
-	function_key_editor.append_column (*col);
-*/
 
 	function_key_model = ListStore::create (function_key_columns);
 	function_key_editor.set_model (function_key_model);
@@ -544,8 +409,7 @@ US2400ProtocolGUI::refresh_function_key_editor ()
 		const string defstring = "\u2022";
 
 		/* We only allow plain bindings for Fn keys. All others are
-		 * reserved for hard-coded actions.
-		 */
+		 * reserved for hard-coded actions. */
 
 		if (bid >= US2400::Button::F1 && bid <= US2400::Button::F6) {
 
@@ -558,7 +422,7 @@ US2400ProtocolGUI::refresh_function_key_editor ()
 					row[function_key_columns.plain] = action;
 				} else {
 
-					act = ActionManager::get_action (action.c_str());
+					act = ActionManager::get_action (action, false);
 					if (act) {
 						row[function_key_columns.plain] = act->get_label();
 					} else {
@@ -567,130 +431,48 @@ US2400ProtocolGUI::refresh_function_key_editor ()
 				}
 			}
 		}
-
-		//~ /* We only allow plain bindings for Fn keys. All others are
-		 //~ * reserved for hard-coded actions.
-		 //~ */
-//~ 
-		//~ if (bid >= US2400::Button::F1 && bid <= US2400::Button::F8) {
-//~ 
-			//~ action = dp.get_button_action (bid, US2400Protocol::MODIFIER_SHIFT);
-			//~ if (action.empty()) {
-				//~ row[function_key_columns.shift] = defstring;
-			//~ } else {
-				//~ if (action.find ('/') == string::npos) {
-					//~ /* Probably a key alias */
-					//~ row[function_key_columns.shift] = action;
-				//~ } else {
-					//~ act = ActionManager::get_action (action.c_str());
-					//~ if (act) {
-						//~ row[function_key_columns.shift] = act->get_label();
-					//~ } else {
-						//~ row[function_key_columns.shift] = defstring;
-					//~ }
-				//~ }
-			//~ }
-		//~ }
-
-		//~ action = dp.get_button_action (bid, US2400Protocol::MODIFIER_CONTROL);
-		//~ if (action.empty()) {
-			//~ row[function_key_columns.control] = defstring;
-		//~ } else {
-			//~ if (action.find ('/') == string::npos) {
-				//~ /* Probably a key alias */
-				//~ row[function_key_columns.control] = action;
-			//~ } else {
-				//~ act = ActionManager::get_action (action.c_str());
-				//~ if (act) {
-					//~ row[function_key_columns.control] = act->get_label();
-				//~ } else {
-					//~ row[function_key_columns.control] = defstring;
-				//~ }
-			//~ }
-		//~ }
-//~ 
-		//~ action = dp.get_button_action (bid, US2400Protocol::MODIFIER_OPTION);
-		//~ if (action.empty()) {
-			//~ row[function_key_columns.option] = defstring;
-		//~ } else {
-			//~ if (action.find ('/') == string::npos) {
-				//~ /* Probably a key alias */
-				//~ row[function_key_columns.option] = action;
-			//~ } else {
-				//~ act = ActionManager::get_action (action.c_str());
-				//~ if (act) {
-					//~ row[function_key_columns.option] = act->get_label();
-				//~ } else {
-					//~ row[function_key_columns.option] = defstring;
-				//~ }
-			//~ }
-		//~ }
-//~ 
-		//~ action = dp.get_button_action (bid, US2400Protocol::MODIFIER_CMDALT);
-		//~ if (action.empty()) {
-			//~ row[function_key_columns.cmdalt] = defstring;
-		//~ } else {
-			//~ if (action.find ('/') == string::npos) {
-				//~ /* Probably a key alias */
-				//~ row[function_key_columns.cmdalt] = action;
-			//~ } else {
-				//~ act = ActionManager::get_action (action.c_str());
-				//~ if (act) {
-					//~ row[function_key_columns.cmdalt] = act->get_label();
-				//~ } else {
-					//~ row[function_key_columns.cmdalt] = defstring;
-				//~ }
-			//~ }
-		//~ }
-//~ 
-		//~ action = dp.get_button_action (bid, (US2400Protocol::MODIFIER_SHIFT|US2400Protocol::MODIFIER_CONTROL));
-		//~ if (action.empty()) {
-			//~ row[function_key_columns.shiftcontrol] = defstring;
-		//~ } else {
-			//~ act = ActionManager::get_action (action.c_str());
-			//~ if (act) {
-				//~ row[function_key_columns.shiftcontrol] = act->get_label();
-			//~ } else {
-				//~ row[function_key_columns.shiftcontrol] = defstring;
-			//~ }
-		//~ }
 	}
 
 	function_key_editor.set_model (function_key_model);
 }
 
 void
-US2400ProtocolGUI::action_changed (const Glib::ustring &sPath, const Glib::ustring &text, TreeModelColumnBase col)
+US2400ProtocolGUI::action_changed (const Glib::ustring &sPath, const TreeModel::iterator & iter, TreeModelColumnBase col)
 {
+	string action_path = (*iter)[action_model.columns().path];
+
 	// Remove Binding is not in the action map but still valid
-	bool remove (false);
-	if ( text == "Remove Binding") {
+
+	bool remove = false;
+
+	if (action_path == "Remove Binding") {
 		remove = true;
 	}
+
 	Gtk::TreePath path(sPath);
 	Gtk::TreeModel::iterator row = function_key_model->get_iter(path);
 
 	if (row) {
 
-		std::map<std::string,std::string>::iterator i = action_map.find (text);
+		Glib::RefPtr<Gtk::Action> act = ActionManager::get_action (action_path, false);
 
-		if (i == action_map.end()) {
+		if (!act) {
+			cerr << action_path << " not found in action map\n";
 			if (!remove) {
 				return;
 			}
 		}
-		Glib::RefPtr<Gtk::Action> act = ActionManager::get_action (i->second.c_str());
 
 		if (act || remove) {
 			/* update visible text, using string supplied by
-			   available action model so that it matches and is found
-			   within the model.
-			*/
+			 * available action model so that it matches and is found
+			 * within the model.
+			 */
 			if (remove) {
 				Glib::ustring dot = "\u2022";
 				(*row).set_value (col.index(), dot);
 			} else {
-				(*row).set_value (col.index(), text);
+				(*row).set_value (col.index(), act->get_label());
 			}
 
 			/* update the current DeviceProfile, using the full
@@ -722,11 +504,11 @@ US2400ProtocolGUI::action_changed (const Glib::ustring &sPath, const Glib::ustri
 			if (remove) {
 				_cp.device_profile().set_button_action ((*row)[function_key_columns.id], modifier, "");
 			} else {
-				_cp.device_profile().set_button_action ((*row)[function_key_columns.id], modifier, i->second);
+				_cp.device_profile().set_button_action ((*row)[function_key_columns.id], modifier, action_path);
 			}
 
 			_ignore_profile_changed = true;
-			_profile_combo.set_active_text ( _cp.device_profile().name() );
+			_profile_combo.set_active_text (_cp.device_profile().name());
 			_ignore_profile_changed = false;
 
 		} else {

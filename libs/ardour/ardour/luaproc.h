@@ -1,21 +1,20 @@
 /*
-    Copyright (C) 2016 Robin Gareus <robin@gareus.org>
-    Copyright (C) 2006 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify it
-    under the terms of the GNU General Public License as published by the Free
-    Software Foundation; either version 2 of the License, or (at your option)
-    any later version.
-
-    This program is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-    for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2016-2019 Robin Gareus <robin@gareus.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 /* print runtime and garbage-collection timing statistics */
 //#define WITH_LUAPROC_STATS
@@ -31,6 +30,7 @@
 #include <vector>
 #include <string>
 
+#define USE_TLSF
 #ifdef USE_TLSF
 #  include "pbd/tlsf.h"
 #else
@@ -68,7 +68,7 @@ public:
 
 	uint32_t    parameter_count() const;
 	float       default_value (uint32_t port);
-	void        set_parameter (uint32_t port, float val);
+	void        set_parameter (uint32_t port, float val, sampleoffset_t);
 	float       get_parameter (uint32_t port) const;
 	int         get_parameter_descriptor (uint32_t which, ParameterDescriptor&) const;
 	uint32_t    nth_parameter (uint32_t port, bool& ok) const;
@@ -78,6 +78,8 @@ public:
 
 	PluginOutputConfiguration possible_output () const { return _output_configs; }
 
+	void drop_references ();
+
 	std::set<Evoral::Parameter> automatable() const;
 
 	void activate () { }
@@ -85,15 +87,14 @@ public:
 	void cleanup () { }
 
 	int set_block_size (pframes_t /*nframes*/) { return 0; }
-	samplecnt_t  signal_latency() const { return 0; }
+	bool connect_all_audio_outputs () const { return _connect_all_audio_outputs; }
 
 	int connect_and_run (BufferSet& bufs,
 			samplepos_t start, samplepos_t end, double speed,
-			ChanMapping in, ChanMapping out,
+			ChanMapping const& in, ChanMapping const& out,
 			pframes_t nframes, samplecnt_t offset);
 
 	std::string describe_parameter (Evoral::Parameter);
-	void        print_parameter (uint32_t, char*, uint32_t len) const;
 	boost::shared_ptr<ScalePoints> get_scale_points(uint32_t port_index) const;
 
 	bool parameter_is_audio (uint32_t) const { return false; }
@@ -116,8 +117,8 @@ public:
 
 	bool has_editor() const { return false; }
 
-	bool can_support_io_configuration (const ChanCount& in, ChanCount& out, ChanCount* imprecise);
-	bool configure_io (ChanCount in, ChanCount out);
+	bool match_variable_io (ChanCount& in, ChanCount& aux_in, ChanCount& out);
+	bool reconfigure_io (ChanCount in, ChanCount aux_in, ChanCount out);
 
 	ChanCount output_streams() const { return _configured_out; }
 	ChanCount input_streams() const { return _configured_in; }
@@ -129,6 +130,7 @@ public:
 	LuaTableRef* instance_ref () { return &lref; }
 
 private:
+	samplecnt_t plugin_latency() const { return _signal_latency; }
 	void find_presets ();
 
 	/* END Plugin interface */
@@ -148,11 +150,13 @@ private:
 #endif
 	LuaState lua;
 	luabridge::LuaRef * _lua_dsp;
+	luabridge::LuaRef * _lua_latency;
 	std::string _script;
 	std::string _origin;
 	std::string _docs;
 	bool _lua_does_channelmapping;
 	bool _lua_has_inline_display;
+	bool _connect_all_audio_outputs;
 
 	void queue_draw () { QueueDraw(); /* EMIT SIGNAL */ }
 	DSP::DspShm lshm;
@@ -176,6 +180,8 @@ private:
 	std::map<int, std::string> _param_doc;
 	uint32_t _designated_bypass_port;
 
+	samplecnt_t _signal_latency;
+
 	float* _control_data;
 	float* _shadow_data;
 
@@ -191,6 +197,7 @@ private:
 
 	bool _has_midi_input;
 	bool _has_midi_output;
+
 
 #ifdef WITH_LUAPROC_STATS
 	int64_t _stats_avg[2];
@@ -208,13 +215,13 @@ class LIBARDOUR_API LuaPluginInfo : public PluginInfo
 	PluginPtr load (Session& session);
 	std::vector<Plugin::PresetRecord> get_presets (bool user_only) const;
 
-	bool in_category (const std::string &c) const {
-		return (category == c);
-	}
-	bool is_instrument () const { return _is_instrument; }
 	bool reconfigurable_io() const { return true; }
+	uint32_t max_configurable_ouputs () const {
+		return _max_outputs;
+	}
 
-	bool _is_instrument;
+	private:
+	uint32_t _max_outputs;
 };
 
 typedef boost::shared_ptr<LuaPluginInfo> LuaPluginInfoPtr;

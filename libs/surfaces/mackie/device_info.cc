@@ -1,21 +1,24 @@
 /*
-	Copyright (C) 2006,2007 John Anderson
-	Copyright (C) 2012 Paul Davis
-
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2006-2007 John Anderson
+ * Copyright (C) 2012-2016 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2012-2016 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2014-2015 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 Len Ovens <len@ovenwerks.net>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include <cstdlib>
 #include <cstring>
@@ -56,8 +59,10 @@ DeviceInfo::DeviceInfo()
 	, _uses_logic_control_buttons (false)
 	, _uses_ipmidi (false)
 	, _no_handshake (false)
+	, _is_qcon(false)
 	, _has_meters (true)
 	, _has_separate_meters (false)
+	, _single_fader_follows_selection (false)
 	, _device_type (MCU)
 	, _name (X_("Mackie Control Universal Pro"))
 {
@@ -254,6 +259,12 @@ DeviceInfo::set_state (const XMLNode& node, int /* version */)
 		return -1;
 	}
 
+	if ((child = node.child ("SingleFaderFollowsSelection")) != 0) {
+		child->get_property ("value", _single_fader_follows_selection);
+	} else {
+		_single_fader_follows_selection = false;
+	}
+
 	if ((child = node.child ("Extenders")) != 0) {
 		if (!child->get_property ("value", _extenders)) {
 			_extenders = 0;
@@ -318,6 +329,12 @@ DeviceInfo::set_state (const XMLNode& node, int /* version */)
 		child->get_property ("value", _has_meters);
 	} else {
 		_has_meters = true;
+	}
+
+	if ((child = node.child ("IsQCon")) != 0) {
+		child->get_property ("value", _is_qcon);
+	} else {
+		_is_qcon = false;
 	}
 
 	if ((child = node.child ("HasSeparateMeters")) != 0) {
@@ -415,6 +432,12 @@ DeviceInfo::has_meters() const
 }
 
 bool
+DeviceInfo::single_fader_follows_selection() const
+{
+	return _single_fader_follows_selection;
+}
+
+bool
 DeviceInfo::has_separate_meters() const
 {
 	return _has_separate_meters;
@@ -454,6 +477,12 @@ bool
 DeviceInfo::no_handshake () const
 {
 	return _no_handshake;
+}
+
+bool
+DeviceInfo::is_qcon () const
+{
+	return _is_qcon;
 }
 
 bool

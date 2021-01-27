@@ -1,20 +1,27 @@
 /*
-    Copyright (C) 2000-2006 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 2005-2006 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2005-2017 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2006-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2006 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2007-2011 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2013-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2014-2017 Ben Loftis <ben@harrisonconsoles.com>
+ * Copyright (C) 2016-2017 Julien "_FrnchFrgg_" RIVAUD <frnchfrgg@free.fr>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __ardour_mixer_strip__
 #define __ardour_mixer_strip__
@@ -72,6 +79,7 @@ class Mixer_UI;
 class MotionController;
 class RouteGroupMenu;
 class ArdourWindow;
+class AutomationController;
 
 class MixerStrip : public AxisView, public RouteUI, public Gtk::EventBox
 {
@@ -104,7 +112,7 @@ public:
 	void revert_to_default_display ();
 
 	/** @return the delivery that is being edited using our fader; it will be the
-	 *  last send passed to ::show_send, or our route's main out delivery.
+	 *  last send passed to \ref show_send() , or our route's main out delivery.
 	 */
 	boost::shared_ptr<ARDOUR::Delivery> current_delivery () const {
 		return _current_delivery;
@@ -113,6 +121,9 @@ public:
 	bool mixer_owned () const {
 		return _mixer_owned;
 	}
+
+	/* used for screenshots */
+	void hide_master_spacer (bool);
 
 	void hide_things ();
 
@@ -180,6 +191,7 @@ private:
 	Gtk::Table rec_mon_table;
 	Gtk::Table solo_iso_table;
 	Gtk::Table mute_solo_table;
+	Gtk::Table master_volume_table;
 	Gtk::Table bottom_button_table;
 
 	void vca_assign (boost::shared_ptr<ARDOUR::VCA>);
@@ -187,6 +199,7 @@ private:
 
 	void meter_changed ();
 	void monitor_changed ();
+	void monitor_section_added_or_removed ();
 
 	ArdourWidgets::ArdourButton input_button;
 	ArdourWidgets::ArdourButton output_button;
@@ -216,10 +229,17 @@ private:
 	ArdourWidgets::ArdourButton _comment_button;
 	ArdourWidgets::ArdourKnob   trim_control;
 
+	Gtk::Menu* _master_volume_menu;
+	ArdourWidgets::ArdourButton* _loudess_analysis_button;
+	boost::shared_ptr<AutomationController> _volume_controller;
+
 	void trim_start_touch ();
 	void trim_end_touch ();
 
 	void setup_comment_button ();
+
+	void loudess_analysis_button_clicked ();
+	bool volume_controller_button_pressed (GdkEventButton*);
 
 	ArdourWidgets::ArdourButton group_button;
 	RouteGroupMenu*             group_menu;
@@ -286,9 +306,6 @@ private:
 
 	static MixerStrip* _entered_mixer_strip;
 
-	void engine_running();
-	void engine_stopped();
-
 	virtual void bus_send_display_changed (boost::shared_ptr<ARDOUR::Route>);
 
 	void set_current_delivery (boost::shared_ptr<ARDOUR::Delivery>);
@@ -297,11 +314,13 @@ private:
 	PBD::ScopedConnection send_gone_connection;
 
 	void reset_strip_style ();
+	void update_sensitivity ();
 
 	ARDOUR::DataType guess_main_type(bool for_input, bool favor_connected = true) const;
 
 	void update_io_button (bool input_button);
 	void port_connected_or_disconnected (boost::weak_ptr<ARDOUR::Port>, boost::weak_ptr<ARDOUR::Port>);
+	void port_pretty_name_changed (std::string);
 
 	bool mixer_strip_enter_event ( GdkEventCrossing * );
 	bool mixer_strip_leave_event ( GdkEventCrossing * );
@@ -315,6 +334,7 @@ private:
 	 */
 	VisibilityGroup _visibility;
 	boost::optional<bool> override_solo_visibility () const;
+	boost::optional<bool> override_rec_mon_visibility () const;
 
 	PBD::ScopedConnectionList _config_connection;
 

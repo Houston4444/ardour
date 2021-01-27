@@ -1,21 +1,25 @@
 /*
-  Copyright (C) 2013 Paul Davis
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation; either version 2 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2013-2019 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2014-2015 Tim Mayberry <mojofunk@gmail.com>
+ * Copyright (C) 2014-2019 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2014 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2015 Nick Mainsbridge <mainsbridge@gmail.com>
+ * Copyright (C) 2017 Ben Loftis <ben@harrisonconsoles.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifdef WAF_BUILD
 #include "gtk2ardour-config.h"
@@ -25,9 +29,7 @@
 
 #include <glib.h>
 #include "pbd/gstdio_compat.h"
-
 #include <glibmm.h>
-#include <glibmm/datetime.h>
 
 #include <gtkmm/filechooser.h>
 #include <gtkmm/stock.h>
@@ -57,6 +59,7 @@
 
 #include "LuaBridge/LuaBridge.h"
 
+#include "ardour_message.h"
 #include "ardour_ui.h"
 #include "session_dialog.h"
 #include "opts.h"
@@ -77,8 +80,7 @@ using namespace ARDOUR_UI_UTILS;
 SessionDialog::SessionDialog (bool require_new, const std::string& session_name, const std::string& session_path, const std::string& template_name, bool cancel_not_quit)
 	: ArdourDialog (_("Session Setup"), true, true)
 	, new_only (require_new)
-	, _provided_session_name (session_name)
-	, _provided_session_path (session_path)
+	, new_name_was_edited (false)
 	, new_folder_chooser (FILE_CHOOSER_ACTION_SELECT_FOLDER)
 	, _existing_session_chooser_used (false)
 {
@@ -104,17 +106,17 @@ SessionDialog::SessionDialog (bool require_new, const std::string& session_name,
 	info_frame.set_border_width (12);
 	get_vbox()->pack_start (info_frame, false, false);
 
+	if (!template_name.empty()) {
+		load_template_override = template_name;
+	}
+
 	setup_new_session_page ();
 
-	if (!new_only) {
+	if (!require_new) {
 		setup_initial_choice_box ();
 		get_vbox()->pack_start (ic_vbox, true, true);
 	} else {
 		get_vbox()->pack_start (session_new_vbox, true, true);
-	}
-
-	if (!template_name.empty()) {
-		load_template_override = template_name;
 	}
 
 	get_vbox()->show_all ();
@@ -139,26 +141,17 @@ SessionDialog::SessionDialog (bool require_new, const std::string& session_name,
 			recent_label.hide ();
 		}
 	}
+	inital_height = get_height();
+	inital_width = get_width();
 
-	/* possibly get out of here immediately if everything is ready to go.
-	   We still need to set up the whole dialog because of the way
-	   ARDOUR_UI::get_session_parameters() might skip it on a first
-	   pass then require it for a second pass (e.g. when there
-	   is an error with session loading and we have to ask the user
-	   what to do next).
-	*/
-
-	if (!session_name.empty() && !require_new) {
-		response (RESPONSE_OK);
-		return;
+	if (require_new) {
+		setup_untitled_session ();
 	}
 }
 
 SessionDialog::SessionDialog ()
 	: ArdourDialog (_("Recent Sessions"), true, true)
 	, new_only (false)
-	, _provided_session_name ("")
-	, _provided_session_path ("")
 	, _existing_session_chooser_used (false) // caller must check should_be_new
 {
 	get_vbox()->set_spacing (6);
@@ -183,21 +176,12 @@ SessionDialog::SessionDialog ()
 
 }
 
-
-
 SessionDialog::~SessionDialog()
 {
 }
 
-void
-SessionDialog::clear_given ()
-{
-	_provided_session_path = "";
-	_provided_session_name = "";
-}
-
 uint32_t
-SessionDialog::meta_master_bus_profile (std::string script_path) const
+SessionDialog::meta_master_bus_profile (std::string script_path)
 {
 	if (!Glib::file_test (script_path, Glib::FILE_TEST_EXISTS | Glib::FILE_TEST_IS_REGULAR)) {
 		return UINT32_MAX;
@@ -220,11 +204,14 @@ SessionDialog::meta_master_bus_profile (std::string script_path) const
 	try {
 		err = lua.do_file (script_path);
 	} catch (luabridge::LuaException const& e) {
+#ifndef NDEBUG
+		cerr << "LuaException:" << e.what () << endl;
+#endif
+		PBD::warning << "LuaException: " << e.what () << endmsg;
 		err = -1;
 	}  catch (...) {
 		err = -1;
 	}
-
 
 	if (err) {
 		return UINT32_MAX;
@@ -270,10 +257,6 @@ SessionDialog::use_session_template () const
 		return false;
 	}
 
-	if (!load_template_override.empty()) {
-		return true;
-	}
-
 	if (template_chooser.get_selection()->count_selected_rows() > 0) {
 		return true;
 	}
@@ -284,11 +267,6 @@ SessionDialog::use_session_template () const
 std::string
 SessionDialog::session_template_name ()
 {
-	if (!load_template_override.empty()) {
-		string the_path (ARDOUR::user_template_directory());
-		return Glib::build_filename (the_path, load_template_override + ARDOUR::template_suffix);
-	}
-
 	if (template_chooser.get_selection()->count_selected_rows() > 0) {
 
 		TreeIter const iter = template_chooser.get_selection()->get_selected();
@@ -302,14 +280,16 @@ SessionDialog::session_template_name ()
 	return string();
 }
 
+void
+SessionDialog::clear_name ()
+{
+	recent_session_display.get_selection()->unselect_all();
+	new_name_entry.set_text (string());
+}
+
 std::string
 SessionDialog::session_name (bool& should_be_new)
 {
-	if (!_provided_session_name.empty() && !new_only) {
-		should_be_new = false;
-		return _provided_session_name;
-	}
-
 	/* Try recent session selection */
 
 	TreeIter iter = recent_session_display.get_selection()->get_selected();
@@ -338,10 +318,6 @@ SessionDialog::session_name (bool& should_be_new)
 std::string
 SessionDialog::session_folder ()
 {
-	if (!_provided_session_path.empty() && !new_only) {
-		return _provided_session_path;
-	}
-
 	/* Try recent session selection */
 
 	TreeIter iter = recent_session_display.get_selection()->get_selected();
@@ -540,8 +516,9 @@ SessionDialog::new_session_button_clicked ()
 
 	get_vbox()->remove (ic_vbox);
 	get_vbox()->pack_start (session_new_vbox, true, true);
+
 	back_button->set_sensitive (true);
-	new_name_entry.grab_focus ();
+	setup_untitled_session ();
 }
 
 bool
@@ -550,6 +527,7 @@ SessionDialog::back_button_pressed (GdkEventButton*)
 	get_vbox()->remove (session_new_vbox);
 	back_button->set_sensitive (false);
 	get_vbox()->pack_start (ic_vbox);
+	resize(inital_height, inital_width);
 
 	return true;
 }
@@ -565,6 +543,17 @@ SessionDialog::open_button_pressed (GdkEventButton* ev)
 }
 
 void
+SessionDialog::setup_untitled_session ()
+{
+	new_name_entry.set_text (string_compose (_("Untitled-%1"), Glib::DateTime::create_now_local().format ("%F-%H-%M-%S")));
+	new_name_entry.select_region (0, -1);
+	new_name_was_edited = false;
+
+	back_button->set_sensitive (true);
+	new_name_entry.grab_focus ();
+}
+
+void
 SessionDialog::populate_session_templates ()
 {
 	vector<TemplateInfo> templates;
@@ -573,31 +562,27 @@ SessionDialog::populate_session_templates ()
 
 	template_model->clear ();
 
-	/* Add Lua Scripts dedicated to session-setup */
-	LuaScriptList& ms (LuaScripting::instance ().scripts (LuaScriptInfo::SessionInit));
-	for (LuaScriptList::const_iterator s = ms.begin(); s != ms.end(); ++s) {
-		TreeModel::Row row = *(template_model->append ());
-		row[session_template_columns.name] = (*s)->name;
-		row[session_template_columns.path] = "urn:ardour:" + (*s)->path;
-		row[session_template_columns.description] = (*s)->description;
-		row[session_template_columns.modified_with_short] = _("{Factory Template}");
-		row[session_template_columns.modified_with_long] = _("{Factory Template}");
-	}
+	/* Get Lua Scripts dedicated to session-setup */
+	LuaScriptList scripts (LuaScripting::instance ().scripts (LuaScriptInfo::SessionInit));
 
 	/* Add Lua Action Scripts which can also be used for session-setup */
 	LuaScriptList& as (LuaScripting::instance ().scripts (LuaScriptInfo::EditorAction));
 	for (LuaScriptList::const_iterator s = as.begin(); s != as.end(); ++s) {
-		if (!((*s)->subtype & LuaScriptInfo::SessionSetup)) {
-			continue;
+		if ((*s)->subtype & LuaScriptInfo::SessionSetup) {
+			scripts.push_back (*s);
 		}
+	}
+
+	std::sort (scripts.begin(), scripts.end(), LuaScripting::Sorter());
+
+	for (LuaScriptList::const_iterator s = scripts.begin(); s != scripts.end(); ++s) {
 		TreeModel::Row row = *(template_model->append ());
 		row[session_template_columns.name] = (*s)->name;
 		row[session_template_columns.path] = "urn:ardour:" + (*s)->path;
 		row[session_template_columns.description] = (*s)->description;
-		row[session_template_columns.modified_with_short] = _("{Factory Template}");
-		row[session_template_columns.modified_with_long] = _("{Factory Template}");
+		row[session_template_columns.modified_with_short] = string_compose ("{%1}", _("Factory Template"));
+		row[session_template_columns.modified_with_long] = string_compose ("{%1}", _("Factory Template"));
 	}
-
 
 	//Add any "template sessions" found in the user's preferences folder
 	for (vector<TemplateInfo>::iterator x = templates.begin(); x != templates.end(); ++x) {
@@ -616,7 +601,7 @@ SessionDialog::populate_session_templates ()
 	TreeModel::Row row = *template_model->prepend ();
 	row[session_template_columns.name] = (_("Empty Template"));
 	row[session_template_columns.path] = string();
-	row[session_template_columns.description] = _("An empty session with factory default settings.");
+	row[session_template_columns.description] = _("An empty session with factory default settings.\n\nSelect this option if you are importing files to mix.");
 	row[session_template_columns.modified_with_short] = _("");
 	row[session_template_columns.modified_with_long] = _("");
 
@@ -641,12 +626,7 @@ SessionDialog::setup_new_session_page ()
 	name_hbox->pack_start (*name_label, false, true);
 	name_hbox->pack_start (new_name_entry, true, true);
 
-	//check to see if a session name was provided on command line
-	if (!ARDOUR_COMMAND_LINE::session_name.empty()) {
-		new_name_entry.set_text  (Glib::path_get_basename (ARDOUR_COMMAND_LINE::session_name));
-		open_button->set_sensitive (true);
-	}
-
+	new_name_entry.signal_key_press_event().connect (sigc::mem_fun (*this, &SessionDialog::new_name_edited), false);
 	new_name_entry.signal_changed().connect (sigc::mem_fun (*this, &SessionDialog::new_name_changed));
 	new_name_entry.signal_activate().connect (sigc::mem_fun (*this, &SessionDialog::new_name_activated));
 
@@ -658,10 +638,7 @@ SessionDialog::setup_new_session_page ()
 	folder_box->pack_start (*new_folder_label, false, false);
 	folder_box->pack_start (new_folder_chooser, true, true);
 
-	//determine the text in the new folder selector
-	if (!ARDOUR_COMMAND_LINE::session_name.empty()) {
-		new_folder_chooser.set_current_folder (poor_mans_glob (Glib::path_get_dirname (ARDOUR_COMMAND_LINE::session_name)));
-	} else if (ARDOUR_UI::instance()->session_loaded) {
+	if (ARDOUR_UI::instance()->the_session ()) {
 		// point the new session file chooser at the parent directory of the current session
 		string session_parent_dir = Glib::path_get_dirname(ARDOUR_UI::instance()->the_session()->path());
 		new_folder_chooser.set_current_folder (session_parent_dir);
@@ -685,7 +662,7 @@ SessionDialog::setup_new_session_page ()
 	HBox* template_hbox = manage (new HBox);
 
 	//if the "template override" is provided, don't give the user any template selections   (?)
-	if ( load_template_override.empty() ) {
+	if (load_template_override.empty()) {
 		template_hbox->set_spacing (8);
 
 		Gtk::ScrolledWindow *template_scroller = manage (new Gtk::ScrolledWindow());
@@ -717,11 +694,13 @@ SessionDialog::setup_new_session_page ()
 #ifdef MIXBUS
 	template_chooser.append_column (_("Modified With"), session_template_columns.modified_with_short);
 #endif
-	template_chooser.set_tooltip_column(4); // modified_with_long
 	template_chooser.set_headers_visible (true);
 	template_chooser.get_selection()->set_mode (SELECTION_SINGLE);
 	template_chooser.get_selection()->signal_changed().connect (sigc::mem_fun (*this, &SessionDialog::template_row_selected));
 	template_chooser.set_sensitive (true);
+	if (UIConfiguration::instance().get_use_tooltips()) {
+		template_chooser.set_tooltip_column(4); // modified_with_long
+	}
 
 	session_new_vbox.pack_start (*template_hbox, true, true);
 	session_new_vbox.pack_start (*folder_box, false, true);
@@ -729,9 +708,41 @@ SessionDialog::setup_new_session_page ()
 	session_new_vbox.show_all ();
 }
 
+bool
+SessionDialog::new_name_edited (GdkEventKey* ev)
+{
+	switch (ev->keyval) {
+	case GDK_KP_Enter:
+	case GDK_3270_Enter:
+	case GDK_Return:
+		break;
+	default:
+		new_name_was_edited = true;
+	}
+
+	return false;
+}
+
+
+static bool is_invalid_session_char (char c)
+{
+	/* see also Session::session_name_is_legal */
+	return iscntrl (c) || c == '/' || c == '\\' || c == ':' || c == ';';
+}
+
 void
 SessionDialog::new_name_changed ()
 {
+	std::string new_name = new_name_entry.get_text();
+
+	std::string const& illegal = Session::session_name_is_legal (new_name);
+	if (!illegal.empty()) {
+		ArdourMessageDialog msg (string_compose (_("To ensure compatibility with various systems\nsession names may not contain a '%1' character"), illegal));
+		msg.run ();
+		new_name.erase (remove_if (new_name.begin(), new_name.end(), is_invalid_session_char), new_name.end());
+		new_name_entry.set_text (new_name);
+	}
+
 	if (!new_name_entry.get_text().empty()) {
 		session_selected ();
 		open_button->set_sensitive (true);
@@ -772,8 +783,7 @@ SessionDialog::redisplay_recent_sessions ()
 
 	int session_snapshot_count = 0;
 
-	for (vector<std::string>::const_iterator i = session_directories.begin(); i != session_directories.end(); ++i)
-	{
+	for (vector<std::string>::const_iterator i = session_directories.begin(); i != session_directories.end(); ++i) {
 		std::vector<std::string> state_file_paths;
 
 		// now get available states for this session
@@ -785,6 +795,10 @@ SessionDialog::redisplay_recent_sessions ()
 		string dirname = *i;
 
 		/* remove any trailing / */
+
+		if (dirname.empty()) {
+			continue;
+		}
 
 		if (dirname[dirname.length()-1] == '/') {
 			dirname = dirname.substr (0, dirname.length()-1);
@@ -947,7 +961,9 @@ SessionDialog::redisplay_recent_sessions ()
 		row[recent_session_columns.time_formatted] = gdt.format ("%F %H:%M");
 	}
 
-	recent_session_display.set_tooltip_column(1); // recent_session_columns.tip
+	if (UIConfiguration::instance().get_use_tooltips()) {
+		recent_session_display.set_tooltip_column(1); // recent_session_columns.tip
+	}
 	recent_session_display.set_model (recent_session_model);
 
 	// custom sort
@@ -1053,7 +1069,7 @@ SessionDialog::recent_context_mennu (GdkEventButton *ev)
 	Gtk::TreeModel::Path tpath = recent_session_model->get_path(iter);
 	const bool is_child = tpath.up () && tpath.up ();
 
-	Gtk::Menu* m = manage (new Menu);
+	Gtk::Menu* m = ARDOUR_UI::instance()->shared_popup_menu ();
 	MenuList& items = m->items ();
 	items.push_back (MenuElem (s, sigc::bind (sigc::hide_return (sigc::ptr_fun (&PBD::open_folder)), s)));
 	if (!is_child) {
@@ -1124,4 +1140,14 @@ SessionDialog::on_delete_event (GdkEventAny* ev)
 {
 	response (RESPONSE_CANCEL);
 	return ArdourDialog::on_delete_event (ev);
+}
+
+void
+SessionDialog::set_provided_session (string const & name, string const & path)
+{
+	/* Note: path is required to be the full path to the session file, not
+	   just the folder name
+	*/
+	new_name_entry.set_text (name);
+	existing_session_chooser.set_current_folder (Glib::path_get_dirname (path));
 }

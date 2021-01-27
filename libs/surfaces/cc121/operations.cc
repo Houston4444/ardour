@@ -1,29 +1,27 @@
 /*
-    Copyright (C) 2015 Paul Davis
-    Copyright (C) 2016 W.P. van Paassen
-
-    Thanks to Rolf Meyerhoff for reverse engineering the CC121 protocol.
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2016 W.P. van Paassen
+ * Copyright (C) 2016 Paul Davis <paul@linuxaudiosystems.com>
+ *
+ * Thanks to Rolf Meyerhoff for reverse engineering the CC121 protocol.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #include "ardour/async_midi_port.h"
 #include "ardour/monitor_processor.h"
 #include "ardour/monitor_control.h"
-#include "ardour/pannable.h"
 #include "ardour/plugin_insert.h"
 #include "ardour/rc_configuration.h"
 #include "ardour/record_enable_control.h"
@@ -45,24 +43,20 @@ static const double encoder_divider = 24.0;
 void
 CC121::input_monitor ()
 {
-	if (_current_stripable) {
+	if (_current_stripable && _current_stripable->monitoring_control()) {
 	  MonitorChoice choice = _current_stripable->monitoring_control()->monitoring_choice ();
 	  switch(choice) {
 	  case MonitorAuto:
 	    _current_stripable->monitoring_control()->set_value (MonitorInput, PBD::Controllable::NoGroup);
-	    get_button(InputMonitor).set_led_state (_output_port, true);
 	    break;
 	  case MonitorInput:
 	    _current_stripable->monitoring_control()->set_value (MonitorDisk, PBD::Controllable::NoGroup);
-	    get_button(InputMonitor).set_led_state (_output_port, false);
 	    break;
 	  case MonitorDisk:
 	    _current_stripable->monitoring_control()->set_value (MonitorCue, PBD::Controllable::NoGroup);
-	    get_button(InputMonitor).set_led_state (_output_port, false);
 	    break;
 	  case MonitorCue:
-	    _current_stripable->monitoring_control()->set_value (MonitorInput, PBD::Controllable::NoGroup);
-	    get_button(InputMonitor).set_led_state (_output_port, true);
+	    _current_stripable->monitoring_control()->set_value (MonitorAuto, PBD::Controllable::NoGroup);
 	    break;
 	  default:
 	    break;
@@ -246,92 +240,15 @@ CC121::use_monitor ()
 }
 
 void
-CC121::ardour_pan_azimuth (float delta)
+CC121::set_controllable (boost::shared_ptr<AutomationControl> ac, float delta)
 {
-	if (!_current_stripable) {
+	if (!ac || delta == 0) {
 		return;
 	}
-
-	boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (_current_stripable);
-
-	if (!r) {
-		return;
-	}
-
-	boost::shared_ptr<Pannable> pannable = r->pannable ();
-
-	if (!pannable) {
-		return;
-	}
-
-	boost::shared_ptr<AutomationControl> azimuth = pannable->pan_azimuth_control;
-
-	if (!azimuth) {
-		return;
-	}
-
-	azimuth->set_value (azimuth->interface_to_internal (azimuth->internal_to_interface (azimuth->get_value()) + (delta)), Controllable::NoGroup);
+	ac->start_touch (ac->session().transport_sample());
+	ac->set_interface ((ac->internal_to_interface (ac->get_value(), true) + delta), true);
 }
 
-
-void
-CC121::ardour_pan_width(float delta)
-{
-	if (!_current_stripable) {
-		return;
-	}
-
-	boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (_current_stripable);
-
-	if (!r) {
-		return;
-	}
-
-	boost::shared_ptr<Pannable> pannable = r->pannable ();
-
-	if (!pannable) {
-		return;
-	}
-
-	boost::shared_ptr<AutomationControl> width = pannable->pan_width_control;
-
-	if (!width) {
-		return;
-	}
-
-	width->set_value (width->interface_to_internal (width->internal_to_interface (width->get_value()) + (delta)), Controllable::NoGroup);
-}
-
-void
-CC121::mixbus_pan (float delta)
-{
-#ifdef MIXBUS
-	if (!_current_stripable) {
-		return;
-	}
-	boost::shared_ptr<Route> r = boost::dynamic_pointer_cast<Route> (_current_stripable);
-
-	if (!r) {
-		return;
-	}
-
-
-	const uint32_t port_channel_post_pan = 2; // gtk2_ardour/mixbus_ports.h
-	boost::shared_ptr<ARDOUR::PluginInsert> plug = r->ch_post();
-
-	if (!plug) {
-		return;
-	}
-
-	boost::shared_ptr<AutomationControl> azimuth = boost::dynamic_pointer_cast<ARDOUR::AutomationControl> (plug->control (Evoral::Parameter (ARDOUR::PluginAutomation, 0, port_channel_post_pan)));
-
-	if (!azimuth) {
-		return;
-	}
-
-	azimuth->set_value (azimuth->interface_to_internal (azimuth->internal_to_interface (azimuth->get_value()) + (delta)), Controllable::NoGroup);
-#endif
-}
 
 void
 CC121::punch ()

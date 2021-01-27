@@ -1,21 +1,27 @@
 /*
-    Copyright (C) 1999 Paul Davis
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
-*/
+ * Copyright (C) 2005-2006 Taybin Rutkin <taybin@taybin.com>
+ * Copyright (C) 2005-2018 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2007 Doug McLain <doug@nostar.net>
+ * Copyright (C) 2008-2011 David Robillard <d@drobilla.net>
+ * Copyright (C) 2009-2012 Carl Hetherington <carl@carlh.net>
+ * Copyright (C) 2012-2017 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2015 Colin Fletcher <colin.m.fletcher@googlemail.com>
+ * Copyright (C) 2016-2017 Nick Mainsbridge <mainsbridge@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
 #ifndef __audio_clock_h__
 #define __audio_clock_h__
@@ -47,6 +53,7 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 		Timecode,
 		BBT,
 		MinSec,
+		Seconds,
 		Samples
 	};
 
@@ -66,7 +73,7 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 
 	void focus ();
 
-	void set (samplepos_t, bool force = false, ARDOUR::samplecnt_t offset = 0);
+	virtual void set (samplepos_t, bool force = false, ARDOUR::samplecnt_t offset = 0);
 	void set_from_playhead ();
 	void locate ();
 	void set_mode (Mode, bool noemit = false);
@@ -104,7 +111,8 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 
 	protected:
 	void render (Cairo::RefPtr<Cairo::Context> const&, cairo_rectangle_t*);
-	bool get_is_duration () const { return is_duration; } ;
+	bool get_is_duration () const { return is_duration; }
+	ARDOUR::samplecnt_t offset () const { return _offset; }
 
 	virtual void build_ops_menu ();
 	Gtk::Menu  *ops_menu;
@@ -131,6 +139,8 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 	bool             edit_is_negative;
 
 	samplepos_t       _limit_pos;
+
+	ARDOUR::samplecnt_t _offset;
 
 	Glib::RefPtr<Pango::Layout> _layout;
 
@@ -166,6 +176,8 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 		Bars,
 		Beats,
 		Ticks,
+		SS_Seconds,
+		SS_Deciseconds,
 		S_Samples,
 	};
 
@@ -208,6 +220,7 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 	void set_timecode (samplepos_t, bool);
 	void set_bbt (samplepos_t, ARDOUR::samplecnt_t, bool);
 	void set_minsec (samplepos_t, bool);
+	void set_seconds (samplepos_t, bool);
 	void set_samples (samplepos_t, bool);
 	void set_out_of_bounds (bool negative);
 
@@ -216,14 +229,15 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 	samplepos_t get_sample_step (Field, samplepos_t pos = 0, int dir = 1);
 
 	bool timecode_validate_edit (const std::string&);
-	bool bbt_validate_edit (const std::string&);
+	bool bbt_validate_edit (std::string&);
 	bool minsec_validate_edit (const std::string&);
 
 	samplepos_t samples_from_timecode_string (const std::string&) const;
 	samplepos_t samples_from_bbt_string (samplepos_t, const std::string&) const;
 	samplepos_t sample_duration_from_bbt_string (samplepos_t, const std::string&) const;
 	samplepos_t samples_from_minsec_string (const std::string&) const;
-	samplepos_t samples_from_audioframes_string (const std::string&) const;
+	samplepos_t samples_from_seconds_string (const std::string&) const;
+	samplepos_t samples_from_audiosamples_string (const std::string&) const;
 
 	void session_configuration_changed (std::string);
 	void session_property_changed (const PBD::PropertyChange&);
@@ -239,6 +253,7 @@ class AudioClock : public CairoWidget, public ARDOUR::SessionHandlePtr
 	ARDOUR::samplecnt_t parse_as_timecode_distance (const std::string&);
 	ARDOUR::samplecnt_t parse_as_minsec_distance (const std::string&);
 	ARDOUR::samplecnt_t parse_as_bbt_distance (const std::string&);
+	ARDOUR::samplecnt_t parse_as_seconds_distance (const std::string&);
 	ARDOUR::samplecnt_t parse_as_samples_distance (const std::string&);
 
 	void set_font (Pango::FontDescription);
