@@ -137,6 +137,7 @@ Editor::register_actions ()
 	ActionManager::register_action (editor_menu_actions, X_("RegionMenu"), _("Region"));
 	ActionManager::register_action (editor_menu_actions, X_("RegionMenuLayering"), _("Layering"));
 	ActionManager::register_action (editor_menu_actions, X_("RegionMenuPosition"), _("Position"));
+	ActionManager::register_action (editor_menu_actions, X_("RegionMenuMarkers"), _("Markers"));
 	ActionManager::register_action (editor_menu_actions, X_("RegionMenuEdit"), _("Edit"));
 	ActionManager::register_action (editor_menu_actions, X_("RegionMenuTrim"), _("Trim"));
 	ActionManager::register_action (editor_menu_actions, X_("RegionMenuGain"), _("Gain"));
@@ -161,7 +162,7 @@ Editor::register_actions ()
 	ActionManager::register_action (editor_menu_actions, X_("RegionEditOps"), _("Region operations"));
 	ActionManager::register_action (editor_menu_actions, X_("RegionGainMenu"), _("Gain"));
 	ActionManager::register_action (editor_menu_actions, X_("RulerMenu"), _("Rulers"));
-	ActionManager::register_action (editor_menu_actions, X_("SavedViewMenu"), _("Views"));
+	ActionManager::register_action (editor_menu_actions, X_("SavedViewMenu"), _("Editor Views"));
 	ActionManager::register_action (editor_menu_actions, X_("ScrollMenu"), _("Scroll"));
 	ActionManager::register_action (editor_menu_actions, X_("SecondaryClockMenu"), _("Secondary Clock"));
 	ActionManager::register_action (editor_menu_actions, X_("Select"), _("Select"));
@@ -174,11 +175,13 @@ Editor::register_actions ()
 	ActionManager::register_action (editor_menu_actions, X_("SyncMenu"), _("Sync"));
 	ActionManager::register_action (editor_menu_actions, X_("TempoMenu"), _("Tempo"));
 	ActionManager::register_action (editor_menu_actions, X_("Timecode"), _("Timecode fps"));
+	ActionManager::register_action (editor_menu_actions, X_("LayerDisplay"), _("Region Layers"));
 
 	act = ActionManager::register_action (editor_menu_actions, X_("TrackHeightMenu"), _("Height"));
 	ActionManager::stripable_selection_sensitive_actions.push_back (act);
 
 	ActionManager::register_action (editor_menu_actions, X_("TrackMenu"), _("Track"));
+	ActionManager::register_action (editor_menu_actions, X_("TrackPlaylistMenu"), _("Playlists"));
 	ActionManager::register_action (editor_menu_actions, X_("Tools"), _("Tools"));
 	ActionManager::register_action (editor_menu_actions, X_("View"), _("View"));
 	ActionManager::register_action (editor_menu_actions, X_("ZoomFocus"), _("Zoom Focus"));
@@ -259,6 +262,12 @@ Editor::register_actions ()
 
 	reg_sens (editor_actions, "toggle-all-existing-automation", _("Toggle All Existing Automation"), sigc::mem_fun (*this, &Editor::toggle_all_existing_automation));
 	reg_sens (editor_actions, "toggle-layer-display", _("Toggle Layer Display"), sigc::mem_fun (*this, &Editor::toggle_layer_display));
+
+	reg_sens (editor_actions, "layer-display-stacked", _("Stacked layer display"), sigc::mem_fun (*this, &Editor::layer_display_stacked));
+	reg_sens (editor_actions, "layer-display-overlaid", _("Overlaid layer display"), sigc::mem_fun (*this, &Editor::layer_display_overlaid));
+
+	act = reg_sens (editor_actions, "show-plist-selector", _("Show Playlist Selector"), sigc::mem_fun (*this, &Editor::launch_playlist_selector));
+	ActionManager::stripable_selection_sensitive_actions.push_back (act);
 
 	/* these "overlap" with Region/nudge-* and also Common/nudge-* but
 	 * provide a single editor-related action that will nudge a region,
@@ -446,12 +455,28 @@ Editor::register_actions ()
 
 	ActionManager::register_toggle_action (editor_actions, "toggle-stationary-playhead", _("Stationary Playhead"), (mem_fun(*this, &Editor::toggle_stationary_playhead)));
 
+	ActionManager::register_toggle_action (editor_actions, "show-touched-automation", _("Show Automation Lane on Touch"), (mem_fun(*this, &Editor::toggle_show_touched_automation)));
+
 	act = reg_sens (editor_actions, "insert-time", _("Insert Time"), (sigc::mem_fun(*this, &Editor::do_insert_time)));
 	ActionManager::track_selection_sensitive_actions.push_back (act);
 	act = ActionManager::register_action (editor_actions, "remove-time", _("Remove Time"), (mem_fun(*this, &Editor::do_remove_time)));
 	ActionManager::session_sensitive_actions.push_back (act);
 	ActionManager::track_selection_sensitive_actions.push_back (act);
 
+	act = reg_sens (editor_actions, "remove-gaps", _("Remove Gaps"), (sigc::mem_fun(*this, &Editor::do_remove_gaps)));
+	ActionManager::track_selection_sensitive_actions.push_back (act);
+	ActionManager::session_sensitive_actions.push_back (act);
+
+	/*global playlist actions */
+	ActionManager::register_action (editor_actions, "new-playlists-for-armed-tracks", _("New Playlist For Rec-Armed Tracks"), sigc::bind (sigc::mem_fun (*this, &Editor::new_playlists_for_armed_tracks), false));
+	ActionManager::register_action (editor_actions, "new-playlists-for-all-tracks", _("New Playlist For All Tracks"), sigc::bind (sigc::mem_fun (*this, &Editor::new_playlists_for_all_tracks), false));
+	act = ActionManager::register_action (editor_actions, "new-playlists-for-selected-tracks", _("New Playlist For Selected Tracks"), sigc::bind (sigc::mem_fun (*this, &Editor::new_playlists_for_selected_tracks), false));
+	ActionManager::stripable_selection_sensitive_actions.push_back (act);
+
+	ActionManager::register_action (editor_actions, "copy-playlists-for-armed-tracks", _("Copy Playlist For Rec-Armed Tracks"), sigc::bind (sigc::mem_fun (*this, &Editor::new_playlists_for_armed_tracks), true));
+	ActionManager::register_action (editor_actions, "copy-playlists-for-all-tracks", _("Copy Playlist For All Tracks"), sigc::bind (sigc::mem_fun (*this, &Editor::new_playlists_for_all_tracks), true));
+	act = ActionManager::register_action (editor_actions, "copy-playlists-for-selected-tracks", _("Copy Playlist For Selected Tracks"), sigc::bind (sigc::mem_fun (*this, &Editor::new_playlists_for_selected_tracks), true));
+	ActionManager::stripable_selection_sensitive_actions.push_back (act);
 
 	act = reg_sens (editor_actions, "toggle-track-active", _("Toggle Active"), (sigc::mem_fun(*this, &Editor::toggle_tracks_active)));
 	ActionManager::route_selection_sensitive_actions.push_back (act);
@@ -555,8 +580,8 @@ Editor::register_actions ()
 	ActionManager::register_action (editor_actions, "cycle-edit-point", _("Change Edit Point"), sigc::bind (sigc::mem_fun (*this, &Editor::cycle_edit_point), false));
 	ActionManager::register_action (editor_actions, "cycle-edit-point-with-marker", _("Change Edit Point Including Marker"), sigc::bind (sigc::mem_fun (*this, &Editor::cycle_edit_point), true));
 
-//	ActionManager::register_action (editor_actions, "set-edit-splice", _("Splice"), sigc::bind (sigc::mem_fun (*this, &Editor::set_edit_mode), Splice));
 	ActionManager::register_action (editor_actions, "set-edit-ripple", _("Ripple"), bind (mem_fun (*this, &Editor::set_edit_mode), Ripple));
+	ActionManager::register_action (editor_actions, "set-edit-ripple-all", _("Ripple All"), bind (mem_fun (*this, &Editor::set_edit_mode), RippleAll));
 	ActionManager::register_action (editor_actions, "set-edit-slide", _("Slide"), sigc::bind (sigc::mem_fun (*this, &Editor::set_edit_mode), Slide));
 	ActionManager::register_action (editor_actions, "set-edit-lock", S_("EditMode|Lock"), sigc::bind (sigc::mem_fun (*this, &Editor::set_edit_mode), Lock));
 	ActionManager::register_action (editor_actions, "cycle-edit-mode", _("Cycle Edit Mode"), sigc::mem_fun (*this, &Editor::cycle_edit_mode));
@@ -576,6 +601,50 @@ Editor::register_actions ()
 	ActionManager::register_action (editor_actions, X_("next-grid-choice"), _("Next Quantize Grid Choice"), sigc::mem_fun (*this, &Editor::next_grid_choice));
 	ActionManager::register_action (editor_actions, X_("prev-grid-choice"), _("Previous Quantize Grid Choice"), sigc::mem_fun (*this, &Editor::prev_grid_choice));
 
+	Glib::RefPtr<ActionGroup> length_actions = ActionManager::create_action_group (bindings, X_("DrawLength"));
+	RadioAction::Group draw_length_group;
+
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-thirtyseconds"),  grid_type_strings[(int)GridTypeBeatDiv32].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv32)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-twentyeighths"),  grid_type_strings[(int)GridTypeBeatDiv28].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv28)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-twentyfourths"),  grid_type_strings[(int)GridTypeBeatDiv24].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv24)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-twentieths"),     grid_type_strings[(int)GridTypeBeatDiv20].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv20)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-asixteenthbeat"), grid_type_strings[(int)GridTypeBeatDiv16].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv16)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-fourteenths"),    grid_type_strings[(int)GridTypeBeatDiv14].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv14)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-twelfths"),       grid_type_strings[(int)GridTypeBeatDiv12].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv12)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-tenths"),         grid_type_strings[(int)GridTypeBeatDiv10].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv10)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-eighths"),        grid_type_strings[(int)GridTypeBeatDiv8].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv8)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-sevenths"),       grid_type_strings[(int)GridTypeBeatDiv7].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv7)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-sixths"),         grid_type_strings[(int)GridTypeBeatDiv6].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv6)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-fifths"),         grid_type_strings[(int)GridTypeBeatDiv5].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv5)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-quarters"),       grid_type_strings[(int)GridTypeBeatDiv4].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv4)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-thirds"),         grid_type_strings[(int)GridTypeBeatDiv3].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv3)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-halves"),         grid_type_strings[(int)GridTypeBeatDiv2].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeatDiv2)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-beat"),           grid_type_strings[(int)GridTypeBeat].c_str(),      (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBeat)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-bar"),            grid_type_strings[(int)GridTypeBar].c_str(),       (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), Editing::GridTypeBar)));
+	ActionManager::register_radio_action (length_actions, draw_length_group, X_("draw-length-auto"),           _("Auto"),                                         (sigc::bind (sigc::mem_fun(*this, &Editor::draw_length_chosen), DRAW_LEN_AUTO)));
+
+	Glib::RefPtr<ActionGroup> velocity_actions = ActionManager::create_action_group (bindings, X_("DrawVelocity"));
+	RadioAction::Group draw_velocity_group;
+	ActionManager::register_radio_action (velocity_actions, draw_velocity_group, X_("draw-velocity-auto"),  _("Auto"), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_velocity_chosen), DRAW_VEL_AUTO)));
+	for (int i = 1; i <= 127; i++) {
+		char buf[64];
+		sprintf(buf, X_("draw-velocity-%d"), i);
+		char vel[64];
+		sprintf(vel, X_("%d"), i);
+		ActionManager::register_radio_action (velocity_actions, draw_velocity_group, buf, vel, (sigc::bind (sigc::mem_fun(*this, &Editor::draw_velocity_chosen), i)));
+	}
+	
+	Glib::RefPtr<ActionGroup> channel_actions = ActionManager::create_action_group (bindings, X_("DrawChannel"));
+	RadioAction::Group draw_channel_group;
+	ActionManager::register_radio_action (channel_actions, draw_channel_group, X_("draw-channel-auto"),  _("Auto"), (sigc::bind (sigc::mem_fun(*this, &Editor::draw_channel_chosen), DRAW_CHAN_AUTO)));
+	for (int i = 0; i <= 15; i++) {
+		char buf[64];
+		sprintf(buf, X_("draw-channel-%d"), i+1);
+		char ch[64];
+		sprintf(ch, X_("%d"), i+1);
+		ActionManager::register_radio_action (channel_actions, draw_channel_group, buf, ch, (sigc::bind (sigc::mem_fun(*this, &Editor::draw_channel_chosen), i)));
+	}
+	
 	Glib::RefPtr<ActionGroup> snap_actions = ActionManager::create_action_group (bindings, X_("Snap"));
 	RadioAction::Group grid_choice_group;
 
@@ -683,7 +752,7 @@ Editor::register_actions ()
 	act = reg_sens (editor_actions, X_("addExistingPTFiles"), _("Import PT session"), sigc::mem_fun (*this, &Editor::external_pt_dialog));
 	ActionManager::write_sensitive_actions.push_back (act);
 
-	act = reg_sens (editor_actions, X_("LoudnessAssistant"), _("Loudness Assistant..."), sigc::bind (sigc::mem_fun (*this, &Editor::measure_master_loudness), false));
+	act = reg_sens (editor_actions, X_("LoudnessAssistant"), _("Loudness Assistant..."), sigc::bind (sigc::mem_fun (*this, &Editor::loudness_assistant), false));
 	ActionManager::write_sensitive_actions.push_back (act);
 
 	/* the next two are duplicate items with different names for use in two different contexts */
@@ -721,10 +790,23 @@ Editor::register_midi_actions (Bindings* midi_bindings)
 	ActionManager::register_action (_midi_actions, X_("alt-delete"), _("Delete Selection (alternate)"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::delete_selection));
 
 	ActionManager::register_action (_midi_actions, X_("clear-selection"), _("Clear Note Selection"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::clear_note_selection));
+	ActionManager::register_action (_midi_actions, X_("invert-selection"), _("Invert Note Selection"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::invert_selection));
+	ActionManager::register_action (_midi_actions, X_("extend-selection"), _("Extend Note Selection"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::extend_selection));
+
+	/* Lengthen */
+
 	ActionManager::register_action (_midi_actions, X_("move-starts-earlier-fine"), _("Move Note Start Earlier (fine)"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_starts_earlier_fine));
 	ActionManager::register_action (_midi_actions, X_("move-starts-earlier"), _("Move Note Start Earlier"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_starts_earlier));
 	ActionManager::register_action (_midi_actions, X_("move-ends-later-fine"), _("Move Note Ends Later (fine)"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_ends_later_fine));
 	ActionManager::register_action (_midi_actions, X_("move-ends-later"), _("Move Note Ends Later"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_ends_later));
+
+	/* Shorten */
+
+	ActionManager::register_action (_midi_actions, X_("move-starts-later-fine"), _("Move Note Start Later (fine)"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_starts_later_fine));
+	ActionManager::register_action (_midi_actions, X_("move-starts-later"), _("Move Note Start Later"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_starts_later));
+	ActionManager::register_action (_midi_actions, X_("move-ends-earlier-fine"), _("Move Note Ends Earlier (fine)"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_ends_earlier_fine));
+	ActionManager::register_action (_midi_actions, X_("move-ends-earlier"), _("Move Note Ends Earlier"), sigc::bind (sigc::mem_fun (*this, &Editor::midi_action), &MidiRegionView::move_note_ends_earlier));
+
 
 	/* Alt versions allow bindings for both Tab and ISO_Left_Tab, if desired */
 
@@ -1015,15 +1097,142 @@ Editor::set_xjadeo_viewoption (int what)
 void
 Editor::edit_current_meter ()
 {
-	ARDOUR::MeterSection* ms = const_cast<ARDOUR::MeterSection*>(&_session->tempo_map().meter_section_at_sample (ARDOUR_UI::instance()->primary_clock->absolute_time()));
-	edit_meter_section (ms);
+	edit_meter_section (Temporal::TempoMap::use()->metric_at (ARDOUR_UI::instance()->primary_clock->absolute_time()).get_editable_meter());
 }
 
 void
 Editor::edit_current_tempo ()
 {
-	ARDOUR::TempoSection* ts = const_cast<ARDOUR::TempoSection*>(&_session->tempo_map().tempo_section_at_sample (ARDOUR_UI::instance()->primary_clock->absolute_time()));
-	edit_tempo_section (ts);
+	edit_tempo_section (Temporal::TempoMap::use()->metric_at (ARDOUR_UI::instance()->primary_clock->absolute_time()).get_editable_tempo());
+}
+
+RefPtr<RadioAction>
+Editor::draw_velocity_action (int v)
+{
+	const char* action = 0;
+	RefPtr<Action> act;
+
+	if (v==DRAW_VEL_AUTO) {
+		action = "draw-velocity-auto";
+	} else if (v>=1 && v<=127) {
+		char buf[64];
+		sprintf(buf, X_("draw-velocity-%d"), v);  //we don't allow drawing a velocity 0;  some synths use that as note-off
+		action = buf;
+	}
+
+	act = ActionManager::get_action (X_("DrawVelocity"), action);
+	if (act) {
+		RefPtr<RadioAction> ract = RefPtr<RadioAction>::cast_dynamic(act);
+		return ract;
+	} else  {
+		error << string_compose (_("programming error: %1"), "Editor::draw_velocity_action could not find action to match velocity.") << endmsg;
+		return RefPtr<RadioAction>();
+	}
+}
+
+RefPtr<RadioAction>
+Editor::draw_channel_action (int c)
+{
+	const char* action = 0;
+	RefPtr<Action> act;
+
+	if (c==DRAW_CHAN_AUTO) {
+		action = "draw-channel-auto";
+	} else if (c>=0 && c<=15) {
+		char buf[64];
+		sprintf(buf, X_("draw-channel-%d"), c+1);
+		action = buf;
+	}
+
+	act = ActionManager::get_action (X_("DrawChannel"), action);
+	if (act) {
+		RefPtr<RadioAction> ract = RefPtr<RadioAction>::cast_dynamic(act);
+		return ract;
+	} else  {
+		error << string_compose (_("programming error: %1"), "Editor::draw_channel_action could not find action to match channel.") << endmsg;
+		return RefPtr<RadioAction>();
+	}
+}
+
+RefPtr<RadioAction>
+Editor::draw_length_action (GridType type)
+{
+	const char* action = 0;
+	RefPtr<Action> act;
+
+	switch (type) {
+	case Editing::GridTypeBeatDiv32:
+		action = "draw-length-thirtyseconds";
+		break;
+	case Editing::GridTypeBeatDiv28:
+		action = "draw-length-twentyeighths";
+		break;
+	case Editing::GridTypeBeatDiv24:
+		action = "draw-length-twentyfourths";
+		break;
+	case Editing::GridTypeBeatDiv20:
+		action = "draw-length-twentieths";
+		break;
+	case Editing::GridTypeBeatDiv16:
+		action = "draw-length-asixteenthbeat";
+		break;
+	case Editing::GridTypeBeatDiv14:
+		action = "draw-length-fourteenths";
+		break;
+	case Editing::GridTypeBeatDiv12:
+		action = "draw-length-twelfths";
+		break;
+	case Editing::GridTypeBeatDiv10:
+		action = "draw-length-tenths";
+		break;
+	case Editing::GridTypeBeatDiv8:
+		action = "draw-length-eighths";
+		break;
+	case Editing::GridTypeBeatDiv7:
+		action = "draw-length-sevenths";
+		break;
+	case Editing::GridTypeBeatDiv6:
+		action = "draw-length-sixths";
+		break;
+	case Editing::GridTypeBeatDiv5:
+		action = "draw-length-fifths";
+		break;
+	case Editing::GridTypeBeatDiv4:
+		action = "draw-length-quarters";
+		break;
+	case Editing::GridTypeBeatDiv3:
+		action = "draw-length-thirds";
+		break;
+	case Editing::GridTypeBeatDiv2:
+		action = "draw-length-halves";
+		break;
+	case Editing::GridTypeBeat:
+		action = "draw-length-beat";
+		break;
+	case Editing::GridTypeBar:
+		action = "draw-length-bar";
+		break;
+	case Editing::GridTypeNone:
+		action = "draw-length-auto";
+		break;
+	case Editing::GridTypeTimecode:
+	case Editing::GridTypeCDFrame:
+	case Editing::GridTypeMinSec:
+	default:
+		fatal << string_compose (_("programming error: %1: %2"), "Editor: impossible grid length type", (int) type) << endmsg;
+		abort(); /*NOTREACHED*/
+	}
+
+	act = ActionManager::get_action (X_("DrawLength"), action);
+
+	if (act) {
+		RefPtr<RadioAction> ract = RefPtr<RadioAction>::cast_dynamic(act);
+		return ract;
+
+	} else  {
+		error << string_compose (_("programming error: %1"), "Editor::draw_length_chosen could not find action to match type.") << endmsg;
+		return RefPtr<RadioAction>();
+	}
 }
 
 RefPtr<RadioAction>
@@ -1215,6 +1424,51 @@ Editor::grid_type_chosen (GridType type)
 
 	if (ract && ract->get_active()) {
 		set_grid_to (type);
+	}
+}
+
+void
+Editor::draw_length_chosen (GridType type)
+{
+	/* this is driven by a toggle on a radio group, and so is invoked twice,
+	   once for the item that became inactive and once for the one that became
+	   active.
+	*/
+
+	RefPtr<RadioAction> ract = draw_length_action (type);
+
+	if (ract && ract->get_active()) {
+		set_draw_length_to (type);
+	}
+}
+
+void
+Editor::draw_velocity_chosen (int v)
+{
+	/* this is driven by a toggle on a radio group, and so is invoked twice,
+	   once for the item that became inactive and once for the one that became
+	   active.
+	*/
+
+	RefPtr<RadioAction> ract = draw_velocity_action (v);
+
+	if (ract && ract->get_active()) {
+		set_draw_velocity_to (v);
+	}
+}
+
+void
+Editor::draw_channel_chosen (int c)
+{
+	/* this is driven by a toggle on a radio group, and so is invoked twice,
+	   once for the item that became inactive and once for the one that became
+	   active.
+	*/
+
+	RefPtr<RadioAction> ract = draw_channel_action (c);
+
+	if (ract && ract->get_active()) {
+		set_draw_channel_to (c);
 	}
 }
 
@@ -1428,7 +1682,7 @@ Editor::parameter_changed (std::string p)
 		}
 	} else if (p == "show-group-tabs") {
 
-		bool const s = _session->config.get_show_group_tabs ();
+		bool const s = _session ? _session->config.get_show_group_tabs () : true;
 		if (s) {
 			_group_tabs->show ();
 		} else {
@@ -1620,6 +1874,7 @@ Editor::register_region_actions ()
 
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EnteredRegions), "quantize-region", _("Quantize..."), sigc::mem_fun (*this, &Editor::quantize_region));
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EnteredRegions), "legatize-region", _("Legatize"), sigc::bind(sigc::mem_fun (*this, &Editor::legatize_region), false));
+	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EnteredRegions), "deinterlace-midi", _("Deinterlace Into Layers"), sigc::mem_fun (*this, &Editor::deinterlace_selected_midi_regions));
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EnteredRegions), "transform-region", _("Transform..."), sigc::mem_fun (*this, &Editor::transform_region));
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EnteredRegions), "remove-overlap", _("Remove Overlap"), sigc::bind(sigc::mem_fun (*this, &Editor::legatize_region), true));
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EnteredRegions), "insert-patch-change", _("Insert Patch Change..."), sigc::bind (sigc::mem_fun (*this, &Editor::insert_patch_change), false));
@@ -1651,6 +1906,10 @@ Editor::register_region_actions ()
 
 	/* PART 3: actions that operate on the selection and also require the edit point location */
 
+	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EditPointRegions), "make-region-markers-cd", _("Convert Region Cue Markers to CD Markers"), sigc::bind (sigc::mem_fun (*this, &Editor::make_region_markers_global), true));
+	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EditPointRegions), "make-region-markers-global", _("Convert Region Cue Markers to Location Markers"), sigc::bind (sigc::mem_fun (*this, &Editor::make_region_markers_global), false));
+	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EditPointRegions), "add-region-cue-marker", _("Add Region Cue Marker"), sigc::mem_fun (*this, &Editor::add_region_marker));
+	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EditPointRegions), "clear-region-cue-markers", _("Clear Region Cue Markers"), sigc::mem_fun (*this, &Editor::clear_region_markers));
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EditPointRegions), "set-region-sync-position", _("Set Sync Position"), sigc::mem_fun (*this, &Editor::set_region_sync_position));
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EditPointRegions), "place-transient", _("Place Transient"), sigc::mem_fun (*this, &Editor::place_transient));
 	register_region_action (_region_actions, RegionActionTarget (SelectedRegions|EditPointRegions), "trim-front", _("Trim Start at Edit Point"), sigc::mem_fun (*this, &Editor::trim_region_front));

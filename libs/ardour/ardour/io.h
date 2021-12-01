@@ -120,11 +120,11 @@ public:
 	bool physically_connected () const;
 
 	samplecnt_t latency () const;
-	samplecnt_t public_latency () const;
 	samplecnt_t connected_latency (bool for_playback) const;
 
 	void set_private_port_latencies (samplecnt_t value, bool playback);
 	void set_public_port_latencies (samplecnt_t value, bool playback) const;
+	void set_public_port_latency_from_connections () const;
 
 	PortSet& ports() { return _ports; }
 	const PortSet& ports() const { return _ports; }
@@ -183,23 +183,10 @@ public:
 	 */
 	PBD::Signal1<bool, ChanCount, BoolCombiner> PortCountChanging;
 
-	static int disable_connecting ();
-	static int enable_connecting ();
-
 	static PBD::Signal1<void, ChanCount> PortCountChanged; // emitted when the number of ports changes
 
 	static std::string name_from_state (const XMLNode&);
 	static void set_name_in_state (XMLNode&, const std::string&);
-
-	/* we have to defer/order port connection. this is how we do it.
-	*/
-
-	static PBD::Signal0<int> ConnectingLegal;
-	static bool              connecting_legal;
-
-	XMLNode *pending_state_node;
-	int pending_state_node_version;
-	bool pending_state_node_in;
 
 	/* three utility functions - this just seems to be simplest place to put them */
 
@@ -213,7 +200,6 @@ public:
 protected:
 	virtual XMLNode& state ();
 
-	PortSet   _ports;
 	Direction _direction;
 	DataType _default_type;
 	bool     _active;
@@ -221,8 +207,10 @@ protected:
 
 private:
 	mutable Glib::Threads::Mutex io_lock;
-	int connecting_became_legal ();
-	PBD::ScopedConnection connection_legal_c;
+	PortSet   _ports;
+
+	void reestablish_port_subscriptions ();
+	PBD::ScopedConnectionList _port_connections;
 
 	boost::shared_ptr<Bundle> _bundle; ///< a bundle representing our ports
 
@@ -238,12 +226,11 @@ private:
 	int ensure_ports (ChanCount, bool clear, void *src);
 
 	void bundle_changed (Bundle::Change);
+	int set_port_state_2X (const XMLNode& node, int version, bool in);
 
 	int get_port_counts (const XMLNode& node, int version, ChanCount& n, boost::shared_ptr<Bundle>& c);
 	int get_port_counts_2X (const XMLNode& node, int version, ChanCount& n, boost::shared_ptr<Bundle>& c);
 	int create_ports (const XMLNode&, int version);
-	int make_connections (const XMLNode&, int, bool);
-	int make_connections_2X (const XMLNode &, int, bool);
 
 	boost::shared_ptr<Bundle> find_possible_bundle (const std::string &desired_name);
 
@@ -258,7 +245,7 @@ private:
 	void apply_pretty_name ();
 	std::string _pretty_name_prefix;
 	BufferSet _buffers;
-	void disconnect_check (boost::shared_ptr<ARDOUR::Port>, boost::shared_ptr<ARDOUR::Port>);
+	void connection_change (boost::shared_ptr<ARDOUR::Port>, boost::shared_ptr<ARDOUR::Port>);
 };
 
 } // namespace ARDOUR

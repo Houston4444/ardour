@@ -160,19 +160,18 @@ FaderPort8::FaderPort8 (Session& s)
 #endif
 
 	_input_bundle->add_channel (
-		inp->name(),
+		"",
 		ARDOUR::DataType::MIDI,
 		session->engine().make_port_name_non_relative (inp->name())
 		);
 
 	_output_bundle->add_channel (
-		outp->name(),
+		"",
 		ARDOUR::DataType::MIDI,
 		session->engine().make_port_name_non_relative (outp->name())
 		);
 
 	ARDOUR::AudioEngine::instance()->PortConnectedOrDisconnected.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::connection_handler, this, _2, _4), this);
-	ARDOUR::AudioEngine::instance()->PortPrettyNameChanged.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::ConnectionChange, this), this); /* notify GUI */
 	ARDOUR::AudioEngine::instance()->Stopped.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::engine_reset, this), this);
 	ARDOUR::Port::PortDrop.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&FaderPort8::engine_reset, this), this);
 
@@ -269,7 +268,7 @@ FaderPort8::periodic ()
 		_timecode = Timecode::timecode_format_time(TC);
 
 		char buf[16];
-		Timecode::BBT_Time BBT = session->tempo_map ().bbt_at_sample (session->transport_sample ());
+		Temporal::BBT_Time BBT = Temporal::TempoMap::use()->bbt_at (timepos_t (session->transport_sample ()));
 		snprintf (buf, sizeof (buf),
 				" %02" PRIu32 "|%02" PRIu32 "|%02" PRIu32 "|%02" PRIu32,
 				BBT.bars % 100, BBT.beats %100,
@@ -809,7 +808,6 @@ FaderPort8::set_state (const XMLNode& node, int version)
 {
 	DEBUG_TRACE (DEBUG::FaderPort8, "FaderPort8::set_state\n");
 	XMLNodeList nlist;
-	XMLNodeConstIterator niter;
 	XMLNode const* child;
 
 	if (ControlProtocol::set_state (node, version)) {
@@ -819,6 +817,7 @@ FaderPort8::set_state (const XMLNode& node, int version)
 	if ((child = node.child (X_("Input"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			DEBUG_TRACE (DEBUG::FaderPort8, "FaderPort8::set_state Input\n");
 			boost::shared_ptr<ARDOUR::Port>(_input_port)->set_state (*portnode, version);
 		}
@@ -827,6 +826,7 @@ FaderPort8::set_state (const XMLNode& node, int version)
 	if ((child = node.child (X_("Output"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			DEBUG_TRACE (DEBUG::FaderPort8, "FaderPort8::set_state Output\n");
 			boost::shared_ptr<ARDOUR::Port>(_output_port)->set_state (*portnode, version);
 		}
@@ -1718,7 +1718,7 @@ FaderPort8::select_strip (boost::weak_ptr<Stripable> ws)
 	if (s == first_selected_stripable () && !shift_mod ()) {
 		if (_ctrls.fader_mode () == ModeTrack) {
 			boost::shared_ptr<AutomationControl> ac = s->gain_control ();
-			ac->start_touch (ac->session().transport_sample());
+			ac->start_touch (timepos_t (ac->session().transport_sample()));
 			ac->set_value (ac->normal (), PBD::Controllable::UseGroup);
 		}
 		return;

@@ -37,6 +37,7 @@
 #include "pbd/error.h"
 #include "pbd/file_utils.h"
 #include "pbd/pthread_utils.h"
+#include "pbd/microseconds.h"
 #include "pbd/windows_timer_utils.h"
 #include "pbd/windows_mmcss.h"
 
@@ -636,8 +637,6 @@ PortAudioBackend::_start (bool for_latency_measurement)
 
 	_measure_latency = for_latency_measurement;
 
-	_port_change_flag = false;
-
 	if (_midi_driver_option == winmme_driver_name) {
 		_midiio->set_enabled(true);
 		//_midiio->set_port_changed_callback(midi_port_change, this);
@@ -674,7 +673,7 @@ PortAudioBackend::_start (bool for_latency_measurement)
 	_run = true;
 
 	engine.reconnect_ports ();
-	_port_change_flag = false;
+	g_atomic_int_set (&_port_change_flag, 0);
 
 	_dsp_calc.reset ();
 
@@ -736,6 +735,9 @@ PortAudioBackend::process_callback(const float* input,
                                    const PaStreamCallbackTimeInfo* timeInfo,
                                    PaStreamCallbackFlags statusFlags)
 {
+	PBD::WaitTimerRAII tr (dsp_stats[DeviceWait]);
+	PBD::TimerRAII tr2 (dsp_stats[RunLoop]);
+
 	_active = true;
 
 	_dsp_calc.set_start_timestamp_us (PBD::get_microseconds());
@@ -1487,7 +1489,10 @@ PortAudioBackend::blocking_process_thread ()
 
 		if (!_freewheel) {
 
-			switch (_pcmio->next_cycle (_samples_per_period)) {
+			dsp_stats[DeviceWait].start();
+			int r = _pcmio->next_cycle (_samples_per_period);
+			dsp_stats[DeviceWait].update();
+			switch (r) {
 			case 0: // OK
 				break;
 			case 1:
@@ -1531,6 +1536,7 @@ bool
 PortAudioBackend::blocking_process_main(const float* interleaved_input_data,
                                         float* interleaved_output_data)
 {
+	PBD::TimerRAII tr (dsp_stats[RunLoop]);
 	uint32_t i = 0;
 	int64_t min_elapsed_us = 1000000;
 	int64_t max_elapsed_us = 0;
@@ -1728,9 +1734,8 @@ PortAudioBackend::process_port_connection_changes ()
 	bool connections_changed = false;
 	bool ports_changed = false;
 	if (!pthread_mutex_trylock (&_port_callback_mutex)) {
-		if (_port_change_flag) {
+		if (g_atomic_int_compare_and_exchange (&_port_change_flag, 1, 0)) {
 			ports_changed = true;
-			_port_change_flag = false;
 		}
 		if (!_port_connection_queue.empty ()) {
 			connections_changed = true;

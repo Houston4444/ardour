@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020-2021 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,8 @@
 #include "ardour/plugin_insert.h"
 #include "ardour/session.h"
 #include "ardour/tempo.h"
+
+#include "pbd/abstract_ui.cc" // instantiate template
 
 #include "feedback.h"
 #include "transport.h"
@@ -97,6 +99,24 @@ struct PluginParamValueObserver {
 	}
 };
 
+FeedbackHelperUI::FeedbackHelperUI()
+	: AbstractUI<BaseUI::BaseRequestObject> ("WS_FeedbackHelperUI")
+{
+	char name[64];
+	snprintf (name, 64, "WS-%p", (void*)DEBUG_THREAD_SELF);
+ 	pthread_set_name (name);
+	set_event_loop_for_thread (this);
+}
+
+void
+FeedbackHelperUI::do_request (BaseUI::BaseRequestObject* req) {
+	if (req->type == CallSlot) {
+		call_slot (MISSING_INVALIDATOR, req->the_slot);
+	} else if (req->type == Quit) {
+		quit ();
+	}
+};
+
 int
 ArdourFeedback::start ()
 {
@@ -107,7 +127,15 @@ ArdourFeedback::start ()
 	Glib::RefPtr<Glib::TimeoutSource> periodic_timeout = Glib::TimeoutSource::create (POLL_INTERVAL_MS);
 	_periodic_connection                               = periodic_timeout->connect (sigc::mem_fun (*this,
                                                                          &ArdourFeedback::poll));
-	periodic_timeout->attach (main_loop ()->get_context ());
+
+	// server must be started before feedback otherwise
+	// read_blocks_event_loop() will always return false
+	if (server ().read_blocks_event_loop ()) {
+		_helper.run();
+		periodic_timeout->attach (_helper.main_loop()->get_context ());
+	} else {
+		periodic_timeout->attach (main_loop ()->get_context ());
+	}
 
 	return 0;
 }
@@ -115,6 +143,10 @@ ArdourFeedback::start ()
 int
 ArdourFeedback::stop ()
 {
+	if (server ().read_blocks_event_loop ()) {
+		_helper.quit();
+	}
+
 	_periodic_connection.disconnect ();
 	_transport_connections.drop_connections ();
 	
@@ -164,6 +196,16 @@ ArdourFeedback::update_all (std::string node, uint32_t strip_id, uint32_t plugin
 	server ().update_all_clients (NodeState (node, addr, val), false);
 }
 
+PBD::EventLoop*
+ArdourFeedback::event_loop () const
+{
+	if (server ().read_blocks_event_loop ()) {
+		return static_cast<PBD::EventLoop*> (&_helper);
+	} else {
+		return SurfaceComponent::event_loop ();
+	}
+}
+
 bool
 ArdourFeedback::poll () const
 {
@@ -187,8 +229,8 @@ ArdourFeedback::observe_transport ()
 	                                   boost::bind<void> (TransportObserver (), this), event_loop ());
 	sess.RecordStateChanged.connect (_transport_connections, MISSING_INVALIDATOR,
 	                                 boost::bind<void> (RecordStateObserver (), this), event_loop ());
-	sess.tempo_map ().PropertyChanged.connect (_transport_connections, MISSING_INVALIDATOR,
-	                                 boost::bind<void> (TempoObserver (), this), event_loop ());
+
+	Temporal::TempoMap::MapChanged.connect (_transport_connections, MISSING_INVALIDATOR, boost::bind<void> (TempoObserver (), this), event_loop ());
 }
 
 void
@@ -210,7 +252,7 @@ ArdourFeedback::observe_mixer ()
 
 		stripable->mute_control ()->Changed.connect (*it->second, MISSING_INVALIDATOR,
 		                                         boost::bind<void> (StripMuteObserver (), this, strip_id), event_loop ());
-	
+
 		observe_strip_plugins (strip_id, strip->plugins ());
 	}
 }

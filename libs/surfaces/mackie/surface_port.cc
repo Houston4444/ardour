@@ -147,6 +147,7 @@ SurfacePort::set_state (const XMLNode& node, int version)
 	if ((child = node.child (X_("Input"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			_async_in->set_state (*portnode, version);
 		}
 	}
@@ -154,6 +155,7 @@ SurfacePort::set_state (const XMLNode& node, int version)
 	if ((child = node.child (X_("Output"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			_async_out->set_state (*portnode, version);
 		}
 	}
@@ -166,6 +168,7 @@ SurfacePort::reconnect ()
 {
 	_async_out->reconnect ();
 	_async_in->reconnect ();
+
 }
 
 std::string
@@ -195,7 +198,12 @@ SurfacePort::write (const MidiByteArray & mba)
 		return 0;
 	}
 
-	DEBUG_TRACE (DEBUG::MackieControl, string_compose ("port %1 write %2\n", output_port().name(), mba));
+#ifndef NDEBUG
+	/* skip meter output since it makes too much output for normal use */
+	if (mba[0] != 0xd0 && mba[0] != 0xd1) {
+		DEBUG_TRACE (DEBUG::MackieControl, string_compose ("port %1 write %2\n", output_port().name(), mba));
+	}
+#endif
 
 	if (mba[0] != 0xf0 && mba.size() > 3) {
 		std::cerr << "TOO LONG WRITE: " << mba << std::endl;

@@ -25,6 +25,23 @@
 #include "ardour/libardour_visibility.h"
 #include "ardour/vestige/vestige.h"
 
+#ifdef MACVST_SUPPORT
+#include <Carbon/Carbon.h>
+
+/* fix up stupid apple macros */
+#undef check
+#undef require
+#undef verify
+
+#ifdef YES
+#undef YES
+#endif
+#ifdef NO
+#undef NO
+#endif
+
+#endif
+
 struct LIBARDOUR_API _VSTKey
 {
 	/** virtual-key code, or 0 if this _VSTFXKey is a `character' key */
@@ -35,43 +52,21 @@ struct LIBARDOUR_API _VSTKey
 
 typedef struct _VSTKey VSTKey;
 
-struct LIBARDOUR_API _VSTInfo
-{
-	char  *name;
-	char  *creator;
-	int    UniqueID;
-	char  *Category;
-
-	int    numInputs;
-	int    numOutputs;
-	int    numParams;
-
-	int    wantMidi;
-	int    wantEvents;
-	int    hasEditor;
-	int    isInstrument; // still unused
-	int    canProcessReplacing;
-
-	char** ParamNames;
-	char** ParamLabels;
-};
-
-typedef struct _VSTInfo VSTInfo;
-
 typedef AEffect * (* main_entry_t) (audioMasterCallback);
 
 struct LIBARDOUR_API _VSTHandle
 {
-	void*        dll;
+#ifdef MACVST_SUPPORT
+	CFBundleRef    bundleRef;
+	CFBundleRefNum res_file_id;
+#else
+	void* dll;
+#endif
+
 	char*        name;
 	char*        path;
-
 	main_entry_t main_entry;
-
 	int          plugincnt;
-#ifdef MACVST_SUPPORT
-	int32_t      res_file_id;
-#endif
 };
 
 typedef struct _VSTHandle VSTHandle;

@@ -28,7 +28,6 @@
 
 #include "pbd/error.h"
 #include "pbd/compose.h"
-#include "pbd/stacktrace.h"
 #include "pbd/types_convert.h"
 #include "pbd/xml++.h"
 
@@ -136,7 +135,7 @@ MIDIControllable::set_controllable (boost::shared_ptr<PBD::Controllable> c)
 		return;
 	}
 
-	controllable_death_connections.drop_connections ();
+	controllable_death_connection.disconnect ();
 
 	if (c) {
 		_controllable = c;
@@ -149,9 +148,7 @@ MIDIControllable::set_controllable (boost::shared_ptr<PBD::Controllable> c)
 	last_incoming = 256;
 
 	if (c) {
-		c->DropReferences.connect (controllable_death_connections, MISSING_INVALIDATOR,
-						 boost::bind (&MIDIControllable::drop_controllable, this),
-						 MidiControlUI::instance());
+		c->DropReferences.connect_same_thread (controllable_death_connection, boost::bind (&MIDIControllable::drop_controllable, this));
 	}
 }
 
@@ -690,7 +687,7 @@ MIDIControllable::write_feedback (MIDI::byte* buf, int32_t& bufsize, bool /*forc
 		if (bufsize < 13) {
 			return buf;
 		}
-		int rpn_val = (int) lrintf (val * 16384.0);
+		int rpn_val = (int) lrintf (val * 16383.0);
 		if (last_value == rpn_val) {
 			return buf;
 		}
@@ -714,7 +711,7 @@ MIDIControllable::write_feedback (MIDI::byte* buf, int32_t& bufsize, bool /*forc
 	}
 
 	if (control_nrpn >= 0) {
-		int rpn_val = (int) lrintf (val * 16384.0);
+		int rpn_val = (int) lrintf (val * 16383.0);
 		if (last_value == rpn_val) {
 			return buf;
 		}

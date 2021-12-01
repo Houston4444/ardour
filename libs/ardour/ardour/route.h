@@ -41,6 +41,7 @@
 #include "pbd/stateful.h"
 #include "pbd/controllable.h"
 #include "pbd/destructible.h"
+#include "pbd/g_atomic_compat.h"
 
 #include "ardour/ardour.h"
 #include "ardour/gain_control.h"
@@ -69,6 +70,7 @@ class PatchChangeGridDialog;
 namespace ARDOUR {
 
 class Amp;
+class BeatBox;
 class DelayLine;
 class Delivery;
 class DiskReader;
@@ -93,6 +95,7 @@ class VCA;
 class SoloIsolateControl;
 class PhaseControl;
 class MonitorControl;
+class TriggerBox;
 
 class LIBARDOUR_API Route : public Stripable,
                             public GraphNode,
@@ -163,7 +166,7 @@ public:
 
 	/* end of vfunc-based API */
 
-	void shift (samplepos_t, samplecnt_t);
+	void shift (timepos_t const &, timecnt_t const &);
 
 	/* controls use set_solo() to modify this route's solo state */
 
@@ -182,6 +185,9 @@ public:
 	}
 	bool is_safe () const {
 		return _solo_safe_control->get_value();
+	}
+	bool can_monitor () const {
+		return can_solo() || is_foldbackbus ();
 	}
 	void enable_monitor_send ();
 
@@ -207,6 +213,7 @@ public:
 	boost::shared_ptr<PeakMeter>       peak_meter()       { return _meter; }
 	boost::shared_ptr<const PeakMeter> peak_meter() const { return _meter; }
 	boost::shared_ptr<PeakMeter> shared_peak_meter() const { return _meter; }
+	boost::shared_ptr<TriggerBox> triggerbox() const { return _triggerbox; }
 
 	void flush_processors ();
 
@@ -345,10 +352,10 @@ public:
 	bool remove_sidechain (boost::shared_ptr<Processor> proc) { return add_remove_sidechain (proc, false); }
 
 	samplecnt_t  update_signal_latency (bool apply_to_delayline = false, bool* delayline_update_needed = NULL);
-	virtual void apply_latency_compensation ();
+	void apply_latency_compensation ();
 
 	samplecnt_t  set_private_port_latencies (bool playback) const;
-	void         set_public_port_latencies (samplecnt_t, bool playback) const;
+	void         set_public_port_latencies (samplecnt_t, bool playback, bool with_latcomp) const;
 
 	samplecnt_t signal_latency() const { return _signal_latency; }
 	samplecnt_t playback_latency (bool incl_downstream = false) const;
@@ -634,7 +641,9 @@ protected:
 	boost::shared_ptr<Pannable>         _pannable;
 	boost::shared_ptr<DiskReader>       _disk_reader;
 	boost::shared_ptr<DiskWriter>       _disk_writer;
-
+#ifdef HAVE_BEATBOX
+	boost::shared_ptr<BeatBox>       _beatbox;
+#endif
 	boost::shared_ptr<MonitorControl>   _monitoring_control;
 
 	DiskIOPoint _disk_io_point;
@@ -646,10 +655,10 @@ protected:
 		EmitRtProcessorChange = 0x04
 	};
 
-	ProcessorList  _pending_processor_order;
-	gint           _pending_process_reorder; // atomic
-	gint           _pending_listen_change; // atomic
-	gint           _pending_signals; // atomic
+	ProcessorList     _pending_processor_order;
+	GATOMIC_QUAL gint _pending_process_reorder; // atomic
+	GATOMIC_QUAL gint _pending_listen_change; // atomic
+	GATOMIC_QUAL gint _pending_signals; // atomic
 
 	MeterPoint     _meter_point;
 	MeterPoint     _pending_meter_point;
@@ -696,6 +705,7 @@ protected:
 	boost::shared_ptr<Amp>               _volume;
 	boost::shared_ptr<PeakMeter>         _meter;
 	boost::shared_ptr<PolarityProcessor> _polarity;
+	boost::shared_ptr<TriggerBox>        _triggerbox;
 
 	bool _volume_applies_to_output;
 
@@ -789,6 +799,7 @@ private:
 	bool    _in_configure_processors;
 	bool    _initial_io_setup;
 	bool    _in_sidechain_setup;
+	gain_t  _monitor_gain;
 
 	/** true if we've made a note of a custom meter position in these variables */
 	bool _custom_meter_position_noted;

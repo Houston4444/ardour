@@ -30,9 +30,6 @@ def build(bld):
     VERSION = "%s.%s" % (bld.env['MAJOR'], bld.env['MINOR'])
     if not bld.is_defined('HAVE_READLINE'):
             return;
-    # no wine
-    if bld.is_defined('WINDOWS_VST_SUPPORT') and bld.env['build_target'] != 'mingw':
-        return
 
     # commandline luasession wrapper script
     if bld.env['build_target'] != 'mingw':
@@ -77,9 +74,8 @@ def build(bld):
         obj.uselib += ' AUDIOUNITS OSX'
         obj.use    += ' libappleutility'
 
-    #if bld.env['build_target'] == 'mingw':
-    #    if bld.env['DEBUG'] == False:
-    #        obj.linkflags = ['-mwindows']
+    if bld.env['build_target'] == 'mingw':
+        obj.linkflags = ['-mwindows']
 
     if bld.is_defined('NEED_INTL'):
         obj.linkflags = ' -lintl'

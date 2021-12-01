@@ -22,6 +22,8 @@
 
 #include <boost/optional.hpp>
 
+#include "pbd/g_atomic_compat.h"
+
 #include "evoral/Curve.h"
 
 #include "ardour/disk_io.h"
@@ -39,7 +41,7 @@ template <typename T> class MidiRingBuffer;
 class LIBARDOUR_API DiskReader : public DiskIOProcessor
 {
 public:
-	DiskReader (Session&, std::string const& name, DiskIOProcessor::Flag f = DiskIOProcessor::Flag (0));
+	DiskReader (Session&, Track&, std::string const& name, Temporal::TimeDomain, DiskIOProcessor::Flag f = DiskIOProcessor::Flag (0));
 	~DiskReader ();
 
 	bool set_name (std::string const& str);
@@ -71,7 +73,7 @@ public:
 
 	float buffer_load () const;
 
-	void move_processor_automation (boost::weak_ptr<Processor>, std::list<Evoral::RangeMove<samplepos_t> > const&);
+	void move_processor_automation (boost::weak_ptr<Processor>, std::list<Temporal::RangeMove> const&);
 
 	/* called by the Butler in a non-realtime context as part of its normal
 	 * buffer refill loop (not due to transport-mechanism requests like
@@ -149,7 +151,7 @@ protected:
 	void resolve_tracker (Evoral::EventSink<samplepos_t>& buffer, samplepos_t time);
 
 	int  use_playlist (DataType, boost::shared_ptr<Playlist>);
-	void playlist_ranges_moved (std::list<Evoral::RangeMove<samplepos_t> > const&, bool);
+	void playlist_ranges_moved (std::list<Temporal::RangeMove> const&, bool);
 
 	int add_channel_to (boost::shared_ptr<ChannelList>, uint32_t how_many);
 
@@ -196,10 +198,11 @@ private:
 	samplepos_t    overwrite_sample;
 	sampleoffset_t overwrite_offset;
 	samplepos_t    new_file_sample;
-	mutable gint   _pending_overwrite;
 	bool           run_must_resolve;
 	IOChange       input_change_pending;
 	samplepos_t    file_sample[DataType::num_types];
+
+	mutable GATOMIC_QUAL gint _pending_overwrite;
 
 	DeclickAmp            _declick_amp;
 	sampleoffset_t        _declick_offs;
@@ -209,7 +212,8 @@ private:
 	boost::optional<bool> _last_read_loop;
 
 	static samplecnt_t _chunk_samples;
-	static gint        _no_disk_output;
+
+	static GATOMIC_QUAL gint _no_disk_output;
 
 	static Declicker   loop_declick_in;
 	static Declicker   loop_declick_out;

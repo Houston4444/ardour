@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020-2021 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -52,6 +52,8 @@ using namespace ArdourSurface;
 WebsocketsServer::WebsocketsServer (ArdourSurface::ArdourWebsockets& surface)
     : SurfaceComponent (surface)
     , _lws_context (0)
+    , _fd_callbacks (false)
+    , _g_source (0)
 {
 	/* keep references to all config for libwebsockets 2 */
 	lws_protocols proto;
@@ -118,37 +120,52 @@ int
 WebsocketsServer::start ()
 {
 #ifndef NDEBUG
-	lws_set_log_level (LLL_ERR | LLL_WARN | LLL_DEBUG, 0);
+	lws_set_log_level (LLL_ERR | LLL_WARN /*| LLL_DEBUG*/, 0);
 #endif
 
 	if (_lws_context) {
 		stop ();
 	}
 
+	/* Event loop integration method depends on how libwebsockets is configured
+	 * for Ardour build environment and how libwebsockets is compiled for the
+	 * system running Ardour. */
+
 #ifdef LWS_WITH_GLIB
 	void *foreign_loops[1];
 	foreign_loops[0] = main_loop ()->gobj ();
 	_lws_info.foreign_loops = foreign_loops;
 	_lws_info.options = LWS_SERVER_OPTION_GLIB;
-#endif
-
 	_lws_context = lws_create_context (&_lws_info);
-
-	if (!_lws_context) {
-		PBD::error << "ArdourWebsockets: could not create the libwebsockets context" << endmsg;
-		return -1;
-	}
-
-#ifndef LWS_WITH_GLIB
-	/* sometimes LWS_WITH_EXTERNAL_POLL is missing from lws_config.h
-	   but the feature is still available, hence this runtime check */
-	if (_fd_ctx.empty ()) {
-		PBD::error << "ArdourWebsockets: check your libwebsockets was compiled"
-		              " with LWS_WITH_GLIB or LWS_WITH_EXTERNAL_POLL enabled"
-		           << endmsg;
-		return -1;
-	}
 #endif
+
+	if (_lws_context) {
+		/* Keep in mind _lws_context can be != 0 even when the user's
+		   libwebsockets does not support LWS_SERVER_OPTION_GLIB !
+		   This is by libwebsockets design */ 
+		PBD::info << "ArdourWebsockets: using event loop integration method 1" << endmsg;
+	} else {
+		/* More compatible approach */
+		_fd_callbacks = true;
+		_lws_info.options = 0;
+		_lws_context = lws_create_context (&_lws_info);
+
+		if (!_lws_context) {
+			PBD::error << "ArdourWebsockets: could not create the libwebsockets context" << endmsg;
+			return -1;
+		}
+
+		if (!_fd_ctx.empty ()) {
+			// LWS_CALLBACK_ADD_POLL_FD was called, LWS_WITH_EXTERNAL_POLL is available
+			PBD::info << "ArdourWebsockets: using event loop integration method 2" << endmsg;
+		} else {
+			// Neither LWS_WITH_EXTERNAL_POLL or LWS_WITH_GLIB are available
+			PBD::info << "ArdourWebsockets: using event loop integration method 3" << endmsg;
+			_g_source = g_idle_source_new();
+			g_source_set_callback (_g_source, WebsocketsServer::glib_idle_callback, _lws_context, 0);
+			g_source_attach (_g_source, g_main_loop_get_context (main_loop ()->gobj ()));
+		}
+	}
 
 	PBD::info << "ArdourWebsockets: listening on: http://"
 	          << lws_canonical_hostname (_lws_context)
@@ -163,17 +180,22 @@ WebsocketsServer::start ()
 int
 WebsocketsServer::stop ()
 {
-#ifndef LWS_WITH_GLIB
-	for (LwsPollFdGlibSourceMap::iterator it = _fd_ctx.begin (); it != _fd_ctx.end (); ++it) {
-		it->second.rg_iosrc->destroy ();
+	if (!_fd_ctx.empty ()) { // Method 2
+		for (LwsPollFdGlibSourceMap::iterator it = _fd_ctx.begin (); it != _fd_ctx.end (); ++it) {
+			it->second.rg_iosrc->destroy ();
 
-		if (it->second.wg_iosrc) {
-			it->second.wg_iosrc->destroy ();
+			if (it->second.wg_iosrc) {
+				it->second.wg_iosrc->destroy ();
+			}
 		}
+
+		_fd_ctx.clear ();
 	}
 
-	_fd_ctx.clear ();
-#endif
+	if (_g_source) { // Method 3
+		g_source_destroy (_g_source);
+		lws_cancel_service (_lws_context);
+	}
 
 	if (_lws_context) {
 		lws_context_destroy (_lws_context);
@@ -195,7 +217,7 @@ WebsocketsServer::update_client (Client wsi, const NodeState& state, bool force)
 		/* write to client only if state was updated */
 		it->second.update_state (state);
 		it->second.output_buf ().push_back (NodeStateMessage (state));
-		lws_callback_on_writable (wsi);
+		request_write (wsi);
 	}
 }
 
@@ -235,7 +257,7 @@ WebsocketsServer::recv_client (Client wsi, void* buf, size_t len)
 		return 1;
 	}
 
-#ifndef NDEBUG
+#ifdef PRINT_TRAFFIC
 	std::cerr << "RX " << msg.state ().debug_str () << std::endl;
 #endif
 
@@ -274,7 +296,7 @@ WebsocketsServer::write_client (Client wsi)
 	int len = msg.serialize (out_buf + LWS_PRE, 1024 - LWS_PRE);
 
 	if (len > 0) {
-#ifndef NDEBUG
+#ifdef PRINT_TRAFFIC
 		std::cerr << "TX " << msg.state ().debug_str () << std::endl;
 #endif
 		if (lws_write (wsi, out_buf + LWS_PRE, len, LWS_WRITE_TEXT) != len) {
@@ -285,7 +307,7 @@ WebsocketsServer::write_client (Client wsi)
 	}
 
 	if (!pending.empty ()) {
-		lws_callback_on_writable (wsi);
+		request_write (wsi);
 	}
 
 	return 0;
@@ -337,7 +359,7 @@ WebsocketsServer::send_availsurf_hdr (Client wsi)
 	}
 #endif
 
-	lws_callback_on_writable (wsi);
+	request_write (wsi);
 
 	return 0;
 }
@@ -368,6 +390,17 @@ WebsocketsServer::send_availsurf_body (Client wsi)
 	}
 
 	return -1;	// end connection
+}
+
+void
+WebsocketsServer::request_write (Client wsi)
+{
+	lws_callback_on_writable (wsi);
+
+	if (read_blocks_event_loop ()) {
+		// cancel lws_service() in the idle callback to write pending data asap
+		lws_cancel_service (_lws_context);
+	}
 }
 
 int
@@ -405,19 +438,30 @@ WebsocketsServer::lws_callback (struct lws* wsi, enum lws_callback_reasons reaso
 			rc = server->send_availsurf_body (wsi);
 			break;
 
-#ifndef LWS_WITH_GLIB
+		/* fd callbacks must be skipped for integration method 1 */
 		case LWS_CALLBACK_ADD_POLL_FD:
-			rc = server->add_poll_fd (static_cast<struct lws_pollargs*> (in));
+			if (server->fd_callbacks()) {
+				rc = server->add_poll_fd (static_cast<struct lws_pollargs*> (in));
+			} else {
+				rc = 0;
+			}
 			break;
 
 		case LWS_CALLBACK_CHANGE_MODE_POLL_FD:
-			rc = server->mod_poll_fd (static_cast<struct lws_pollargs*> (in));
+			if (server->fd_callbacks()) {
+				rc = server->mod_poll_fd (static_cast<struct lws_pollargs*> (in));
+			} else {
+				rc = 0;
+			}
 			break;
 
 		case LWS_CALLBACK_DEL_POLL_FD:
-			rc = server->del_poll_fd (static_cast<struct lws_pollargs*> (in));
+			if (server->fd_callbacks()) {
+				rc = server->del_poll_fd (static_cast<struct lws_pollargs*> (in));
+			} else {
+				rc = 0;
+			}
 			break;
-#endif // LWS_WITH_GLIB
 
 #if LWS_LIBRARY_VERSION_NUM >= 2001000
 		// lws_callback_http_dummy is not available on lws < 2.1.0
@@ -453,7 +497,6 @@ WebsocketsServer::lws_callback (struct lws* wsi, enum lws_callback_reasons reaso
 	return rc;
 }
 
-#ifndef LWS_WITH_GLIB
 int
 WebsocketsServer::add_poll_fd (struct lws_pollargs* pa)
 {
@@ -496,7 +539,7 @@ WebsocketsServer::mod_poll_fd (struct lws_pollargs* pa)
 	it->second.lws_pfd.events = pa->events;
 
 	if (pa->events & LWS_POLLOUT) {
-		/* libwebsockets wants to write but cannot find a way to update
+		/* libwebsockets needs to write but cannot find a way to update
 		 * an existing glib::iosource event flags using glibmm alone,
 		 * create another iosource and set to IO_OUT, it will be destroyed
 		 * after clearing POLLOUT (see 'else' body below)
@@ -597,4 +640,11 @@ WebsocketsServer::ioc_to_events (IOCondition ioc)
 
 	return events;
 }
-#endif // LWS_WITH_GLIB
+
+gboolean
+WebsocketsServer::glib_idle_callback (void *data)
+{
+	struct lws_context *lws_ctx = static_cast<struct lws_context *>(data);
+	lws_service (lws_ctx, 0);
+	return TRUE;
+}

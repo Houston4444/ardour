@@ -82,6 +82,7 @@
 #include "video_timeline.h"
 
 #include "widgets/ardour_button.h"
+#include "widgets/ardour_dropdown.h"
 #include "widgets/ardour_spacer.h"
 
 #include "add_route_dialog.h"
@@ -103,6 +104,7 @@
 #include "big_clock_window.h"
 #include "big_transport_window.h"
 #include "bundle_manager.h"
+#include "dsp_stats_window.h"
 #include "engine_dialog.h"
 #include "export_video_dialog.h"
 #include "global_port_matrix.h"
@@ -110,7 +112,9 @@
 #include "keyeditor.h"
 #include "location_ui.h"
 #include "lua_script_manager.h"
+#include "luawindow.h"
 #include "plugin_dspload_window.h"
+#include "plugin_manager_ui.h"
 #include "rc_option_editor.h"
 #include "route_dialogs.h"
 #include "route_params_ui.h"
@@ -130,6 +134,7 @@ class ExportVideoDialog;
 class KeyEditor;
 class LocationUIWindow;
 class LuaScriptManager;
+class LuaWindow;
 class RCOptionEditor;
 class RouteParams_UI;
 class SessionOptionEditor;
@@ -137,6 +142,8 @@ class SpeakerDialog;
 class GlobalPortMatrixWindow;
 class IdleOMeter;
 class PluginDSPLoadWindow;
+class PluginManagerUI;
+class DspStatisticsWindow;
 class TransportMastersWindow;
 class VirtualKeyboardWindow;
 #endif
@@ -149,6 +156,7 @@ class DuplicateRouteDialog;
 class MainClock;
 class Mixer_UI;
 class PublicEditor;
+class RecorderUI;
 class SaveAsDialog;
 class SaveTemplateDialog;
 class SessionDialog;
@@ -252,6 +260,7 @@ public:
 	void toggle_editing_space();
 	void toggle_mixer_space();
 	void toggle_keep_tearoffs();
+	void show_plugin_manager();
 
 	void reset_focus (Gtk::Widget*);
 
@@ -262,7 +271,7 @@ public:
 	 *
 	 *  (either RapidScreenUpdate || SuperRapidScreenUpdate - user-config)
 	 */
-	static sigc::signal<void, samplepos_t> Clock;
+	static sigc::signal<void, Temporal::timepos_t> Clock;
 
 	static void close_all_dialogs () { CloseAllDialogs(); }
 	static sigc::signal<void> CloseAllDialogs;
@@ -271,6 +280,7 @@ public:
 	XMLNode* editor_settings() const;
 	XMLNode* preferences_settings() const;
 	XMLNode* mixer_settings () const;
+	XMLNode* recorder_settings () const;
 	XMLNode* keyboard_settings () const;
 	XMLNode* tearoff_settings (const char*) const;
 
@@ -313,11 +323,11 @@ public:
 	void export_video (bool range = false);
 
 	void session_add_audio_route (bool, int32_t, int32_t, ARDOUR::TrackMode, ARDOUR::RouteGroup *,
-	                              uint32_t, std::string const &, bool, ARDOUR::PresentationInfo::order_t order);
+	                              uint32_t, std::string const &, bool, ARDOUR::PresentationInfo::order_t order, bool with_triggers);
 
 	void session_add_midi_route (bool, ARDOUR::RouteGroup *, uint32_t, std::string const &, bool,
 	                             ARDOUR::PluginInfoPtr, ARDOUR::Plugin::PresetRecord*,
-	                             ARDOUR::PresentationInfo::order_t order);
+	                             ARDOUR::PresentationInfo::order_t order, bool with_triggers);
 
 	void session_add_foldback_bus (int32_t, uint32_t, std::string const &);
 
@@ -333,6 +343,7 @@ public:
 
 	void show_ui_prefs ();
 	void show_mixer_prefs ();
+	void show_plugin_prefs ();
 
 	bool check_audioengine(Gtk::Window&);
 
@@ -408,6 +419,7 @@ private:
 	Gtk::Notebook _tabs;
 	PublicEditor*  editor;
 	Mixer_UI*      mixer;
+	RecorderUI*    recorder;
 	Gtk::Tooltips _tooltips;
 	NSM_Client*    nsm;
 	bool          _was_dirty;
@@ -425,7 +437,6 @@ private:
 	void tabbable_state_change (ArdourWidgets::Tabbable&);
 
 	void toggle_meterbridge ();
-	void toggle_luawindow ();
 
 	int  setup_windows ();
 	void setup_transport ();
@@ -502,13 +513,9 @@ private:
 	ArdourWidgets::ArdourButton layered_button;
 
 	ArdourWidgets::ArdourVSpacer recpunch_spacer;
-	ArdourWidgets::ArdourVSpacer monitoring_spacer;
 	ArdourWidgets::ArdourVSpacer latency_spacer;
 	ArdourWidgets::ArdourVSpacer monitor_spacer;
-
-	ArdourWidgets::ArdourButton monitor_in_button;
-	ArdourWidgets::ArdourButton monitor_disk_button;
-	ArdourWidgets::ArdourButton auto_input_button;
+	ArdourWidgets::ArdourVSpacer scripts_spacer;
 
 	ArdourWidgets::ArdourButton monitor_dim_button;
 	ArdourWidgets::ArdourButton monitor_mono_button;
@@ -518,7 +525,6 @@ private:
 	Gtk::Label   layered_label;
 
 	Gtk::Label   punch_space;
-	Gtk::Label   mon_space;
 
 	void toggle_external_sync ();
 	void toggle_time_master ();
@@ -672,9 +678,9 @@ private:
 	void transport_play_preroll();
 	void transport_rec_preroll();
 	void transport_rec_count_in();
-	void transport_forward (int option);
-	void transport_rewind (int option);
-	void transport_ffwd_rewind (int option, int dir);
+	void transport_forward ();
+	void transport_rewind ();
+	void transport_ffwd_rewind (bool fwd);
 	void transport_loop ();
 	void toggle_roll (bool with_abort, bool roll_out_of_bounded_mode);
 	bool trx_record_enable_all_tracks ();
@@ -703,11 +709,10 @@ private:
 	int         create_mixer ();
 	int         create_editor ();
 	int         create_meterbridge ();
-	int         create_luawindow ();
 	int         create_masters ();
+	int         create_recorder ();
 
 	Meterbridge  *meterbridge;
-	LuaWindow    *luawindow;
 
 	/* Dialogs that can be created via new<T> */
 
@@ -723,7 +728,9 @@ private:
 	WM::Proxy<ExportVideoDialog> export_video_dialog;
 	WM::Proxy<LuaScriptManager> lua_script_window;
 	WM::Proxy<IdleOMeter> idleometer;
+	WM::Proxy<PluginManagerUI> plugin_manager_ui;
 	WM::Proxy<PluginDSPLoadWindow> plugin_dsp_load_window;
+	WM::Proxy<DspStatisticsWindow> dsp_statistics_window;
 	WM::Proxy<TransportMastersWindow> transport_masters_window;
 
 	/* Windows/Dialogs that require a creator method */
@@ -737,6 +744,7 @@ private:
 	WM::ProxyWithConstructor<GlobalPortMatrixWindow> audio_port_matrix;
 	WM::ProxyWithConstructor<GlobalPortMatrixWindow> midi_port_matrix;
 	WM::ProxyWithConstructor<KeyEditor> key_editor;
+	WM::ProxyWithConstructor<LuaWindow> luawindow;
 
 	/* creator methods */
 
@@ -748,6 +756,7 @@ private:
 	VirtualKeyboardWindow*  create_virtual_keyboard_window();
 	GlobalPortMatrixWindow* create_global_port_matrix (ARDOUR::DataType);
 	KeyEditor*              create_key_editor ();
+	LuaWindow*              create_luawindow ();
 
 	ARDOUR::SystemExec *video_server_process;
 
@@ -777,11 +786,11 @@ private:
 	void flush_trash ();
 
 	bool have_configure_timeout;
-	ARDOUR::microseconds_t last_configure_time;
+	PBD::microseconds_t last_configure_time;
 	gint configure_timeout ();
 
-	ARDOUR::microseconds_t last_peak_grab;
-	ARDOUR::microseconds_t last_shuttle_request;
+	PBD::microseconds_t last_peak_grab;
+	PBD::microseconds_t last_shuttle_request;
 
 	bool have_disk_speed_dialog_displayed;
 	void disk_speed_dialog_gone (int ignored_response, Gtk::MessageDialog*);
@@ -858,6 +867,7 @@ private:
 
 	void successful_graph_sort ();
 	bool _feedback_exists;
+	bool _ambiguous_latency;
 
 	enum ArdourLogLevel {
 		LogLevelNone = 0,
@@ -892,6 +902,7 @@ private:
 	ArdourWidgets::ArdourButton editor_visibility_button;
 	ArdourWidgets::ArdourButton mixer_visibility_button;
 	ArdourWidgets::ArdourButton prefs_visibility_button;
+	ArdourWidgets::ArdourButton recorder_visibility_button;
 
 	bool key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey* ev, Gtkmm2ext::Bindings*);
 	bool try_gtk_accel_binding (GtkWindow* win, GdkEventKey* ev, bool translate, GdkModifierType modifier);

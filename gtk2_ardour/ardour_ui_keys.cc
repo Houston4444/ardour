@@ -201,7 +201,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 			Gtkmm2ext::Bindings* focus_bindings = get_bindings_from_widget_heirarchy (&focus);
 
 			if (focus_bindings) {
-				DEBUG_TRACE (DEBUG::Accelerators, string_compose ("\tusing widget bindings %1 @ %2 for this event\n", focus_bindings->name(), focus_bindings));
+				DEBUG_TRACE (DEBUG::Accelerators, string_compose ("\tusing widget (%3) bindings %1 @ %2 for this event\n", focus_bindings->name(), focus_bindings, gtk_widget_get_name (focus)));
 				if (focus_bindings->activate (k, Bindings::Press)) {
 					return true;
 				}
@@ -236,7 +236,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 
 		DEBUG_TRACE (DEBUG::Accelerators, "\tnot handled by binding activation, now propagate to window\n");
 
-		if (gtk_window_propagate_key_event (win, ev)) {
+		if (window.get_realized () && (!window.get_focus() || window.get_focus()->get_realized ()) && gtk_window_propagate_key_event (win, ev)) {
 			DEBUG_TRACE (DEBUG::Accelerators, "\tpropagate handled\n");
 			return true;
 		}
@@ -247,7 +247,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 
 		DEBUG_TRACE (DEBUG::Accelerators, "\tpropagate, then activate\n");
 
-		if (gtk_window_propagate_key_event (win, ev)) {
+		if (window.get_realized () && (!window.get_focus() || window.get_focus()->get_realized ()) && gtk_window_propagate_key_event (win, ev)) {
 			DEBUG_TRACE (DEBUG::Accelerators, "\thandled by propagate\n");
 			return true;
 		}
@@ -260,7 +260,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 			Gtkmm2ext::Bindings* focus_bindings = get_bindings_from_widget_heirarchy (&focus);
 
 			if (focus_bindings) {
-				DEBUG_TRACE (DEBUG::Accelerators, string_compose ("\tusing widget bindings %1 @ %2 for this event\n", focus_bindings->name(), focus_bindings));
+				DEBUG_TRACE (DEBUG::Accelerators, string_compose ("\tusing widget (%3) bindings %1 @ %2 for this event\n", focus_bindings->name(), focus_bindings, gtk_widget_get_name (focus)));
 				if (focus_bindings->activate (k, Bindings::Press)) {
 					return true;
 				}
@@ -327,8 +327,8 @@ ARDOUR_UI::transport_numpad_event (int num)
 	} else {
 		switch (num) {
 			case 0: toggle_roll(false, false);                           break;
-			case 1: transport_rewind(1);                                 break;
-			case 2: transport_forward(1);                                break;
+			case 1: transport_rewind();                                  break;
+			case 2: transport_forward();                                 break;
 			case 3: transport_record(true);                              break;
 			case 4: toggle_session_auto_loop();                          break;
 			case 5: transport_record(false); toggle_session_auto_loop(); break;

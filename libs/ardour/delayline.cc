@@ -27,6 +27,7 @@
 #include "ardour/delayline.h"
 #include "ardour/midi_buffer.h"
 #include "ardour/runtime_functions.h"
+#include "ardour/rc_configuration.h"
 
 #define MAX_BUFFER_SIZE 8192
 
@@ -35,13 +36,13 @@ using namespace PBD;
 using namespace ARDOUR;
 
 DelayLine::DelayLine (Session& s, const std::string& name)
-    : Processor (s, string_compose ("latcomp-%1-%2", name, this))
-		, _bsiz (0)
-		, _delay (0)
-		, _pending_delay (0)
-		, _roff (0)
-		, _woff (0)
-		, _pending_flush (false)
+	: Processor (s, string_compose ("latcomp-%1-%2", name, this), Config->get_default_automation_time_domain())
+	, _bsiz (0)
+	, _delay (0)
+	, _pending_delay (0)
+	, _roff (0)
+	, _woff (0)
+	, _pending_flush (false)
 {
 }
 
@@ -330,7 +331,7 @@ DelayLine::allocate_pending_buffers (samplecnt_t signal_delay, ChanCount const& 
 #if 1
 	/* If no buffers are required, don't allocate any.
 	 * This may backfire later, allocating buffers on demand
-	 * may take time and cause x-runs.
+	 * may take time and cause xruns.
 	 *
 	 * The default buffersize is 4 * 16kB and - once allocated -
 	 * usually sufficies for the lifetime of the delayline instance.

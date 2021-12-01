@@ -56,6 +56,9 @@
 #include "ardour/amp.h"
 #include "ardour/audio_track.h"
 #include "ardour/audioengine.h"
+#ifdef HAVE_BEATBOX
+#include "ardour/beatbox.h"
+#endif
 #include "ardour/internal_return.h"
 #include "ardour/internal_send.h"
 #include "ardour/luaproc.h"
@@ -95,6 +98,7 @@
 #include "script_selector.h"
 #include "send_ui.h"
 #include "timers.h"
+#include "triggerbox_ui.h"
 #include "new_plugin_preset_dialog.h"
 
 #include "pbd/i18n.h"
@@ -388,7 +392,7 @@ ProcessorEntry::drag_data_get (Glib::RefPtr<Gdk::DragContext> const, Gtk::Select
 }
 
 void
-ProcessorEntry::set_position (Position p, uint32_t num)
+ProcessorEntry::set_position (ProcessorPosition p, uint32_t num)
 {
 	_position = p;
 	_position_num = num;
@@ -997,7 +1001,7 @@ ProcessorEntry::Control::start_touch ()
 	if (!c) {
 		return;
 	}
-	c->start_touch (c->session().transport_sample());
+	c->start_touch (timepos_t (c->session().transport_sample()));
 }
 
 void
@@ -1007,7 +1011,7 @@ ProcessorEntry::Control::end_touch ()
 	if (!c) {
 		return;
 	}
-	c->stop_touch (c->session().transport_sample());
+	c->stop_touch (timepos_t (c->session().transport_sample()));
 }
 
 bool
@@ -1966,7 +1970,7 @@ ProcessorBox::_drop_plugin_preset (Gtk::SelectionData const &data, Route::Proces
 				p->load_preset (ppp->_preset);
 			}
 
-			boost::shared_ptr<Processor> processor (new PluginInsert (*_session, p));
+			boost::shared_ptr<Processor> processor (new PluginInsert (*_session, _route->time_domain(), p));
 			if (Config->get_new_plugins_active ()) {
 				processor->enable (true);
 			}
@@ -1989,7 +1993,7 @@ ProcessorBox::_drop_plugin (Gtk::SelectionData const &data, Route::ProcessorList
 			if (!p) {
 				continue;
 			}
-			boost::shared_ptr<Processor> processor (new PluginInsert (*_session, p));
+			boost::shared_ptr<Processor> processor (new PluginInsert (*_session, _route->time_domain(), p));
 			if (Config->get_new_plugins_active ()) {
 				processor->enable (true);
 			}
@@ -2047,6 +2051,8 @@ ProcessorBox::object_drop (DnDVBox<ProcessorEntry>* source, ProcessorEntry* posi
 		/* strip side-chain state (processor inside processor must be a side-chain)
 		 * otherwise we'll end up with duplicate ports-names.
 		 * (this needs a better solution which retains connections)
+		 *
+		 * see also ProcessorBox::paste_processor_state
 		 */
 		state.remove_nodes_and_delete ("Processor");
 		state.remove_property ("count");
@@ -2494,6 +2500,11 @@ ProcessorBox::processor_operation (ProcessorOperation op)
 			if (!boost::dynamic_pointer_cast<PluginInsert> (*i)) {
 				continue;
 			}
+			if (boost::dynamic_pointer_cast<Amp> (*i) && boost::dynamic_pointer_cast<Amp> (*i)->gain_control()->parameter().type() != GainAutomation) {
+				/* Trim, Volume */
+				continue;
+			}
+
 #ifdef MIXBUS
 			if (boost::dynamic_pointer_cast<PluginInsert> (*i)->is_channelstrip()) {
 				continue;
@@ -2586,6 +2597,11 @@ ProcessorBox::processor_button_release_event (GdkEventButton *ev, ProcessorEntry
 		processor = child->processor ();
 	}
 
+	if (boost::dynamic_pointer_cast<Amp> (processor) && boost::dynamic_pointer_cast<Amp> (processor)->gain_control()->parameter().type() != GainAutomation) {
+		/* Volume */
+		return false;
+	}
+
 	if (processor && Keyboard::is_delete_event (ev)) {
 
 		Glib::signal_idle().connect (sigc::bind (
@@ -2637,7 +2653,7 @@ ProcessorBox::use_plugins (const SelectedPlugins& plugins)
 {
 	for (SelectedPlugins::const_iterator p = plugins.begin(); p != plugins.end(); ++p) {
 
-		boost::shared_ptr<Processor> processor (new PluginInsert (*_session, *p));
+		boost::shared_ptr<Processor> processor (new PluginInsert (*_session, _route->time_domain(), *p));
 
 		Route::ProcessorStreams err_streams;
 
@@ -2911,21 +2927,25 @@ ProcessorBox::maybe_add_processor_to_ui_list (boost::weak_ptr<Processor> w)
 
 	if (boost::dynamic_pointer_cast<PluginInsert> (p)) {
 		have_ui = true;
-	}
-	else if (boost::dynamic_pointer_cast<PortInsert> (p)) {
+	} else if (boost::dynamic_pointer_cast<PortInsert> (p)) {
 		have_ui = true;
-	}
-	else if (boost::dynamic_pointer_cast<Send> (p)) {
+	} else if (boost::dynamic_pointer_cast<Send> (p)) {
 		if (!boost::dynamic_pointer_cast<InternalSend> (p)) {
 			have_ui = true;
 		}
-	}
-	else if (boost::dynamic_pointer_cast<Return> (p)) {
+	} else if (boost::dynamic_pointer_cast<Return> (p)) {
 		if (!boost::dynamic_pointer_cast<InternalReturn> (p)) {
 			have_ui = true;
 		}
+	} else if (boost::dynamic_pointer_cast<TriggerBox> (p)) {
+		have_ui = true;
 	}
-
+#ifdef HAVE_BEATBOX
+	else if (boost::dynamic_pointer_cast<BeatBox> (p)) {
+		cerr << "Have UI for beatbox\n";
+		have_ui = true;
+	}
+#endif
 	if (!have_ui) {
 		return;
 	}
@@ -2994,12 +3014,23 @@ ProcessorBox::add_processor_to_display (boost::weak_ptr<Processor> p)
 
 	boost::shared_ptr<Send> send = boost::dynamic_pointer_cast<Send> (processor);
 	boost::shared_ptr<PortInsert> ext = boost::dynamic_pointer_cast<PortInsert> (processor);
+	boost::shared_ptr<TriggerBox> tb = boost::dynamic_pointer_cast<TriggerBox> (processor);
+#ifdef HAVE_BEATBOX
+	boost::shared_ptr<BeatBox> bb = boost::dynamic_pointer_cast<BeatBox> (processor);
+#endif
 	boost::shared_ptr<UnknownProcessor> stub = boost::dynamic_pointer_cast<UnknownProcessor> (processor);
 
 	//faders and meters are not deletable, copy/paste-able, so they shouldn't be selectable
-	if (!send && !plugin_insert && !ext && !stub) {
+
+#ifdef HAVE_BEATBOX
+	if (!send && !plugin_insert && !ext && !stub && !bb && !tb) {
+#else
+	if (!send && !plugin_insert && !ext && !stub && !tb) {
+#endif
 		e->set_selectable(false);
 	}
+
+	cerr << "Adding " << processor->name() << endl;
 
 	/* Set up this entry's state from the GUIObjectState */
 	XMLNode* proc = entry_gui_object_state (e);
@@ -3578,11 +3609,13 @@ ProcessorBox::paste_processor_state (const XMLNodeList& nlist, boost::shared_ptr
 				}
 
 				p.reset (pi);
+			} else if (type->value() == "beatbox") {
+				/* XXX do something */
 			} else {
 				/* XXX its a bit limiting to assume that everything else
 				   is a plugin.
 				*/
-				p.reset (new PluginInsert (*_session));
+				p.reset (new PluginInsert (*_session, _route->time_domain()));
 				/* we can't use RAII Stateful::ForceIDRegeneration
 				 * because that'd void copying the state and wrongly bump
 				 * the state-version counter.
@@ -3590,13 +3623,29 @@ ProcessorBox::paste_processor_state (const XMLNodeList& nlist, boost::shared_ptr
 				 * only then update the ID)
 				 */
 				PBD::ID id = p->id();
+				XMLNode state (**niter);
 				/* strip side-chain state (processor inside processor must be a side-chain)
 				 * otherwise we'll end up with duplicate ports-names.
 				 * (this needs a better solution which retains connections)
+				 *
+				 * see also ProcessorBox::object_drop
 				 */
-				XMLNode state (**niter);
 				state.remove_nodes_and_delete ("Processor");
+
+				uint32_t count = 0;
+				state.get_property ("count", count);
 				state.remove_property ("count");
+
+				state.remove_property ("custom");
+				state.remove_nodes_and_delete ("ConfiguredInput");
+				state.remove_nodes_and_delete ("CustomSinks");
+				state.remove_nodes_and_delete ("ConfiguredOutput");
+				state.remove_nodes_and_delete ("PresetOutput");
+				state.remove_nodes_and_delete ("ThruMap");
+				for (uint32_t i = 0; i < count; ++i) {
+					state.remove_nodes_and_delete (string_compose ("InputMap-%1", i));
+					state.remove_nodes_and_delete (string_compose ("OutputMap-%1", i));
+				}
 
 				/* Controllable and automation IDs should not be copied */
 				PBD::Stateful::ForceIDRegeneration force_ids;
@@ -3726,11 +3775,14 @@ ProcessorBox::processor_can_be_edited (boost::shared_ptr<Processor> processor)
 		return false;
 	}
 
-	if (
-		boost::dynamic_pointer_cast<Send> (processor) ||
-		boost::dynamic_pointer_cast<Return> (processor) ||
-		boost::dynamic_pointer_cast<PluginInsert> (processor) ||
-		boost::dynamic_pointer_cast<PortInsert> (processor)
+	if (boost::dynamic_pointer_cast<Send> (processor) ||
+	    boost::dynamic_pointer_cast<Return> (processor) ||
+	    boost::dynamic_pointer_cast<PluginInsert> (processor) ||
+	    boost::dynamic_pointer_cast<PortInsert> (processor) ||
+	    boost::dynamic_pointer_cast<TriggerBox> (processor)
+#ifdef HAVE_BEATBOX
+	    || boost::dynamic_pointer_cast<BeatBox> (processor)
+#endif
 		) {
 		return true;
 	}
@@ -3758,6 +3810,10 @@ ProcessorBox::get_editor_window (boost::shared_ptr<Processor> processor, bool us
 	boost::shared_ptr<Return> retrn;
 	boost::shared_ptr<PluginInsert> plugin_insert;
 	boost::shared_ptr<PortInsert> port_insert;
+
+#ifdef HAVE_BEATBOX
+	boost::shared_ptr<BeatBox> beatbox;
+#endif
 	Window* gidget = 0;
 
 	/* This method may or may not return a Window, but if it does not it
@@ -3862,6 +3918,22 @@ ProcessorBox::get_editor_window (boost::shared_ptr<Processor> processor, bool us
 		}
 
 		gidget = io_selector;
+
+#ifdef HAVE_BEATBOX
+	} else if ((beatbox = boost::dynamic_pointer_cast<BeatBox> (processor)) != 0) {
+
+		Window* w = get_processor_ui (beatbox);
+		BBGUI* bbg = 0;
+
+		if (!w) {
+			bbg = new BBGUI (beatbox);
+			set_processor_ui (beatbox, bbg);
+		} else {
+			bbg = dynamic_cast<BBGUI*> (w);
+		}
+
+		gidget = bbg;
+#endif
 	}
 
 	return gidget;
@@ -4221,6 +4293,20 @@ ProcessorBox::edit_aux_send (boost::shared_ptr<Processor> processor)
 	return true;
 }
 
+bool
+ProcessorBox::edit_triggerbox (boost::shared_ptr<Processor> processor)
+{
+	boost::shared_ptr<TriggerBox> tb;
+
+	if ((tb = boost::dynamic_pointer_cast<TriggerBox> (processor)) == 0) {
+		return false;
+	}
+
+	UIConfiguration::instance().set_show_triggers_inline (!UIConfiguration::instance().get_show_triggers_inline());
+
+	return true;
+}
+
 void
 ProcessorBox::edit_processor (boost::shared_ptr<Processor> processor)
 {
@@ -4228,6 +4314,9 @@ ProcessorBox::edit_processor (boost::shared_ptr<Processor> processor)
 		return;
 	}
 	if (edit_aux_send (processor)) {
+		return;
+	}
+	if (edit_triggerbox (processor)) {
 		return;
 	}
 	if (!ARDOUR_UI_UTILS::engine_is_running ()) {

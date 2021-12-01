@@ -23,15 +23,19 @@
 #include <iostream>
 #include <sstream>
 #include <unistd.h>
+#include <cerrno>
 #include <cstdlib>
 #include <cstdio> /* for snprintf, grrr */
+#include <cstring>
+
+#include <glib.h>
+#include "pbd/gstdio_compat.h"
+#include <glibmm/miscutils.h>
 
 #include <cairo/cairo.h>
 
 #include <pango/pangoft2.h> // for fontmap resolution control for GnomeCanvas
 #include <pango/pangocairo.h> // for fontmap resolution control for GnomeCanvas
-
-#include <glibmm/miscutils.h>
 
 #include <gtkmm/settings.h>
 
@@ -43,6 +47,7 @@
 #include "pbd/unwind.h"
 #include "pbd/xml++.h"
 
+#include "ardour/filename_extensions.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/search_paths.h"
 #include "ardour/revision.h"
@@ -51,6 +56,8 @@
 
 #include "gtkmm2ext/rgb_macros.h"
 #include "gtkmm2ext/gtk_ui.h"
+
+#include "canvas/text.h"
 
 #include "ui_config.h"
 
@@ -128,6 +135,8 @@ UIConfiguration::parameter_changed (string param)
 		load_rc_file (true);
 	} else if (param == "color-file") {
 		load_color_theme (true);
+	} else if (param == "font-scale") {
+		ArdourCanvas::Text::drop_height_maps ();
 	}
 
 	save_state ();
@@ -462,13 +471,24 @@ UIConfiguration::save_state()
 
 	if (_dirty) {
 		std::string rcfile = Glib::build_filename (user_config_directory(), ui_config_file_name);
+		std::string tmp = rcfile + temp_suffix;
 
 		XMLTree tree;
-
 		tree.set_root (&get_state());
 
-		if (!tree.write (rcfile.c_str())){
-			error << string_compose (_("Config file %1 not saved"), rcfile) << endmsg;
+		if (!tree.write (tmp.c_str())){
+			error << string_compose (_("Config file %1 not saved"), tmp) << endmsg;
+			if (g_remove (tmp.c_str()) != 0) {
+				error << string_compose(_("Could not remove temporary ui-config file \"%1\" (%2)"), tmp, g_strerror (errno)) << endmsg;
+			}
+			return -1;
+		}
+
+		if (::g_rename (tmp.c_str(), rcfile.c_str()) != 0) {
+			error << string_compose (_("could not rename temporary ui-config file %1 to %2 (%3)"), tmp, rcfile, g_strerror(errno)) << endmsg;
+			if (g_remove (tmp.c_str()) != 0) {
+				error << string_compose(_("Could not remove temporary ui-config file \"%1\" (%2)"), tmp, g_strerror (errno)) << endmsg;
+			}
 			return -1;
 		}
 

@@ -25,12 +25,11 @@
 
 #include <glibmm/convert.h>
 
-#include "pbd/stacktrace.h"
-
 #include "midi++/port.h"
 
 #include "ardour/audioengine.h"
 #include "ardour/automation_control.h"
+#include "ardour/dB.h"
 #include "ardour/debug.h"
 #include "ardour/route.h"
 #include "ardour/panner.h"
@@ -506,7 +505,7 @@ Surface::handle_midi_pitchbend_message (MIDI::Parser&, MIDI::pitchbend_t pb, uin
 	 */
 
 	DEBUG_TRACE (DEBUG::US2400, string_compose ("Surface::handle_midi_pitchbend_message on port %3, fader = %1 value = %2 (%4)\n",
-							   fader_id, pb, _number, pb/16384.0));
+							   fader_id, pb, _number, pb/16383.0));
 
 	turn_it_on ();
 
@@ -514,7 +513,7 @@ Surface::handle_midi_pitchbend_message (MIDI::Parser&, MIDI::pitchbend_t pb, uin
 
 	if (fader) {
 		Strip* strip = dynamic_cast<Strip*> (&fader->group());
-		float pos = pb / 16384.0;
+		float pos = pb / 16383.0;
 		if (strip) {
 			strip->handle_fader (*fader, pos);
 		} else {
@@ -629,11 +628,11 @@ Surface::handle_midi_controller_message (MIDI::Parser &, MIDI::EventTwoBytes* ev
 			if (r && r->is_input_strip()) {
 				boost::shared_ptr<AutomationControl> pc = r->send_level_controllable (10);
 				if (pc) {
-					pc->set_value (-db_value , PBD::Controllable::NoGroup);
+					pc->set_value (dB_to_coefficient(-db_value) , PBD::Controllable::NoGroup);
 				}
 				pc = r->send_level_controllable (11);
 				if (pc) {
-					pc->set_value (-inv_db, PBD::Controllable::NoGroup);
+					pc->set_value (dB_to_coefficient(-inv_db), PBD::Controllable::NoGroup);
 				}
 			}
 		}
@@ -911,7 +910,7 @@ Surface::zero_controls ()
 }
 
 void
-Surface::periodic (uint64_t now_usecs)
+Surface::periodic (PBD::microseconds_t now_usecs)
 {
 	if (_active) {
 		master_gain_changed();
@@ -922,7 +921,7 @@ Surface::periodic (uint64_t now_usecs)
 }
 
 void
-Surface::redisplay (ARDOUR::microseconds_t now, bool force)
+Surface::redisplay (PBD::microseconds_t now, bool force)
 {
 	for (Strips::iterator s = strips.begin(); s != strips.end(); ++s) {
 		(*s)->redisplay (now, force);

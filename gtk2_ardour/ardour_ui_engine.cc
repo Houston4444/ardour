@@ -114,7 +114,7 @@ void
 ARDOUR_UI::create_xrun_marker (samplepos_t where)
 {
 	if (_session) {
-		Location *location = new Location (*_session, where, where, _("xrun"), Location::IsMark, 0);
+		Location *location = new Location (*_session, timepos_t (where), timepos_t (where), _("xrun"), Location::IsMark);
 		_session->locations()->add (location);
 	}
 }
@@ -130,7 +130,7 @@ ARDOUR_UI::halt_on_xrun_message ()
 void
 ARDOUR_UI::xrun_handler (samplepos_t where)
 {
-	if (!_session) {
+	if (!_session || where < 0) {
 		return;
 	}
 

@@ -24,6 +24,7 @@
 
 #include <sigc++/trackable.h>
 
+#include "pbd/property_basics.h"
 #include "pbd/signals.h"
 #include "pbd/xml++.h"
 #include "midi++/types.h"
@@ -113,8 +114,8 @@ public:
 
 	const MidiByteArray& sysex_hdr() const;
 
-	void periodic (ARDOUR::microseconds_t now_usecs);
-	void redisplay (ARDOUR::microseconds_t now_usecs, bool force);
+	void periodic (PBD::microseconds_t now_usecs);
+	void redisplay (PBD::microseconds_t now_usecs, bool force);
 	void hui_heartbeat ();
 
 	void handle_midi_pitchbend_message (MIDI::Parser&, MIDI::pitchbend_t, uint32_t channel_id);
@@ -209,6 +210,11 @@ public:
 	Fader*                 _master_fader;
 	float                  _last_master_gain_written;
 	PBD::ScopedConnection   master_connection;
+	bool                   _has_master_display;
+	bool                   _has_master_meter;
+	boost::shared_ptr<ARDOUR::Stripable> _master_stripable;
+	std::string pending_display[2];
+	std::string current_display[2];
 
 	void handle_midi_sysex (MIDI::Parser&, MIDI::byte *, size_t count);
 	MidiByteArray host_connection_query (MidiByteArray& bytes);
@@ -219,6 +225,11 @@ public:
 	void init_strips (uint32_t n);
 	void setup_master ();
 	void master_gain_changed ();
+	void master_property_changed (const PBD::PropertyChange&);
+	void master_meter_changed ();
+	void show_master_name();
+	MidiByteArray master_display (uint32_t line_number, const std::string&);		// QCon ProX 2nd LCD master label
+	MidiByteArray blank_master_display (uint32_t line_number);
 
 	enum ConnectionState {
 		InputConnected = 0x1,

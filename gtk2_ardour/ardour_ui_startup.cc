@@ -73,6 +73,7 @@
 #include "plugin_scan_dialog.h"
 #include "public_editor.h"
 #include "splash.h"
+#include "ui_config.h"
 
 #include "pbd/i18n.h"
 
@@ -124,7 +125,7 @@ ARDOUR_UI::setup_profile ()
 int
 ARDOUR_UI::missing_file (Session*s, std::string str, DataType type)
 {
-	MissingFileDialog dialog (s, str, type);
+	MissingFileDialog dialog (_main_window, s, str, type);
 
 	dialog.show ();
 	dialog.present ();
@@ -310,6 +311,24 @@ ARDOUR_UI::editor_settings () const
 }
 
 XMLNode*
+ARDOUR_UI::recorder_settings () const
+{
+	XMLNode* node = 0;
+
+	if (_session) {
+		node = _session->instant_xml(X_("Recorder"));
+	} else {
+		node = Config->instant_xml(X_("Recorder"));
+	}
+
+	if (!node) {
+		node = new XMLNode (X_("Recorder"));
+	}
+
+	return node;
+}
+
+XMLNode*
 ARDOUR_UI::keyboard_settings () const
 {
 	XMLNode* node = 0;
@@ -486,7 +505,11 @@ ARDOUR_UI::starting ()
 
 	app->ShouldLoad.connect (sigc::mem_fun (*this, &ARDOUR_UI::load_from_application_api));
 
-	if (ARDOUR_COMMAND_LINE::check_announcements) {
+	if (ARDOUR_COMMAND_LINE::check_announcements
+#ifndef MIXBUS
+	    && UIConfiguration::instance().get_check_announcements ()
+#endif
+	   ) {
 		check_announcements ();
 	}
 
@@ -518,7 +541,7 @@ ARDOUR_UI::starting ()
 
 
 		/* allow signals to be handled, ShouldLoad() from flush-pending */
-		Splash::instance()->pop_front();
+		Splash::instance()->exists(); // create splash
 		flush_pending ();
 
 		if (!startup_fsm) {
@@ -549,8 +572,6 @@ ARDOUR_UI::load_session_from_startup_fsm ()
 	const bool   session_is_new = startup_fsm->session_is_new;
 	const BusProfile bus_profile = startup_fsm->bus_profile;
 	const bool   session_was_not_named = (!startup_fsm->session_name_edited && ARDOUR_COMMAND_LINE::session_name.empty());
-
-	std::cout  << " loading from " << session_path << " as " << session_name << " templ " << session_template << " is_new " << session_is_new << " bp " << bus_profile.master_out_channels << std::endl;
 
 	if (session_is_new) {
 
@@ -795,7 +816,7 @@ ARDOUR_UI::load_from_application_api (const std::string& path)
 		 * 3) no audio/MIDI setup required
 		 */
 
-		Splash::instance()->pop_front();
+		Splash::instance()->exists(); // create splash
 		startup_fsm->start ();
 	}
 }

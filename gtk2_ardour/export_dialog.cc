@@ -97,7 +97,7 @@ ExportDialog::set_session (ARDOUR::Session* s)
 
 	TimeSelection const & time (editor.get_selection().time);
 	if (!time.empty()) {
-		profile_manager->set_selection_range (time.front().start, time.front().end);
+		profile_manager->set_selection_range (time.front().start().samples(), time.front().end().samples());
 	} else {
 		profile_manager->set_selection_range ();
 	}
@@ -432,6 +432,12 @@ ExportDialog::show_progress ()
 		}
 	}
 
+	if (!status->aborted() && _session->export_xruns () > 0) {
+		std::string txt = string_compose (_("There have been %1 dropouts during realtime-export."), _session->export_xruns ());
+		Gtk::MessageDialog msg (txt, false, Gtk::MESSAGE_WARNING, Gtk::BUTTONS_OK, true);
+		msg.run();
+	}
+
 	if (!status->aborted() && status->result_map.size() > 0) {
 		hide();
 		ExportReport er (_session, status);
@@ -578,7 +584,7 @@ ExportRegionDialog::init_gui ()
 void
 ExportRegionDialog::init_components ()
 {
-	string loc_id = profile_manager->set_single_range (region.position(), region.position() + region.length(), region.name());
+	string loc_id = profile_manager->set_single_range (region.position_sample(), (region.position() + region.length()).samples(), region.name());
 
 	preset_selector.reset (new ExportPresetSelector ());
 	timespan_selector.reset (new ExportTimespanSelectorSingle (_session, profile_manager, loc_id));

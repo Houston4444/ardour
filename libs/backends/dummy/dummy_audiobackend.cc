@@ -460,7 +460,7 @@ DummyAudioBackend::_start (bool /*for_latency_measurement*/)
 	}
 
 	engine.reconnect_ports ();
-	_port_change_flag = false;
+	g_atomic_int_set (&_port_change_flag, 0);
 
 	if (pbd_pthread_create (PBD_RT_STACKSIZE_PROC, &_main_thread, pthread_process, this)) {
 		PBD::error << _("DummyAudioBackend: cannot start.") << endmsg;
@@ -1006,9 +1006,8 @@ DummyAudioBackend::main_process_thread ()
 		bool connections_changed = false;
 		bool ports_changed = false;
 		if (!pthread_mutex_trylock (&_port_callback_mutex)) {
-			if (_port_change_flag) {
+			if (g_atomic_int_compare_and_exchange (&_port_change_flag, 1, 0)) {
 				ports_changed = true;
-				_port_change_flag = false;
 			}
 			if (!_port_connection_queue.empty ()) {
 				connections_changed = true;
@@ -1388,7 +1387,7 @@ void DummyAudioPort::midi_to_wavetable (DummyMidiBuffer const * const src, size_
 		// somewhat arbitrary mapping for quick visual feedback
 		float v = -.5f;
 		if ((*it)->size() == 3) {
-			const unsigned char *d = (*it)->const_data();
+			const unsigned char *d = (*it)->data();
 			if ((d[0] & 0xf0) == 0x90) { // note on
 				v = .25f + d[2] / 512.f;
 			}
@@ -1891,9 +1890,9 @@ DummyMidiEvent::DummyMidiEvent (const DummyMidiEvent& other)
 	, _timestamp (other.timestamp ())
 	, _data (0)
 {
-	if (other.size () && other.const_data ()) {
+	if (other.size () && other.data ()) {
 		_data = (uint8_t*) malloc (other.size ());
-		memcpy (_data, other.const_data (), other.size ());
+		memcpy (_data, other.data (), other.size ());
 	}
 };
 

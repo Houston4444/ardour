@@ -59,11 +59,9 @@ public:
 
 	static const std::string state_node_name;
 
-	DiskIOProcessor (Session&, const std::string& name, Flag f);
-	virtual ~DiskIOProcessor ();
+	DiskIOProcessor (Session&, Track&, const std::string& name, Flag f, Temporal::TimeDomain td);
 
-	void set_track (boost::shared_ptr<Track>);
-	void drop_track ();
+	virtual ~DiskIOProcessor ();
 
 	static void set_buffering_parameters (BufferingPreset bp);
 
@@ -121,7 +119,7 @@ protected:
 	bool          in_set_state;
 	samplepos_t   playback_sample;
 	bool         _need_butler;
-	boost::shared_ptr<Track> _track;
+	Track&       _track;
 
 	void init ();
 
@@ -184,15 +182,13 @@ protected:
 
 	virtual void playlist_changed (const PBD::PropertyChange&) {}
 	virtual void playlist_deleted (boost::weak_ptr<Playlist>);
-	virtual void playlist_ranges_moved (std::list< Evoral::RangeMove<samplepos_t> > const &, bool) {}
+	virtual void playlist_ranges_moved (std::list<Temporal::RangeMove> const &, bool) {}
 
 	/* The MIDI stuff */
 
 	MidiRingBuffer<samplepos_t>*  _midi_buf;
-	gint                         _samples_written_to_ringbuffer;
-	gint                         _samples_read_from_ringbuffer;
 
-	static void get_location_times (const Location* location, samplepos_t* start, samplepos_t* end, samplepos_t* length);
+	static void get_location_times (const Location* location, timepos_t* start, timepos_t* end, timecnt_t* length);
 };
 
 } // namespace ARDOUR

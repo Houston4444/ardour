@@ -48,11 +48,9 @@ DEFINE_ENUM_CONVERT(ARDOUR::ListenPosition)
 DEFINE_ENUM_CONVERT(ARDOUR::LayerModel)
 DEFINE_ENUM_CONVERT(ARDOUR::InsertMergePolicy)
 DEFINE_ENUM_CONVERT(ARDOUR::SyncSource)
-DEFINE_ENUM_CONVERT(ARDOUR::ShuttleBehaviour)
 DEFINE_ENUM_CONVERT(ARDOUR::ShuttleUnits)
 DEFINE_ENUM_CONVERT(ARDOUR::ClockDeltaMode)
 DEFINE_ENUM_CONVERT(ARDOUR::DenormalModel)
-DEFINE_ENUM_CONVERT(ARDOUR::PositionLockStyle)
 DEFINE_ENUM_CONVERT(ARDOUR::FadeShape)
 DEFINE_ENUM_CONVERT(ARDOUR::RegionSelectionAfterSplit)
 DEFINE_ENUM_CONVERT(ARDOUR::RangeSelectionAfterSplit)
@@ -73,11 +71,67 @@ DEFINE_ENUM_CONVERT(ARDOUR::WaveformShape)
 DEFINE_ENUM_CONVERT(ARDOUR::ScreenSaverMode)
 DEFINE_ENUM_CONVERT(ARDOUR::VUMeterStandard)
 DEFINE_ENUM_CONVERT(ARDOUR::MeterLineUp)
+DEFINE_ENUM_CONVERT(ARDOUR::InputMeterLayout)
 DEFINE_ENUM_CONVERT(ARDOUR::MidiPortFlags)
 DEFINE_ENUM_CONVERT(ARDOUR::TransportRequestType)
 DEFINE_ENUM_CONVERT(ARDOUR::LoopFadeChoice)
 
 DEFINE_ENUM_CONVERT(MusicalMode::Type)
+
+template <>
+inline std::string to_string (ARDOUR::timepos_t val)
+{
+	return val.str ();
+}
+
+template <>
+inline ARDOUR::timepos_t string_to (std::string const & str)
+{
+	ARDOUR::timepos_t tmp (Temporal::AudioTime); /* domain may be changed */
+	tmp.string_to (str);
+	return tmp;
+}
+
+template <>
+inline bool to_string (ARDOUR::timepos_t val, std::string & str)
+{
+	str = val.str ();
+	return true;
+}
+
+template <>
+inline bool string_to (std::string const & str, ARDOUR::timepos_t & val)
+{
+	return val.string_to (str);
+}
+
+
+template <>
+inline std::string to_string (ARDOUR::timecnt_t val)
+{
+	return val.str ();
+}
+
+template <>
+inline ARDOUR::timecnt_t string_to (std::string const & str)
+{
+	ARDOUR::timecnt_t tmp (Temporal::AudioTime); /* domain may change */
+	tmp.string_to (str);
+	return tmp;
+}
+
+template <>
+inline bool to_string (ARDOUR::timecnt_t val, std::string & str)
+{
+	str = val.str ();
+	return true;
+}
+
+template <>
+inline bool string_to (std::string const & str, ARDOUR::timecnt_t & val)
+{
+	return val.string_to (str);
+}
 
 template <>
 inline bool to_string (ARDOUR::AutoState val, std::string& str)

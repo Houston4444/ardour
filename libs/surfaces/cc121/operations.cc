@@ -35,11 +35,6 @@ using namespace ARDOUR;
 using namespace ArdourSurface;
 using namespace PBD;
 
-/* this value is chosen to given smooth motion from 0..1.0 in about 270 degrees
- * of encoder rotation.
- */
-static const double encoder_divider = 24.0;
-
 void
 CC121::input_monitor ()
 {
@@ -245,7 +240,7 @@ CC121::set_controllable (boost::shared_ptr<AutomationControl> ac, float delta)
 	if (!ac || delta == 0) {
 		return;
 	}
-	ac->start_touch (ac->session().transport_sample());
+	ac->start_touch (timepos_t (ac->session().transport_sample()));
 	ac->set_interface ((ac->internal_to_interface (ac->get_value(), true) + delta), true);
 }
 

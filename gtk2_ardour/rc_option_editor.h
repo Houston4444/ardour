@@ -46,6 +46,8 @@ public:
 	Gtk::Window* use_own_window (bool and_fill_it);
 	XMLNode& get_state ();
 
+	bool on_key_release_event (GdkEventKey*);
+
 private:
 	void parameter_changed (std::string const &);
 	void ltc_generator_volume_changed ();
@@ -63,6 +65,9 @@ private:
 	PBD::ScopedConnection parameter_change_connection;
 	PBD::ScopedConnection engine_started_connection;
 
+	void show_audio_setup ();
+	void show_transport_masters ();
+
 	/* plugin actions */
 	void plugin_scan_refresh ();
 	void plugin_reset_stats ();
@@ -72,7 +77,7 @@ private:
 	void clear_vst3_blacklist ();
 	void clear_au_cache ();
 	void clear_au_blacklist ();
-	void edit_vst_path (std::string const& title, std::string const& dflt, sigc::slot<std::string>, sigc::slot<bool, std::string>);
+	void edit_vst_path (std::string const&, std::string const&, sigc::slot<std::string>, sigc::slot<bool, std::string>);
 };
 
 #endif /* __gtk_ardour_rc_option_editor_h__ */

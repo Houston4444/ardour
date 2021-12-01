@@ -78,7 +78,7 @@ public:
 	boost::shared_ptr<ARDOUR::Port> input_port () const;
 	boost::shared_ptr<ARDOUR::Port> output_port () const;
 
-	void set_feedback_interval (ARDOUR::microseconds_t);
+	void set_feedback_interval (PBD::microseconds_t);
 
 	int set_feedback (bool yn);
 	bool get_feedback () const;
@@ -133,8 +133,8 @@ private:
 	boost::shared_ptr<ARDOUR::AsyncMIDIPort> _input_port;
 	boost::shared_ptr<ARDOUR::AsyncMIDIPort> _output_port;
 
-	ARDOUR::microseconds_t _feedback_interval;
-	ARDOUR::microseconds_t last_feedback_time;
+	PBD::microseconds_t _feedback_interval;
+	PBD::microseconds_t last_feedback_time;
 
 	bool  do_feedback;
 	void _send_feedback ();
@@ -183,7 +183,7 @@ private:
 
 	int connection_state;
 	bool connection_handler (boost::weak_ptr<ARDOUR::Port>, std::string name1, boost::weak_ptr<ARDOUR::Port>, std::string name2, bool yn);
-	PBD::ScopedConnectionList port_connections;
+	PBD::ScopedConnection _port_connection;
 
 	std::string _current_binding;
 	uint32_t _bank_size;

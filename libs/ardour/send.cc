@@ -95,7 +95,7 @@ Send::Send (Session& s, boost::shared_ptr<Pannable> p, boost::shared_ptr<MuteMas
 {
 	//boost_debug_shared_ptr_mark_interesting (this, "send");
 
-	boost::shared_ptr<AutomationList> gl (new AutomationList (Evoral::Parameter (BusSendLevel)));
+	boost::shared_ptr<AutomationList> gl (new AutomationList (Evoral::Parameter (BusSendLevel), time_domain()));
 	_gain_control = boost::shared_ptr<GainControl> (new GainControl (_session, Evoral::Parameter(BusSendLevel), gl));
 	_gain_control->set_flag (Controllable::InlineControl);
 	add_control (_gain_control);
@@ -221,10 +221,9 @@ Send::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample, do
 		return;
 	}
 
-	if (!_active && !_pending_active) {
+	if (!check_active()) {
 		_meter->reset ();
 		_output->silence (nframes);
-		_active = _pending_active;
 		return;
 	}
 
@@ -288,15 +287,9 @@ Send::set_state (const XMLNode& node, int version)
 	}
 
 	XMLNode* gain_node;
+
 	if ((gain_node = node.child (Controllable::xml_node_name.c_str ())) != 0) {
 		_gain_control->set_state (*gain_node, version);
-#if 1 // remove after Ardour 6.0 / Mixbus 6.1
-		/* fix old sessions (6.0-pre0-3039-g93180ceea9 .. 6.0-pre0-3459-g587fc50059)
-		 * this is mainly relevant for Mixbus6.0, copy/paste aux-sends.
-		 * -> remove me after 6.1
-		 */
-		_gain_control->set_flag (Controllable::InlineControl);
-#endif
 	}
 
 	if (version <= 6000) {
@@ -472,6 +465,9 @@ Send::can_support_io_configuration (const ChanCount& in, ChanCount& out)
 bool
 Send::configure_io (ChanCount in, ChanCount out)
 {
+	ChanCount send_count = in;
+	send_count.set(DataType::AUDIO, pan_outs());
+
 	if (!_amp->configure_io (in, out)) {
 		return false;
 	}
@@ -480,7 +476,7 @@ Send::configure_io (ChanCount in, ChanCount out)
 		return false;
 	}
 
-	if (!_meter->configure_io (ChanCount (DataType::AUDIO, pan_outs()), ChanCount (DataType::AUDIO, pan_outs()))) {
+	if (!_meter->configure_io (send_count, send_count)) {
 		return false;
 	}
 
@@ -488,7 +484,7 @@ Send::configure_io (ChanCount in, ChanCount out)
 		return false;
 	}
 
-	if (!_send_delay->configure_io (ChanCount (DataType::AUDIO, pan_outs()), ChanCount (DataType::AUDIO, pan_outs()))) {
+	if (!_send_delay->configure_io (send_count, send_count)) {
 		return false;
 	}
 

@@ -39,7 +39,6 @@ using namespace std;
 using namespace ARDOUR;
 using namespace PBD;
 
-PBD::Signal2<void,boost::shared_ptr<Port>, boost::shared_ptr<Port> > Port::PostDisconnect;
 PBD::Signal0<void> Port::PortDrop;
 PBD::Signal0<void> Port::PortSignalDrop;
 
@@ -157,20 +156,16 @@ Port::drop ()
 void
 Port::port_connected_or_disconnected (boost::weak_ptr<Port> w0, boost::weak_ptr<Port> w1, bool con)
 {
-	if (con) {
-		/* we're only interested in disconnect */
-		return;
-	}
 	boost::shared_ptr<Port> p0 = w0.lock ();
 	boost::shared_ptr<Port> p1 = w1.lock ();
 	/* a cheaper, less hacky way to do boost::shared_from_this() ...  */
 	boost::shared_ptr<Port> pself = AudioEngine::instance()->get_port_by_name (name());
 
 	if (p0 == pself) {
-		PostDisconnect (p0, p1); // emit signal
+		ConnectedOrDisconnected (p0, p1, con); // emit signal
 	}
 	if (p1 == pself) {
-		PostDisconnect (p1, p0); // emit signal
+		ConnectedOrDisconnected (p1, p0, con); // emit signal
 	}
 }
 
@@ -201,7 +196,8 @@ Port::disconnect_all ()
 		for (vector<string>::const_iterator c = connections.begin(); c != connections.end() && pself; ++c) {
 			boost::shared_ptr<Port> pother = AudioEngine::instance()->get_port_by_name (*c);
 			if (pother) {
-				PostDisconnect (pself, pother); // emit signal
+				pother->_connections.erase (_name);
+				ConnectedOrDisconnected (pself, pother, false); // emit signal
 			}
 		}
 	}
@@ -262,7 +258,22 @@ Port::connect (std::string const & other)
 	}
 
 	if (r == 0) {
+		/* Connections can be saved on either or both sides. The code above works regardless
+		 * from which end the conneciton is initiated, and connecting already connected ports
+		 * is idempotent.
+		 *
+		 * Only saving internal connection on the source-side would be preferable,
+		 * but this is not what JACK does :(
+		 * Port::get_state() calls Port::get_connections() which in case of JACK is symmetric.
+		 *
+		 * This is also nicer when reading the session file's <Port><Connection>.
+		 */
 		_connections.insert (other);
+
+		boost::shared_ptr<Port> pother = AudioEngine::instance()->get_port_by_name (other);
+		if (pother) {
+			pother->_connections.insert (_name);
+		}
 	}
 
 	return r;
@@ -290,12 +301,16 @@ Port::disconnect (std::string const & other)
 	boost::shared_ptr<Port> pself = AudioEngine::instance()->get_port_by_name (name());
 	boost::shared_ptr<Port> pother = AudioEngine::instance()->get_port_by_name (other);
 
+	if (r == 0 && pother) {
+		pother->_connections.erase (_name);
+	}
+
 	if (pself && pother) {
 		/* Disconnecting from another Ardour port: need to allow
 		   a check on whether this may affect anything that we
 		   need to know about.
 		*/
-		PostDisconnect (pself, pother); // emit signal
+		ConnectedOrDisconnected (pself, pother, false); // emit signal
 	}
 
 	return r;
@@ -372,7 +387,7 @@ Port::set_public_latency_range (LatencyRange const& range, bool playback) const
 
 	if (_port_handle) {
 		LatencyRange r (range);
-		if (externally_connected () && 0 == (_flags & TransportSyncPort)) {
+		if (externally_connected () && 0 == (_flags & TransportSyncPort) && sends_output () == playback) {
 #if 0
 			r.min *= _speed_ratio;
 			r.max *= _speed_ratio;
@@ -404,10 +419,6 @@ Port::set_private_latency_range (LatencyRange& range, bool playback)
 			             _private_capture_latency.min,
 			             _private_capture_latency.max));
 	}
-
-	/* push to public (port system) location so that everyone else can see it */
-
-	set_public_latency_range (range, playback);
 }
 
 const LatencyRange&
@@ -424,38 +435,79 @@ Port::private_latency_range (bool playback) const
 		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 			             "GET PORT %1 capture PRIVATE latency now [%2 - %3]\n",
 			             name(),
-			             _private_playback_latency.min,
-			             _private_playback_latency.max));
+			             _private_capture_latency.min,
+			             _private_capture_latency.max));
 		return _private_capture_latency;
 	}
 }
 
 LatencyRange
-Port::public_latency_range (bool /*playback*/) const
+Port::public_latency_range (bool playback) const
 {
+	/*Note: this method is no longer used. It exists purely for debugging reasons */
 	LatencyRange r;
 
-
 	if (_port_handle) {
-		r = port_engine.get_latency_range (_port_handle, sends_output() ? true : false);
-		if (externally_connected () && 0 == (_flags & TransportSyncPort)) {
+		r = port_engine.get_latency_range (_port_handle, playback);
+		if (externally_connected () && 0 == (_flags & TransportSyncPort) && sends_output () == playback) {
 #if 0
 			r.min /= _speed_ratio;
 			r.max /= _speed_ratio;
 #endif
+#if 0
+			/* use value as set by set_public_latency_range */
 			if (type () == DataType::AUDIO) {
 				r.min += (_resampler_quality - 1);
 				r.max += (_resampler_quality - 1);
 			}
+#endif
 		}
 
 		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
 				     "GET PORT %1: %4 PUBLIC latency range %2 .. %3\n",
 				     name(), r.min, r.max,
-				     sends_output() ? "PLAYBACK" : "CAPTURE"));
+				     playback ? "PLAYBACK" : "CAPTURE"));
 	}
 
 	return r;
+}
+
+void
+Port::collect_latency_from_backend (LatencyRange& range, bool playback) const
+{
+	vector<string> connections;
+	get_connections (connections);
+
+	DEBUG_TRACE (DEBUG::LatencyIO, string_compose ("%1: %2 connections to check for real %3 latency range\n",
+	                                               name(), connections.size(),
+	                                               playback ? "PLAYBACK" : "CAPTURE"));
+
+	for (vector<string>::const_iterator c = connections.begin(); c != connections.end(); ++c) {
+		PortEngine::PortHandle ph = port_engine.get_port_by_name (*c);
+		if (!ph) {
+			continue;
+		}
+
+		LatencyRange lr = port_engine.get_latency_range (ph, playback);
+
+		if (!AudioEngine::instance()->port_is_mine (*c)) {
+			if (externally_connected () && 0 == (_flags & TransportSyncPort) && sends_output () == playback) {
+				if (type () == DataType::AUDIO) {
+					lr.min += (_resampler_quality - 1);
+					lr.max += (_resampler_quality - 1);
+				}
+			}
+		}
+
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
+					"\t%1 <-> %2 : latter has latency range %3 .. %4\n",
+					name(), *c, lr.min, lr.max));
+
+		range.min = min (range.min, lr.min);
+		range.max = max (range.max, lr.max);
+	}
+
+	DEBUG_TRACE (DEBUG::LatencyIO, string_compose ("%1: real latency range now [ %2 .. %3 ] \n", name(), range.min, range.max));
 }
 
 void
@@ -470,7 +522,9 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 		range.min = ~((pframes_t) 0);
 		range.max = 0;
 
-		DEBUG_TRACE (DEBUG::LatencyIO, string_compose ("%1: %2 connections to check for latency range\n", name(), connections.size()));
+		DEBUG_TRACE (DEBUG::LatencyIO, string_compose ("%1: %2 connections to check for %3 latency range\n",
+		                                               name(), connections.size(),
+		                                               playback ? "PLAYBACK" : "CAPTURE"));
 
 		for (vector<string>::const_iterator c = connections.begin();
 				c != connections.end(); ++c) {
@@ -487,7 +541,7 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 
 				if (remote_port) {
 					lr = port_engine.get_latency_range (remote_port, playback);
-					if (externally_connected () && 0 == (_flags & TransportSyncPort)) {
+					if (externally_connected () && 0 == (_flags & TransportSyncPort) && sends_output () == playback) {
 #if 0
 						lr.min /= _speed_ratio;
 						lr.max /= _speed_ratio;
@@ -517,9 +571,9 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 
 				boost::shared_ptr<Port> remote_port = AudioEngine::instance()->get_port_by_name (*c);
 				if (remote_port) {
-					lr = remote_port->private_latency_range ((playback ? true : false));
+					lr = remote_port->private_latency_range (playback);
 					DEBUG_TRACE (DEBUG::LatencyIO, string_compose (
-								"\t%1 <-LOCAL-> %2 : latter has latency range %3 .. %4\n",
+								"\t%1 <-LOCAL-> %2 : latter has private latency range %3 .. %4\n",
 								name(), *c, lr.min, lr.max));
 
 					range.min = min (range.min, lr.min);
@@ -562,15 +616,27 @@ Port::reconnect ()
 {
 	/* caller must hold process lock; intended to be used only after reestablish() */
 
-	DEBUG_TRACE (DEBUG::Ports, string_compose ("Connect %1 to %2 destinations\n",name(), _connections.size()));
+	if (_connections.empty ()) {
+		return 0; /* OK */
+	}
 
-	for (std::set<string>::iterator i = _connections.begin(); i != _connections.end(); ++i) {
-		if (connect (*i)) {
-			return -1;
+	DEBUG_TRACE (DEBUG::Ports, string_compose ("Port::reconnect() Connect %1 to %2 destinations\n",name(), _connections.size()));
+
+	int count = 0;
+	std::set<string>::iterator i = _connections.begin();
+
+	while (i != _connections.end()) {
+		std::set<string>::iterator current = i++;
+		if (connect (*current)) {
+			DEBUG_TRACE (DEBUG::Ports, string_compose ("Port::reconnect() failed to connect %1 to %2\n", name(), (*current)));
+			_connections.erase (current);
+		}
+		else {
+			++count;
 		}
 	}
 
-	return 0;
+	return count == 0 ? -1 : 0;
 }
 
 /** @param n Short port name (no port-system client name) */

@@ -170,14 +170,13 @@ ExportHandler::do_export ()
 int
 ExportHandler::start_timespan ()
 {
-	export_status->timespan++;
-
 	/* stop freewheeling and wait for latency callbacks */
 	if (AudioEngine::instance()->freewheeling ()) {
 		AudioEngine::instance()->freewheel (false);
 		do {
 			Glib::usleep (AudioEngine::instance()->usecs_per_cycle ());
 		} while (AudioEngine::instance()->freewheeling ());
+		session.reset_xrun_count ();
 	}
 
 	if (config_map.empty()) {
@@ -185,6 +184,8 @@ ExportHandler::start_timespan ()
 		export_status->set_running (false);
 		return -1;
 	}
+
+	export_status->timespan++;
 
 	/* finish_timespan pops the config_map entry that has been done, so
 	   this is the timespan to do this time
@@ -237,15 +238,19 @@ ExportHandler::handle_duplicate_format_extensions()
 
 	ExtCountMap counts;
 	for (ConfigMap::iterator it = timespan_bounds.first; it != timespan_bounds.second; ++it) {
+		std::string pfx;
+		if (it->second.filename->include_timespan) {
+			pfx = it->first->name();
+		}
 		if (it->second.filename->include_channel_config && it->second.channel_config) {
 			/* stem-export has multiple files in the same timestamp, but a different channel_config for each.
 			 * However channel_config is only set in ExportGraphBuilder::Encoder::init_writer()
 			 * so we cannot yet use   it->second.filename->get_path(it->second.format).
 			 * We have to explicily check uniqueness of "channel-config + extension" here:
 			 */
-			counts[it->second.channel_config->name() + it->second.format->extension()]++;
+			counts[pfx + it->second.channel_config->name() + it->second.format->extension()]++;
 		} else {
-			counts[it->second.format->extension()]++;
+			counts[pfx + it->second.format->extension()]++;
 		}
 	}
 
@@ -256,6 +261,7 @@ ExportHandler::handle_duplicate_format_extensions()
 
 	// Set this always, as the filenames are shared...
 	for (ConfigMap::iterator it = timespan_bounds.first; it != timespan_bounds.second; ++it) {
+		assert (it->second.filename->include_format_name == duplicates_found);
 		it->second.filename->include_format_name = duplicates_found;
 	}
 }
@@ -350,6 +356,9 @@ ExportHandler::command_output(std::string output, size_t size)
 void*
 ExportHandler::start_timespan_bg (void* eh)
 {
+	char name[64];
+	snprintf (name, 64, "Export-TS-%p", (void*)DEBUG_THREAD_SELF);
+	pthread_set_name (name);
 	ExportHandler* self = static_cast<ExportHandler*> (eh);
 	self->process_connection.disconnect ();
 	Glib::Threads::Mutex::Lock l (self->export_status->lock());
@@ -363,6 +372,10 @@ ExportHandler::finish_timespan ()
 	graph_builder->get_analysis_results (export_status->result_map);
 
 	while (config_map.begin() != timespan_bounds.second) {
+
+		// XXX single timespan+format may produce multiple files
+		// e.g export selection == session
+		// -> TagLib::FileRef is null
 
 		ExportFormatSpecPtr fmt = config_map.begin()->second.format;
 		std::string filename = config_map.begin()->second.filename->get_path(fmt);
@@ -585,7 +598,7 @@ ExportHandler::export_cd_marker_file (ExportTimespanPtr timespan, ExportFormatSp
 				if ((*i)->is_mark()) {
 					/* Index within track */
 
-					status.index_position = (*i)->start() - timespan->get_start();
+					status.index_position = (*i)->start_sample() - timespan->get_start();
 					(this->*index_func) (status);
 				}
 
@@ -595,7 +608,7 @@ ExportHandler::export_cd_marker_file (ExportTimespanPtr timespan, ExportFormatSp
 			/* A track, defined by a cd range marker or a cd location marker outside of a cd range */
 
 			status.track_position = last_end_time - timespan->get_start();
-			status.track_start_sample = (*i)->start() - timespan->get_start();  // everything before this is the pregap
+			status.track_start_sample = (*i)->start_sample() - timespan->get_start();  // everything before this is the pregap
 			status.track_duration = 0;
 
 			if ((*i)->is_mark()) {
@@ -604,9 +617,9 @@ ExportHandler::export_cd_marker_file (ExportTimespanPtr timespan, ExportFormatSp
 				++nexti;
 
 				if (nexti != temp.end()) {
-					status.track_duration = (*nexti)->start() - last_end_time;
+					status.track_duration = (*nexti)->start_sample() - last_end_time;
 
-					last_end_time = (*nexti)->start();
+					last_end_time = (*nexti)->start_sample();
 				} else {
 					// this was the last marker, use timespan end
 					status.track_duration = timespan->get_end() - last_end_time;
@@ -615,9 +628,9 @@ ExportHandler::export_cd_marker_file (ExportTimespanPtr timespan, ExportFormatSp
 				}
 			} else {
 				// range
-				status.track_duration = (*i)->end() - last_end_time;
+				status.track_duration = (*i)->end_sample() - last_end_time;
 
-				last_end_time = (*i)->end();
+				last_end_time = (*i)->end_sample();
 			}
 
 			(this->*track_func) (status);

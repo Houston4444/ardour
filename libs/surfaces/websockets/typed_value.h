@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,10 +16,10 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#include <string>
-
 #ifndef _ardour_surface_websockets_typed_value_h_
 #define _ardour_surface_websockets_typed_value_h_
+
+#include <string>
 
 namespace ArdourSurface {
 

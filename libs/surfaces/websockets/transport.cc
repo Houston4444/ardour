@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,21 +22,26 @@
 
 using namespace ARDOUR;
 using namespace ArdourSurface;
+using namespace Temporal;
 
 double
 ArdourTransport::tempo () const
 {
-	Tempo tempo = session ().tempo_map ().tempo_at_sample (0);
-	return tempo.note_type () * tempo.pulses_per_minute ();
+	const Tempo& tempo (TempoMap::fetch()->metric_at (0).tempo());
+	return tempo.note_types_per_minute ();
 }
 
 void
 ArdourTransport::set_tempo (double bpm)
 {
-	bpm                 = std::max (0.01, bpm);
-	TempoMap& tempo_map = session ().tempo_map ();
-	Tempo     tempo (bpm, tempo_map.tempo_at_sample (0).note_type (), bpm);
-	tempo_map.add_tempo (tempo, 0.0, 0, AudioTime);
+	bpm = std::max (0.01, bpm);
+
+	TempoMap::SharedPtr tmap (TempoMap::write_copy());
+
+	Tempo tempo (bpm, tmap->metric_at (0).tempo().note_type ());
+
+	tmap->set_tempo (tempo, timepos_t());
+	TempoMap::update (tmap);
 }
 
 double

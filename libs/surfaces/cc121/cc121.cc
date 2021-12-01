@@ -103,13 +103,13 @@ CC121::CC121 (Session& s)
 	_output_bundle.reset (new ARDOUR::Bundle (_("CC121 Support (Send) "), false));
 
 	_input_bundle->add_channel (
-		inp->name(),
+		"",
 		ARDOUR::DataType::MIDI,
 		session->engine().make_port_name_non_relative (inp->name())
 		);
 
 	_output_bundle->add_channel (
-		outp->name(),
+		"",
 		ARDOUR::DataType::MIDI,
 		session->engine().make_port_name_non_relative (outp->name())
 		);
@@ -309,7 +309,7 @@ CC121::button_press_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 		if (_current_stripable) {
 			boost::shared_ptr<AutomationControl> gain = _current_stripable->gain_control ();
 			if (gain) {
-			  samplepos_t now = session->engine().sample_time();
+				timepos_t now (session->engine().sample_time());
 			  gain->start_touch (now);
 			}
 		}
@@ -352,15 +352,15 @@ CC121::button_release_handler (MIDI::Parser &, MIDI::EventTwoBytes* tb)
 
 	switch (id) {
 	case FaderTouch:
-	  fader_is_touched = false;
-	  if (_current_stripable) {
-	    boost::shared_ptr<AutomationControl> gain = _current_stripable->gain_control ();
-	    if (gain) {
-	      samplepos_t now = session->engine().sample_time();
-	      gain->stop_touch (now);
-	    }
-	  }
-	  break;
+		fader_is_touched = false;
+		if (_current_stripable) {
+			boost::shared_ptr<AutomationControl> gain = _current_stripable->gain_control ();
+			if (gain) {
+				timepos_t now (session->engine().sample_time());
+				gain->stop_touch (now);
+			}
+		}
+		break;
 	default:
 		break;
 	}
@@ -758,7 +758,6 @@ int
 CC121::set_state (const XMLNode& node, int version)
 {
 	XMLNodeList nlist;
-	XMLNodeConstIterator niter;
 	XMLNode const* child;
 
 	if (ControlProtocol::set_state (node, version)) {
@@ -768,6 +767,7 @@ CC121::set_state (const XMLNode& node, int version)
 	if ((child = node.child (X_("Input"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			boost::shared_ptr<ARDOUR::Port>(_input_port)->set_state (*portnode, version);
 		}
 	}
@@ -775,6 +775,7 @@ CC121::set_state (const XMLNode& node, int version)
 	if ((child = node.child (X_("Output"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			boost::shared_ptr<ARDOUR::Port>(_output_port)->set_state (*portnode, version);
 		}
 	}

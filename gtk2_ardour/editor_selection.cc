@@ -25,7 +25,6 @@
 #include <algorithm>
 #include <cstdlib>
 
-#include "pbd/stacktrace.h"
 #include "pbd/unwind.h"
 
 #include "ardour/control_protocol_manager.h"
@@ -222,7 +221,7 @@ Editor::set_selected_track_as_side_effect (Selection::Operation op)
 	switch (op) {
 	case Selection::Toggle:
 		if (selection->selected (clicked_axisview)) {
-			if (group && group->is_active()) {
+			if (group && group->is_active() && group->enabled_property(ARDOUR::Properties::group_select.property_id)) {
 				for (TrackViewList::iterator i = track_views.begin(); i != track_views.end (); ++i) {
 					if ((*i)->route_group() == group) {
 						selection->remove(*i);
@@ -232,7 +231,7 @@ Editor::set_selected_track_as_side_effect (Selection::Operation op)
 				selection->remove (clicked_axisview);
 			}
 		} else {
-			if (group && group->is_active()) {
+			if (group && group->is_active() && group->enabled_property(ARDOUR::Properties::group_select.property_id)) {
 				for (TrackViewList::iterator i = track_views.begin(); i != track_views.end (); ++i) {
 					if ((*i)->route_group() == group) {
 						selection->add(*i);
@@ -245,7 +244,7 @@ Editor::set_selected_track_as_side_effect (Selection::Operation op)
 		break;
 
 	case Selection::Add:
-		if (group && group->is_active()) {
+		if (group && group->is_active() && group->enabled_property(ARDOUR::Properties::group_select.property_id)) {
 			for (TrackViewList::iterator i  = track_views.begin(); i != track_views.end (); ++i) {
 				if ((*i)->route_group() == group) {
 					selection->add(*i);
@@ -258,7 +257,7 @@ Editor::set_selected_track_as_side_effect (Selection::Operation op)
 
 	case Selection::Set:
 		selection->clear();
-		if (group && group->is_active()) {
+		if (group && group->is_active() && group->enabled_property(ARDOUR::Properties::group_select.property_id)) {
 			for (TrackViewList::iterator i  = track_views.begin(); i != track_views.end (); ++i) {
 				if ((*i)->route_group() == group) {
 					selection->add(*i);
@@ -407,10 +406,11 @@ Editor::get_onscreen_tracks (TrackViewList& tvl)
  */
 
 void
-Editor::mapover_routes (sigc::slot<void, RouteUI&, uint32_t> sl, RouteUI* basis, PBD::PropertyID prop) const
+Editor::mapover_grouped_routes (sigc::slot<void, RouteUI&> sl, RouteUI* basis, PBD::PropertyID prop) const
 {
 	set<RouteUI*> routes;
-	routes.insert (basis);
+
+	routes.insert(basis);
 
 	RouteGroup* group = basis->route()->route_group();
 
@@ -421,17 +421,62 @@ Editor::mapover_routes (sigc::slot<void, RouteUI&, uint32_t> sl, RouteUI* basis,
 
 		for (TrackViewList::const_iterator i = track_views.begin(); i != track_views.end(); ++i) {
 			RouteUI* v = dynamic_cast<RouteUI*> (*i);
-			if (v && v->route()->route_group() == group) {
+			if ( v && (v->route() != basis->route()) && v->route()->route_group() == group) {
 				routes.insert (v);
 			}
 		}
 	}
 
 	/* call the slots */
-	uint32_t const sz = routes.size ();
-
 	for (set<RouteUI*>::iterator i = routes.begin(); i != routes.end(); ++i) {
-		sl (**i, sz);
+		sl (**i);
+	}
+}
+
+void
+Editor::mapover_armed_routes (sigc::slot<void, RouteUI&> sl) const
+{
+	set<RouteUI*> routes;
+	for (TrackViewList::const_iterator i = track_views.begin(); i != track_views.end(); ++i) {
+		RouteUI* v = dynamic_cast<RouteUI*> (*i);
+		if (v && v->route()->is_track()) {
+			if ( v->track()->rec_enable_control()->get_value()) {
+				routes.insert (v);
+			}
+		}
+	}
+	for (set<RouteUI*>::iterator i = routes.begin(); i != routes.end(); ++i) {
+		sl (**i);
+	}
+}
+
+void
+Editor::mapover_selected_routes (sigc::slot<void, RouteUI&> sl) const
+{
+	set<RouteUI*> routes;
+	for (TrackSelection::iterator i = selection->tracks.begin(); i != selection->tracks.end(); ++i) {
+		RouteTimeAxisView* r = dynamic_cast<RouteTimeAxisView*> (*i);
+		if (r) {
+			routes.insert (r);
+		}
+	}
+	for (set<RouteUI*>::iterator i = routes.begin(); i != routes.end(); ++i) {
+		sl (**i);
+	}
+}
+
+void
+Editor::mapover_all_routes (sigc::slot<void, RouteUI&> sl) const
+{
+	set<RouteUI*> routes;
+	for (TrackViewList::const_iterator i = track_views.begin(); i != track_views.end(); ++i) {
+		RouteTimeAxisView* r = dynamic_cast<RouteTimeAxisView*> (*i);
+		if (r) {
+			routes.insert (r);
+		}
+	}
+	for (set<RouteUI*>::iterator i = routes.begin(); i != routes.end(); ++i) {
+		sl (**i);
 	}
 }
 
@@ -493,6 +538,38 @@ Editor::mapover_tracks_with_unique_playlists (sigc::slot<void, RouteTimeAxisView
 }
 
 void
+Editor::mapover_all_tracks_with_unique_playlists (sigc::slot<void, RouteTimeAxisView&, uint32_t> sl) const
+{
+	set<boost::shared_ptr<Playlist> > playlists;
+
+	set<RouteTimeAxisView*> tracks;
+
+	for (TrackViewList::const_iterator i = track_views.begin(); i != track_views.end(); ++i) {
+		RouteTimeAxisView* v = dynamic_cast<RouteTimeAxisView*> (*i);
+
+		boost::shared_ptr<Track> t = v->track();
+		if (t) {
+			if (playlists.insert (t->playlist()).second) {
+				/* haven't seen this playlist yet */
+				tracks.insert (v);
+			}
+		} else {
+			/* not actually a "Track", but a timeaxis view that
+			   we should mapover anyway.
+			*/
+			tracks.insert (v);
+		}
+	}
+
+	/* call the slots */
+	uint32_t const sz = tracks.size ();
+
+	for (set<RouteTimeAxisView*>::iterator i = tracks.begin(); i != tracks.end(); ++i) {
+		sl (**i, sz);
+	}
+}
+
+void
 Editor::mapped_get_equivalent_regions (RouteTimeAxisView& tv, uint32_t, RegionView * basis, vector<RegionView*>* all_equivs) const
 {
 	boost::shared_ptr<Playlist> pl;
@@ -531,6 +608,16 @@ Editor::get_equivalent_regions (RegionView* basis, vector<RegionView*>& equivale
 	equivalent_regions.push_back (basis);
 }
 
+void
+Editor::get_all_equivalent_regions (RegionView* basis, vector<RegionView*>& equivalent_regions) const
+{
+	mapover_all_tracks_with_unique_playlists (sigc::bind (sigc::mem_fun (*this, &Editor::mapped_get_equivalent_regions), basis, &equivalent_regions));
+
+	/* add clicked regionview since we skipped all other regions in the same track as the one it was in */
+
+	equivalent_regions.push_back (basis);
+}
+
 RegionSelection
 Editor::get_equivalent_regions (RegionSelection & basis, PBD::PropertyID prop) const
 {
@@ -553,44 +640,6 @@ Editor::get_equivalent_regions (RegionSelection & basis, PBD::PropertyID prop) c
 
 	return equivalent;
 }
-
-int
-Editor::get_regionview_count_from_region_list (boost::shared_ptr<Region> region)
-{
-	int region_count = 0;
-
-	for (TrackViewList::iterator i = track_views.begin(); i != track_views.end(); ++i) {
-
-		RouteTimeAxisView* tatv;
-
-		if ((tatv = dynamic_cast<RouteTimeAxisView*> (*i)) != 0) {
-
-			boost::shared_ptr<Playlist> pl;
-			vector<boost::shared_ptr<Region> > results;
-			RegionView* marv;
-			boost::shared_ptr<Track> tr;
-
-			if ((tr = tatv->track()) == 0) {
-				/* bus */
-				continue;
-			}
-
-			if ((pl = (tr->playlist())) != 0) {
-				pl->get_region_list_equivalent_regions (region, results);
-			}
-
-			for (vector<boost::shared_ptr<Region> >::iterator ir = results.begin(); ir != results.end(); ++ir) {
-				if ((marv = tatv->view()->find_view (*ir)) != 0) {
-					region_count++;
-				}
-			}
-
-		}
-	}
-
-	return region_count;
-}
-
 
 bool
 Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
@@ -622,9 +671,18 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 				} else {
 					if (button_release_can_deselect) {
 
-						/* just remove this one region, but only on a permitted button release */
+						/* just remove this one region
+						 * (or all equivalent regions
+						 * for RippleAll, but only on a
+						 * permitted button release
+						 */
 
-						selection->remove (clicked_regionview);
+						if (Config->get_edit_mode() == RippleAll) {
+							get_all_equivalent_regions (clicked_regionview, all_equivalent_regions);
+							selection->remove (all_equivalent_regions);
+						} else {
+							selection->remove (clicked_regionview);
+						}
 						commit = true;
 
 						/* no more deselect action on button release till a new press
@@ -639,10 +697,14 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 
 				if (press) {
 
-					if (selection->selected (clicked_routeview)) {
-						get_equivalent_regions (clicked_regionview, all_equivalent_regions, ARDOUR::Properties::group_select.property_id);
+					if (Config->get_edit_mode() == RippleAll) {
+						get_all_equivalent_regions (clicked_regionview, all_equivalent_regions);
 					} else {
-						all_equivalent_regions.push_back (clicked_regionview);
+						if (selection->selected (clicked_routeview)) {
+							get_equivalent_regions (clicked_regionview, all_equivalent_regions, ARDOUR::Properties::group_select.property_id);
+						} else {
+							all_equivalent_regions.push_back (clicked_regionview);
+						}
 					}
 
 					/* add all the equivalent regions, but only on button press */
@@ -658,7 +720,11 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 
 		case Selection::Set:
 			if (!selection->selected (clicked_regionview)) {
-				get_equivalent_regions (clicked_regionview, all_equivalent_regions, ARDOUR::Properties::group_select.property_id);
+				if (Config->get_edit_mode() == RippleAll) {
+					get_all_equivalent_regions (clicked_regionview, all_equivalent_regions);
+				} else {
+					get_equivalent_regions (clicked_regionview, all_equivalent_regions, ARDOUR::Properties::group_select.property_id);
+				}
 				selection->set (all_equivalent_regions);
 				commit = true;
 			} else {
@@ -668,7 +734,11 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 				else {
 					if (selection->regions.size() > 1) {
 						/* collapse region selection down to just this one region (and its equivalents) */
-						get_equivalent_regions(clicked_regionview, all_equivalent_regions, ARDOUR::Properties::group_select.property_id);
+						if (Config->get_edit_mode() == RippleAll) {
+							get_all_equivalent_regions (clicked_regionview, all_equivalent_regions);
+						} else {
+							get_equivalent_regions(clicked_regionview, all_equivalent_regions, ARDOUR::Properties::group_select.property_id);
+						}
 						selection->set(all_equivalent_regions);
 						commit = true;
 					}
@@ -684,24 +754,25 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 	} else if (op == Selection::Extend) {
 
 		list<Selectable*> results;
-		samplepos_t last_sample;
-		samplepos_t first_sample;
+		timepos_t last_pos;
+		timepos_t first_pos;
 		bool same_track = false;
 
 		/* 1. find the last selected regionview in the track that was clicked in */
 
-		last_sample = 0;
-		first_sample = max_samplepos;
+		const Temporal::TimeDomain time_domain = (selection->regions.empty() ? Temporal::AudioTime : selection->regions.front()->region()->position().time_domain());
+		last_pos = timepos_t (time_domain);
+		first_pos = timepos_t::max (time_domain);
 
 		for (RegionSelection::iterator x = selection->regions.begin(); x != selection->regions.end(); ++x) {
 			if (&(*x)->get_time_axis_view() == &clicked_regionview->get_time_axis_view()) {
 
-				if ((*x)->region()->last_sample() > last_sample) {
-					last_sample = (*x)->region()->last_sample();
+				if ((*x)->region()->nt_last() > last_pos) {
+					last_pos = (*x)->region()->nt_last();
 				}
 
-				if ((*x)->region()->first_sample() < first_sample) {
-					first_sample = (*x)->region()->first_sample();
+				if ((*x)->region()->position() < first_pos) {
+					first_pos = (*x)->region()->position();
 				}
 
 				same_track = true;
@@ -712,39 +783,39 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 
 			/* 2. figure out the boundaries for our search for new objects */
 
-			switch (clicked_regionview->region()->coverage (first_sample, last_sample)) {
-			case Evoral::OverlapNone:
-				if (last_sample < clicked_regionview->region()->first_sample()) {
-					first_sample = last_sample;
-					last_sample = clicked_regionview->region()->last_sample();
+			switch (clicked_regionview->region()->coverage (first_pos, last_pos)) {
+			case Temporal::OverlapNone:
+				if (last_pos < clicked_regionview->region()->position()) {
+					first_pos = last_pos;
+					last_pos = clicked_regionview->region()->nt_last();
 				} else {
-					last_sample = first_sample;
-					first_sample = clicked_regionview->region()->first_sample();
+					last_pos = first_pos;
+					first_pos = clicked_regionview->region()->position();
 				}
 				break;
 
-			case Evoral::OverlapExternal:
-				if (last_sample < clicked_regionview->region()->first_sample()) {
-					first_sample = last_sample;
-					last_sample = clicked_regionview->region()->last_sample();
+			case Temporal::OverlapExternal:
+				if (last_pos < clicked_regionview->region()->position()) {
+					first_pos = last_pos;
+					last_pos = clicked_regionview->region()->nt_last();
 				} else {
-					last_sample = first_sample;
-					first_sample = clicked_regionview->region()->first_sample();
+					last_pos = first_pos;
+					first_pos = clicked_regionview->region()->position();
 				}
 				break;
 
-			case Evoral::OverlapInternal:
-				if (last_sample < clicked_regionview->region()->first_sample()) {
-					first_sample = last_sample;
-					last_sample = clicked_regionview->region()->last_sample();
+			case Temporal::OverlapInternal:
+				if (last_pos < clicked_regionview->region()->position()) {
+					first_pos = last_pos;
+					last_pos = clicked_regionview->region()->nt_last();
 				} else {
-					last_sample = first_sample;
-					first_sample = clicked_regionview->region()->first_sample();
+					last_pos = first_pos;
+					first_pos = clicked_regionview->region()->position();
 				}
 				break;
 
-			case Evoral::OverlapStart:
-			case Evoral::OverlapEnd:
+			case Temporal::OverlapStart:
+			case Temporal::OverlapEnd:
 				/* nothing to do except add clicked region to selection, since it
 				   overlaps with the existing selection in this track.
 				*/
@@ -759,15 +830,15 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 			*/
 
 
-			first_sample = clicked_regionview->region()->position();
-			last_sample = clicked_regionview->region()->last_sample();
+			first_pos = clicked_regionview->region()->position();
+			last_pos = clicked_regionview->region()->nt_last();
 
 			for (RegionSelection::iterator i = selection->regions.begin(); i != selection->regions.end(); ++i) {
-				if ((*i)->region()->position() < first_sample) {
-					first_sample = (*i)->region()->position();
+				if ((*i)->region()->position() < first_pos) {
+					first_pos = (*i)->region()->position();
 				}
-				if ((*i)->region()->last_sample() + 1 > last_sample) {
-					last_sample = (*i)->region()->last_sample();
+				if ((*i)->region()->end() > last_pos) {
+					last_pos = (*i)->region()->nt_last();
 				}
 			}
 		}
@@ -776,10 +847,19 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 
 		set<RouteTimeAxisView*> relevant_tracks;
 
-		for (TrackSelection::iterator i = selection->tracks.begin(); i != selection->tracks.end(); ++i) {
-			RouteTimeAxisView* r = dynamic_cast<RouteTimeAxisView*> (*i);
-			if (r) {
-				relevant_tracks.insert (r);
+		if (Config->get_edit_mode() == RippleAll) {
+			for (TrackSelection::iterator i = track_views.begin(); i != track_views.end(); ++i) {
+				RouteTimeAxisView* r = dynamic_cast<RouteTimeAxisView*> (*i);
+				if (r) {
+					relevant_tracks.insert (r);
+				}
+			}
+		} else {
+			for (TrackSelection::iterator i = selection->tracks.begin(); i != selection->tracks.end(); ++i) {
+				RouteTimeAxisView* r = dynamic_cast<RouteTimeAxisView*> (*i);
+				if (r) {
+					relevant_tracks.insert (r);
+				}
 			}
 		}
 
@@ -880,7 +960,7 @@ Editor::set_selected_regionview_from_click (bool press, Selection::Operation op)
 		*/
 
 		for (set<RouteTimeAxisView*>::iterator t = relevant_tracks.begin(); t != relevant_tracks.end(); ++t) {
-			(*t)->get_selectables (first_sample, last_sample, -1.0, -1.0, results);
+			(*t)->get_selectables (first_pos, last_pos, -1.0, -1.0, results);
 		}
 
 		/* 4. convert to a vector of regions */
@@ -952,11 +1032,11 @@ Editor::set_selection (std::list<Selectable*> s, Selection::Operation op)
 void
 Editor::set_selected_regionview_from_region_list (boost::shared_ptr<Region> region, Selection::Operation op)
 {
-	vector<RegionView*> all_equivalent_regions;
+	vector<RegionView*> regionviews;
 
-	get_regions_corresponding_to (region, all_equivalent_regions, region->whole_file());
+	get_regionview_corresponding_to (region, regionviews);
 
-	if (all_equivalent_regions.empty()) {
+	if (regionviews.empty()) {
 		return;
 	}
 
@@ -965,16 +1045,16 @@ Editor::set_selected_regionview_from_region_list (boost::shared_ptr<Region> regi
 	switch (op) {
 	case Selection::Toggle:
 		/* XXX this is not correct */
-		selection->toggle (all_equivalent_regions);
+		selection->toggle (regionviews);
 		break;
 	case Selection::Set:
-		selection->set (all_equivalent_regions);
+		selection->set (regionviews);
 		break;
 	case Selection::Extend:
-		selection->add (all_equivalent_regions);
+		selection->add (regionviews);
 		break;
 	case Selection::Add:
-		selection->add (all_equivalent_regions);
+		selection->add (regionviews);
 		break;
 	}
 
@@ -1211,7 +1291,7 @@ Editor::time_selection_changed ()
 
 	if (_session && !_drags->active()) {
 		if (selection->time.length() != 0) {
-			_session->set_range_selection (selection->time.start(), selection->time.end_sample());
+			_session->set_range_selection (selection->time.start_time(), selection->time.end_time());
 		} else {
 			_session->clear_range_selection ();
 		}
@@ -1281,7 +1361,7 @@ Editor::sensitize_the_right_region_actions (bool because_canvas_crossing)
 			}
 		} else {
 			RegionSelection at_edit_point;
-			samplepos_t const where = get_preferred_edit_position (Editing::EDIT_IGNORE_NONE, false, !within_track_canvas);
+			timepos_t const where = get_preferred_edit_position (Editing::EDIT_IGNORE_NONE, false, !within_track_canvas);
 			get_regions_at (at_edit_point, where, selection->tracks);
 			if (!at_edit_point.empty()) {
 				have_edit_point = true;
@@ -1377,7 +1457,7 @@ Editor::sensitize_the_right_region_actions (bool because_canvas_crossing)
 			have_video_unlocked = true;
 		}
 
-		if (r->position_lock_style() == MusicTime) {
+		if (r->position_time_domain() == Temporal::BeatTime) {
 			have_position_lock_style_music = true;
 		} else {
 			have_position_lock_style_audio = true;
@@ -1604,7 +1684,7 @@ Editor::region_selection_changed ()
 	assert (_session);
 
 	if (!selection->regions.empty()) {
-		_session->set_object_selection (selection->regions.start(), selection->regions.end_sample());
+		_session->set_object_selection (selection->regions.start_time(), selection->regions.end_time());
 	} else {
 		_session->clear_object_selection ();
 	}
@@ -1658,7 +1738,7 @@ Editor::select_all_in_track (Selection::Operation op)
 
 	begin_reversible_selection_op (X_("Select All in Track"));
 
-	clicked_routeview->get_selectables (0, max_samplepos, 0, DBL_MAX, touched);
+	clicked_routeview->get_selectables (timepos_t(), timepos_t::max (Temporal::AudioTime), 0, DBL_MAX, touched);
 
 	switch (op) {
 	case Selection::Toggle:
@@ -1683,7 +1763,9 @@ Editor::select_all_internal_edit (Selection::Operation)
 {
 	bool selected = false;
 
-	for (RegionSelection::iterator i = selection->regions.begin(); i != selection->regions.end(); ++i) {
+	RegionSelection copy (selection->regions);
+
+	for (RegionSelection::iterator i = copy.begin(); i != copy.end(); ++i) {
 		MidiRegionView* mrv = dynamic_cast<MidiRegionView*>(*i);
 		if (mrv) {
 			mrv->select_all_notes ();
@@ -1721,7 +1803,7 @@ Editor::select_all_objects (Selection::Operation op)
 		if ((*iter)->hidden()) {
 			continue;
 		}
-		(*iter)->get_selectables (0, max_samplepos, 0, DBL_MAX, touched);
+		(*iter)->get_selectables (timepos_t(), timepos_t::max (Temporal::AudioTime), 0, DBL_MAX, touched);
 	}
 
 	begin_reversible_selection_op (X_("select all"));
@@ -1811,7 +1893,7 @@ Editor::invert_selection ()
  *  within the region are already selected.
  */
 void
-Editor::select_all_within (samplepos_t start, samplepos_t end, double top, double bot, const TrackViewList& tracklist, Selection::Operation op, bool preserve_if_selected)
+Editor::select_all_within (timepos_t const & start, timepos_t const & end, double top, double bot, const TrackViewList& tracklist, Selection::Operation op, bool preserve_if_selected)
 {
 	list<Selectable*> found;
 
@@ -1880,7 +1962,7 @@ Editor::set_selection_from_region ()
 
 	/* select range (this will clear the region selection) */
 
-	selection->set (selection->regions.start(), selection->regions.end_sample());
+	selection->set (selection->regions.start_time(), selection->regions.end_time());
 
 	/* and select the tracks */
 
@@ -1943,10 +2025,12 @@ Editor::select_all_selectables_using_time_selection ()
 		return;
 	}
 
-	samplepos_t start = selection->time[clicked_selection].start;
-	samplepos_t end = selection->time[clicked_selection].end;
+	timepos_t start = selection->time[clicked_selection].start();
+	timepos_t end = selection->time[clicked_selection].end();
 
-	if (end - start < 1)  {
+	const timecnt_t distance = start.distance (end);
+
+	if (distance.negative() || distance.zero())  {
 		return;
 	}
 
@@ -1962,7 +2046,7 @@ Editor::select_all_selectables_using_time_selection ()
 		if ((*iter)->hidden()) {
 			continue;
 		}
-		(*iter)->get_selectables (start, end - 1, 0, DBL_MAX, touched);
+		(*iter)->get_selectables (start, end, 0, DBL_MAX, touched);
 	}
 
 	begin_reversible_selection_op (X_("select all from range"));
@@ -1977,7 +2061,7 @@ Editor::select_all_selectables_using_punch()
 	Location* location = _session->locations()->auto_punch_location();
 	list<Selectable *> touched;
 
-	if (location == 0 || (location->end() - location->start() <= 1))  {
+	if (location == 0 || (location->length_samples() <= 1)) {
 		return;
 	}
 
@@ -1994,7 +2078,7 @@ Editor::select_all_selectables_using_punch()
 		if ((*iter)->hidden()) {
 			continue;
 		}
-		(*iter)->get_selectables (location->start(), location->end() - 1, 0, DBL_MAX, touched);
+		(*iter)->get_selectables (location->start(), location->end(), 0, DBL_MAX, touched);
 	}
 	begin_reversible_selection_op (X_("select all from punch"));
 	selection->set (touched);
@@ -2008,7 +2092,7 @@ Editor::select_all_selectables_using_loop()
 	Location* location = _session->locations()->auto_loop_location();
 	list<Selectable *> touched;
 
-	if (location == 0 || (location->end() - location->start() <= 1))  {
+	if (location == 0 || (location->length_samples() <= 1)) {
 		return;
 	}
 
@@ -2025,7 +2109,7 @@ Editor::select_all_selectables_using_loop()
 		if ((*iter)->hidden()) {
 			continue;
 		}
-		(*iter)->get_selectables (location->start(), location->end() - 1, 0, DBL_MAX, touched);
+		(*iter)->get_selectables (location->start(), location->end(), 0, DBL_MAX, touched);
 	}
 	begin_reversible_selection_op (X_("select all from loop"));
 	selection->set (touched);
@@ -2036,17 +2120,17 @@ Editor::select_all_selectables_using_loop()
 void
 Editor::select_all_selectables_using_cursor (EditorCursor *cursor, bool after)
 {
-	samplepos_t start;
-	samplepos_t end;
+	timepos_t start;
+	timepos_t end;
 	list<Selectable *> touched;
 
 	if (after) {
-		start = cursor->current_sample();
-		end = _session->current_end_sample();
+		start = timepos_t (cursor->current_sample());
+		end = timepos_t (_session->current_end_sample());
 	} else {
 		if (cursor->current_sample() > 0) {
-			start = 0;
-			end = cursor->current_sample() - 1;
+			start = timepos_t();
+			end = timepos_t (cursor->current_sample() - 1);
 		} else {
 			return;
 		}
@@ -2089,17 +2173,17 @@ Editor::select_all_selectables_using_cursor (EditorCursor *cursor, bool after)
 void
 Editor::select_all_selectables_using_edit (bool after, bool from_context_menu)
 {
-	samplepos_t start;
-	samplepos_t end;
+	timepos_t start;
+	timepos_t end;
 	list<Selectable *> touched;
 
 	if (after) {
 		start = get_preferred_edit_position(EDIT_IGNORE_NONE, from_context_menu);
-		end = _session->current_end_sample();
+		end = timepos_t (_session->current_end_sample());
 	} else {
 		if ((end = get_preferred_edit_position(EDIT_IGNORE_NONE, from_context_menu)) > 1) {
-			start = 0;
-			end -= 1;
+			start = timepos_t ();
+			end = end.decrement();
 		} else {
 			return;
 		}
@@ -2140,8 +2224,8 @@ Editor::select_all_selectables_using_edit (bool after, bool from_context_menu)
 void
 Editor::select_all_selectables_between (bool within)
 {
-	samplepos_t start;
-	samplepos_t end;
+	timepos_t start;
+	timepos_t end;
 	list<Selectable *> touched;
 
 	if (!get_edit_op_range (start, end)) {
@@ -2177,10 +2261,18 @@ Editor::select_all_selectables_between (bool within)
 }
 
 void
+Editor::get_regionviews_at_or_after (timepos_t const & pos, RegionSelection& regions)
+{
+	for (TrackViewList::iterator iter = track_views.begin(); iter != track_views.end(); ++iter) {
+		(*iter)->get_regionviews_at_or_after (pos, regions);
+	}
+}
+
+void
 Editor::select_range_between ()
 {
-	samplepos_t start;
-	samplepos_t end;
+	timepos_t start;
+	timepos_t end;
 
 	if (!selection->time.empty()) {
 		selection->clear_time ();
@@ -2200,18 +2292,18 @@ Editor::select_range_between ()
 }
 
 bool
-Editor::get_edit_op_range (samplepos_t& start, samplepos_t& end) const
+Editor::get_edit_op_range (timepos_t& start, timepos_t& end) const
 {
 	/* if an explicit range exists, use it */
 
 	if ((mouse_mode == MouseRange || get_smart_mode()) &&  !selection->time.empty()) {
 		/* we know that these are ordered */
-		start = selection->time.start();
-		end = selection->time.end_sample();
+		start = selection->time.start_time();
+		end = selection->time.end_time();
 		return true;
 	} else {
-		start = 0;
-		end = 0;
+		start = timepos_t ();
+		end = timepos_t ();
 		return false;
 	}
 }
@@ -2225,7 +2317,7 @@ Editor::deselect_all ()
 }
 
 long
-Editor::select_range (samplepos_t s, samplepos_t e)
+Editor::select_range (timepos_t const & s, timepos_t const & e)
 {
 	begin_reversible_selection_op (X_("Select Range"));
 	selection->add (clicked_axisview);

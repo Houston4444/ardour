@@ -51,10 +51,9 @@ CoreAudioSource::CoreAudioSource (Session& s, const XMLNode& node)
 	: Source (s, node)
 	, AudioFileSource (s, node)
 {
-	init_cafile ();
-
-        assert (Glib::file_test (_path, Glib::FILE_TEST_EXISTS));
+	assert (Glib::file_test (_path, Glib::FILE_TEST_EXISTS));
 	existence_check ();
+	init_cafile ();
 }
 
 /** Create a new CoreAudioSource from an existing file. Sources created with this
@@ -65,11 +64,11 @@ CoreAudioSource::CoreAudioSource (Session& s, const string& path, int chn, Flag 
 		AudioFileSource (s, path,
 			Source::Flag (flags & ~(Writable|Removable|RemovableIfEmpty|RemoveAtDestroy)))
 {
+	assert (Glib::file_test (_path, Glib::FILE_TEST_EXISTS));
+	existence_check ();
+
 	_channel = chn;
 	init_cafile ();
-
-        assert (Glib::file_test (_path, Glib::FILE_TEST_EXISTS));
-	existence_check ();
 }
 
 void
@@ -87,7 +86,7 @@ CoreAudioSource::init_cafile ()
 			throw failed_constructor();
 		}
 
-		_length = af.GetNumberFrames();
+		_length = timecnt_t (af.GetNumberFrames());
 
 		CAStreamBasicDescription client_format (file_format);
 
@@ -123,7 +122,7 @@ CoreAudioSource::safe_read (Sample* dst, samplepos_t start, samplecnt_t cnt, Aud
 		try {
 			af.Seek (start+nread);
 		} catch (CAXException& cax) {
-			error << string_compose("CoreAudioSource: %1 to %2 [%3] (%3)", cax.mOperation, start+nread, cax.mError, _name.val().substr (1)) << endmsg;
+			error << string_compose("CoreAudioSource: %1 to %2 [%3] (%4)", cax.mOperation, start+nread, cax.mError, _name.val().substr (1)) << endmsg;
 			return -1;
 		}
 
@@ -141,7 +140,7 @@ CoreAudioSource::safe_read (Sample* dst, samplepos_t start, samplecnt_t cnt, Aud
 
 		if (new_cnt == 0) {
 			/* EOF */
-			if (start+cnt == _length) {
+			if (start+cnt == _length.samples()) {
 				/* we really did hit the end */
 				nread = cnt;
 			}
@@ -168,17 +167,17 @@ CoreAudioSource::read_unlocked (Sample *dst, samplepos_t start, samplecnt_t cnt)
 	abl.mNumberBuffers = 1;
 	abl.mBuffers[0].mNumberChannels = n_channels;
 
-	if (start > _length) {
+	if (start > _length.samples()) {
 
 		/* read starts beyond end of data, just memset to zero */
 
 		file_cnt = 0;
 
-	} else if (start + cnt > _length) {
+	} else if (start + cnt > _length.samples()) {
 
 		/* read ends beyond end of data, read some, memset the rest */
 
-		file_cnt = _length - start;
+		file_cnt = _length.samples() - start;
 
 	} else {
 

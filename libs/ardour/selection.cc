@@ -45,8 +45,8 @@ CoreSelection::send_selection_change ()
 
 CoreSelection::CoreSelection (Session& s)
 	: session (s)
-	, selection_order (0)
 {
+	g_atomic_int_set (&_selection_order, 0);
 }
 
 CoreSelection::~CoreSelection ()
@@ -79,7 +79,9 @@ CoreSelection::select_adjacent_stripable (bool mixer_order, bool routes_only,
 	/* fetch the current selection so that we can get the most recently selected */
 	StripableAutomationControls selected;
 	get_stripables (selected);
-	boost::shared_ptr<Stripable> last_selected = selected.back().stripable;
+	boost::shared_ptr<Stripable> last_selected =
+	  selected.empty () ? boost::shared_ptr<Stripable> ()
+	                    : selected.back ().stripable;
 
 	/* Get all stripables and sort into the appropriate ordering */
 	StripableList stripables;
@@ -246,7 +248,7 @@ CoreSelection::set (StripableList& sl)
 
 		for (StripableList::iterator s = sl.begin(); s != sl.end(); ++s) {
 
-			SelectedStripable ss (*s, no_control, g_atomic_int_add (&selection_order, 1));
+			SelectedStripable ss (*s, no_control, g_atomic_int_add (&_selection_order, 1));
 
 			if (_stripables.insert (ss).second) {
 				DEBUG_TRACE (DEBUG::Selection, string_compose ("set:added %1 to s/c selection\n", (*s)->name()));
@@ -293,7 +295,7 @@ CoreSelection::add (boost::shared_ptr<Stripable> s, boost::shared_ptr<Automation
 	{
 		Glib::Threads::RWLock::WriterLock lm (_lock);
 
-		SelectedStripable ss (s, c, g_atomic_int_add (&selection_order, 1));
+		SelectedStripable ss (s, c, g_atomic_int_add (&_selection_order, 1));
 
 		if (_stripables.insert (ss).second) {
 			DEBUG_TRACE (DEBUG::Selection, string_compose ("added %1/%2 to s/c selection\n", s->name(), c));
@@ -355,7 +357,7 @@ CoreSelection::set (boost::shared_ptr<Stripable> s, boost::shared_ptr<Automation
 	{
 		Glib::Threads::RWLock::WriterLock lm (_lock);
 
-		SelectedStripable ss (s, c, g_atomic_int_add (&selection_order, 1));
+		SelectedStripable ss (s, c, g_atomic_int_add (&_selection_order, 1));
 
 		if (_stripables.size() == 1 && _stripables.find (ss) != _stripables.end()) {
 			return;

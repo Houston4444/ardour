@@ -88,8 +88,8 @@ public:
 	void handle_fader_touch (Fader&, bool touch_on);
 	void handle_pot (Pot&, float delta);
 
-	void periodic (ARDOUR::microseconds_t now_usecs);
-	void redisplay (ARDOUR::microseconds_t now_usecs, bool force = true);
+	void periodic (PBD::microseconds_t now_usecs);
+	void redisplay (PBD::microseconds_t now_usecs, bool force = true);
 
 	void zero ();
 
@@ -129,10 +129,9 @@ private:
 	PBD::ScopedConnectionList stripable_connections;
 	PBD::ScopedConnectionList subview_connections;
 	PBD::ScopedConnectionList send_connections;
-	int       eq_band;
-	
+
 	int      _trickle_counter;
-	
+
 	ARDOUR::AutomationType  _pan_mode;
 
 	void notify_solo_changed ();

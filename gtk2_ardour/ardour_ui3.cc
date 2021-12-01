@@ -176,19 +176,21 @@ ARDOUR_UI::set_flat_buttons ()
 
 
 void
-ARDOUR_UI::update_transport_clocks (samplepos_t pos)
+ARDOUR_UI::update_transport_clocks (samplepos_t p)
 {
+	timepos_t pos (p);
+
 	switch (UIConfiguration::instance().get_primary_clock_delta_mode()) {
 		case NoDelta:
 			primary_clock->set (pos);
 			break;
 		case DeltaEditPoint:
-			primary_clock->set (pos, false, editor->get_preferred_edit_position (EDIT_IGNORE_PHEAD));
+			primary_clock->set (pos, false, timecnt_t (editor->get_preferred_edit_position (EDIT_IGNORE_PHEAD)));
 			break;
 		case DeltaOriginMarker:
 			{
 				Location* loc = _session->locations()->clock_origin_location ();
-				primary_clock->set (pos, false, loc ? loc->start() : 0);
+				primary_clock->set (pos, false, timecnt_t (loc ? loc->start_sample() : 0));
 			}
 			break;
 	}
@@ -198,12 +200,12 @@ ARDOUR_UI::update_transport_clocks (samplepos_t pos)
 			secondary_clock->set (pos);
 			break;
 		case DeltaEditPoint:
-			secondary_clock->set (pos, false, editor->get_preferred_edit_position (EDIT_IGNORE_PHEAD));
+			secondary_clock->set (pos, false, timecnt_t (editor->get_preferred_edit_position (EDIT_IGNORE_PHEAD)));
 			break;
 		case DeltaOriginMarker:
 			{
 				Location* loc = _session->locations()->clock_origin_location ();
-				secondary_clock->set (pos, false, loc ? loc->start() : 0);
+				secondary_clock->set (pos, false, timecnt_t (loc ? loc->start_sample() : 0));
 			}
 			break;
 	}
@@ -213,7 +215,7 @@ ARDOUR_UI::update_transport_clocks (samplepos_t pos)
 	}
 
 	if (!editor->preview_video_drag_active ()) {
-		ARDOUR_UI::instance()->video_timeline->manual_seek_video_monitor(pos);
+		ARDOUR_UI::instance()->video_timeline->manual_seek_video_monitor(p);
 	}
 }
 
@@ -230,12 +232,9 @@ ARDOUR_UI::record_state_changed ()
 
 	ActionManager::set_sensitive (ActionManager::rec_sensitive_actions, !_session->actively_recording());
 
-	if (big_clock_window) {
-		if (_session->record_status () == Session::Recording && _session->have_rec_enabled_track ()) {
-			big_clock->set_active (true);
-		} else {
-			big_clock->set_active (false);
-		}
+	if (_session->record_status () == Session::Recording && _session->have_rec_enabled_track ()) {
+		big_clock->set_active (true);
+	} else {
+		big_clock->set_active (false);
 	}
-
 }

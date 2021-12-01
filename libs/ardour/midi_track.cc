@@ -40,7 +40,9 @@
 #include "evoral/midi_util.h"
 
 #include "ardour/amp.h"
-#include "ardour/beats_samples_converter.h"
+#ifdef HAVE_BEATBOX
+#include "ardour/beatbox.h"
+#endif
 #include "ardour/buffer_set.h"
 #include "ardour/debug.h"
 #include "ardour/delivery.h"
@@ -84,6 +86,7 @@ MidiTrack::MidiTrack (Session& sess, string name, TrackMode mode)
 	, _note_mode (Sustained)
 	, _step_editing (false)
 	, _input_active (true)
+	, _restore_pgm_on_load (true)
 {
 	_session.SessionLoaded.connect_same_thread (*this, boost::bind (&MidiTrack::restore_controls, this));
 
@@ -108,6 +111,11 @@ MidiTrack::init ()
 	_disk_reader->reset_tracker ();
 
 	_disk_writer->DataRecorded.connect_same_thread (*this, boost::bind (&MidiTrack::data_recorded, this, _1));
+
+#ifdef HAVE_BEATBOX
+	_beatbox.reset (new BeatBox (_session));
+	add_processor (_beatbox, PostFader);
+#endif
 
 	return 0;
 }
@@ -173,6 +181,10 @@ MidiTrack::set_state (const XMLNode& node, int version)
 		set_input_active (yn);
 	}
 
+	if (node.get_property ("restore-pgm", yn)) {
+		set_restore_pgm_on_load (yn);
+	}
+
 	ChannelMode playback_channel_mode = AllChannels;
 	ChannelMode capture_channel_mode = AllChannels;
 
@@ -227,6 +239,7 @@ MidiTrack::state(bool save_template)
 
 		freeze_node = new XMLNode (X_("freeze-info"));
 		freeze_node->set_property ("playlist", _freeze_record.playlist->name());
+		freeze_node->set_property ("playlist-id", _freeze_record.playlist->id().to_s());
 		freeze_node->set_property ("state", _freeze_record.state);
 
 		for (vector<FreezeRecordProcessorInfo*>::iterator i = _freeze_record.processor_info.begin(); i != _freeze_record.processor_info.end(); ++i) {
@@ -250,6 +263,7 @@ MidiTrack::state(bool save_template)
 	root.set_property ("note-mode", _note_mode);
 	root.set_property ("step-editing", _step_editing);
 	root.set_property ("input-active", _input_active);
+	root.set_property ("restore-pgm", _restore_pgm_on_load);
 
 	for (Controls::const_iterator c = _controls.begin(); c != _controls.end(); ++c) {
 		if (boost::dynamic_pointer_cast<MidiTrack::MidiControl>(c->second)) {
@@ -266,6 +280,7 @@ void
 MidiTrack::set_state_part_two ()
 {
 	XMLNode* fnode;
+	XMLProperty const * prop;
 
 	/* This is called after all session state has been restored but before
 	   have been made ports and connections are established.
@@ -284,23 +299,28 @@ MidiTrack::set_state_part_two ()
 		}
 		_freeze_record.processor_info.clear ();
 
-		std::string str;
-		if (fnode->get_property (X_("playlist"), str)) {
-			boost::shared_ptr<Playlist> pl = _session.playlists()->by_name (str);
-			if (pl) {
-				_freeze_record.playlist = boost::dynamic_pointer_cast<MidiPlaylist> (pl);
-			} else {
-				_freeze_record.playlist.reset();
-				_freeze_record.state = NoFreeze;
-				return;
-			}
+		boost::shared_ptr<Playlist> freeze_pl;
+		if ((prop = fnode->property (X_("playlist-id"))) != 0) {
+			freeze_pl = _session.playlists()->by_id (prop->value());
+		} else if ((prop = fnode->property (X_("playlist"))) != 0) {
+			freeze_pl = _session.playlists()->by_name (prop->value());
 		}
+		if (freeze_pl) {
+			_freeze_record.playlist = boost::dynamic_pointer_cast<MidiPlaylist> (freeze_pl);
+			_freeze_record.playlist->use();
+		} else {
+			_freeze_record.playlist.reset ();
+			_freeze_record.state = NoFreeze;
+			return;
+		}
+
 
 		fnode->get_property (X_("state"), _freeze_record.state);
 
 		XMLNodeConstIterator citer;
 		XMLNodeList clist = fnode->children();
 
+		std::string str;
 		for (citer = clist.begin(); citer != clist.end(); ++citer) {
 			if ((*citer)->name() != X_("processor")) {
 				continue;
@@ -323,10 +343,22 @@ MidiTrack::set_state_part_two ()
 void
 MidiTrack::restore_controls ()
 {
-	// TODO order events (CC before PGM to set banks)
+	/* first CC (bank select) */
 	for (Controls::const_iterator c = _controls.begin(); c != _controls.end(); ++c) {
 		boost::shared_ptr<MidiTrack::MidiControl> mctrl = boost::dynamic_pointer_cast<MidiTrack::MidiControl>(c->second);
-		if (mctrl) {
+		if (mctrl && mctrl->parameter().type () != MidiPgmChangeAutomation) {
+			mctrl->restore_value();
+		}
+	}
+
+	if (!_restore_pgm_on_load) {
+		return;
+	}
+
+	/* then restore PGM */
+	for (Controls::const_iterator c = _controls.begin(); c != _controls.end(); ++c) {
+		boost::shared_ptr<MidiTrack::MidiControl> mctrl = boost::dynamic_pointer_cast<MidiTrack::MidiControl>(c->second);
+		if (mctrl && mctrl->parameter().type () == MidiPgmChangeAutomation) {
 			mctrl->restore_value();
 		}
 	}
@@ -341,8 +373,8 @@ MidiTrack::update_controls (BufferSet const& bufs)
 		const Evoral::Parameter                  param   = midi_parameter(ev.buffer(), ev.size());
 		const boost::shared_ptr<AutomationControl> control = automation_control (param);
 		if (control) {
-			double old = control->get_double (false, 0);
-			control->set_double (ev.value(), 0, false);
+			double old = control->get_double (false, timepos_t::zero (true));
+			control->set_double (ev.value(), timepos_t::zero (false), false);
 			if (old != ev.value()) {
 				control->Changed (false, Controllable::NoGroup);
 			}
@@ -377,9 +409,11 @@ MidiTrack::realtime_locate (bool for_loop_end)
 }
 
 void
-MidiTrack::non_realtime_locate (samplepos_t pos)
+MidiTrack::non_realtime_locate (samplepos_t spos)
 {
-	Track::non_realtime_locate(pos);
+	timepos_t pos (spos);
+
+	Track::non_realtime_locate (spos);
 
 	boost::shared_ptr<MidiPlaylist> playlist = _disk_writer->midi_playlist();
 	if (!playlist) {
@@ -387,7 +421,7 @@ MidiTrack::non_realtime_locate (samplepos_t pos)
 	}
 
 	/* Get the top unmuted region at this position. */
-	boost::shared_ptr<MidiRegion> region = boost::dynamic_pointer_cast<MidiRegion>(playlist->top_unmuted_region_at(pos));
+	boost::shared_ptr<MidiRegion> region = boost::dynamic_pointer_cast<MidiRegion> (playlist->top_unmuted_region_at (pos));
 
 	if (!region) {
 		return;
@@ -404,8 +438,7 @@ MidiTrack::non_realtime_locate (samplepos_t pos)
 	}
 
 	/* Update track controllers based on its "automation". */
-	const samplepos_t     origin = region->position() - region->start();
-	BeatsSamplesConverter bfc(_session.tempo_map(), origin);
+	const timepos_t pos_beats = timepos_t (region->source_position().distance (pos).beats ()); /* relative to source start */
 
 	for (Controls::const_iterator c = _controls.begin(); c != _controls.end(); ++c) {
 
@@ -421,9 +454,9 @@ MidiTrack::non_realtime_locate (samplepos_t pos)
 		if ((tcontrol = boost::dynamic_pointer_cast<MidiTrack::MidiControl>(c->second)) &&
 
 		    (rcontrol = region->control(tcontrol->parameter()))) {
-			const Temporal::Beats pos_beats = bfc.from(pos - origin);
+
 			if (rcontrol->list()->size() > 0) {
-				tcontrol->set_value(rcontrol->list()->eval(pos_beats.to_double()), Controllable::NoGroup);
+				tcontrol->set_value(rcontrol->list()->eval(pos_beats), Controllable::NoGroup);
 			}
 		}
 	}
@@ -657,8 +690,14 @@ MidiTrack::MidiControl::actually_set_value (double val, PBD::Controllable::Group
 		return;
 	}
 
+	if (_session.loading ()) {
+		/* send events later in MidiTrack::restore_controls */
+		AutomationControl::actually_set_value (val, group_override);
+		return;
+	}
+
 	assert(val <= desc.upper);
-	if ( ! _list || ! automation_playback()) {
+	if (!_list || !automation_playback ()) {
 		size_t size = 3;
 		uint8_t ev[3] = { parameter.channel(), uint8_t (val), 0 };
 		switch(parameter.type()) {
@@ -757,6 +796,22 @@ boost::shared_ptr<MidiPlaylist>
 MidiTrack::midi_playlist ()
 {
 	return boost::dynamic_pointer_cast<MidiPlaylist> (_playlists[DataType::MIDI]);
+}
+
+void
+MidiTrack::set_restore_pgm_on_load (bool yn)
+{
+	if (_restore_pgm_on_load == yn) {
+		return;
+	}
+	_restore_pgm_on_load = yn;
+	_session.set_dirty();
+}
+
+bool
+MidiTrack::restore_pgm_on_load () const
+{
+	return _restore_pgm_on_load;
 }
 
 bool

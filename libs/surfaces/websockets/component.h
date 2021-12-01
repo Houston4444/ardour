@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -53,7 +53,7 @@ public:
 	}
 
 	BasicUI&                     basic_ui () const;
-	PBD::EventLoop*              event_loop () const;
+	virtual PBD::EventLoop*      event_loop () const;
 	Glib::RefPtr<Glib::MainLoop> main_loop () const;
 	ARDOUR::Session&             session () const;
 	ArdourMixer&                 mixer () const;

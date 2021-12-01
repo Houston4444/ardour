@@ -31,7 +31,9 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/enable_shared_from_this.hpp>
 #include <boost/utility.hpp>
+
 #include "pbd/statefuldestructible.h"
+#include "pbd/g_atomic_compat.h"
 
 #include "ardour/ardour.h"
 #include "ardour/session_object.h"
@@ -72,9 +74,11 @@ public:
 	time_t timestamp() const { return _timestamp; }
 	void stamp (time_t when) { _timestamp = when; }
 
-	virtual bool        empty () const = 0;
-	virtual samplecnt_t length (samplepos_t pos) const = 0;
-	virtual void        update_length (samplecnt_t cnt) = 0;
+	virtual timecnt_t length() const { return _length; }
+	samplecnt_t length_samples () const { return _length.samples(); };
+
+	virtual bool        empty () const;
+	virtual void        update_length (timecnt_t const & cnt) {}
 
 	void                 set_take_id (std::string id) { _take_id =id; }
 	const std::string&   take_id ()        const { return _take_id; }
@@ -87,7 +91,7 @@ public:
 	virtual void session_saved() {}
 
 	XMLNode& get_state ();
-	int set_state (const XMLNode&, int version);
+	int set_state (XMLNode const &, int version);
 
 	bool         writable () const;
 
@@ -106,8 +110,21 @@ public:
 	std::string get_transients_path() const;
 	int load_transients (const std::string&);
 
-	virtual samplepos_t natural_position() const { return _natural_position; }
-	virtual void set_natural_position (samplepos_t pos);
+	size_t n_captured_xruns () const { return _xruns.size (); }
+	XrunPositions const& captured_xruns () const { return _xruns; }
+	void set_captured_xruns (XrunPositions const& xruns) { _xruns = xruns; }
+
+	CueMarkers const & cue_markers() const { return _cue_markers; }
+	bool add_cue_marker (CueMarker const &);
+	bool move_cue_marker (CueMarker const &, timepos_t const & source_relative_position);
+	bool remove_cue_marker (CueMarker const &);
+	bool rename_cue_marker (CueMarker&, std::string const &);
+	bool clear_cue_markers ();
+	PBD::Signal0<void> CueMarkersChanged;
+
+	virtual timepos_t natural_position() const { return _natural_position; }
+	virtual void set_natural_position (timepos_t const & pos);
+
 	bool have_natural_position() const { return _have_natural_position; }
 
 	void set_allow_remove_if_empty (bool yn);
@@ -117,7 +134,7 @@ public:
 
 	virtual void inc_use_count ();
 	virtual void dec_use_count ();
-	int  use_count() const { return g_atomic_int_get (const_cast<gint*>(&_use_count)); }
+	int  use_count() const { return g_atomic_int_get (&_use_count); }
 	bool used() const { return use_count() > 0; }
 
 	uint32_t level() const { return _level; }
@@ -128,25 +145,30 @@ public:
 	void set_captured_for (std::string str) { _captured_for = str; }
 	std::string captured_for() const { return _captured_for; }
 
-	static PBD::Signal1<void,boost::shared_ptr<ARDOUR::Source> > SourcePropertyChanged;
-
   protected:
 	DataType            _type;
 	Flag                _flags;
 	time_t              _timestamp;
 	std::string         _take_id;
-	samplepos_t          _natural_position;
-	samplepos_t          _have_natural_position;
+	timepos_t           _natural_position;
+	bool                _have_natural_position;
 	bool                _analysed;
-        mutable Glib::Threads::Mutex _lock;
-        mutable Glib::Threads::Mutex _analysis_lock;
-	gint                _use_count; /* atomic */
+	GATOMIC_QUAL gint _use_count; /* atomic */
 	uint32_t            _level; /* how deeply nested is this source w.r.t a disk file */
 	std::string         _ancestor_name;
 	std::string        _captured_for;
+	timecnt_t           _length;
+	XrunPositions      _xruns;
+	CueMarkers         _cue_markers;
+
+	mutable Glib::Threads::Mutex _lock;
+	mutable Glib::Threads::Mutex _analysis_lock;
 
   private:
 	void fix_writable_flags ();
+
+	XMLNode& get_cue_state () const;
+	int set_cue_state (XMLNode const &, int);
 };
 
 }

@@ -65,10 +65,6 @@
 #include "ardour/linux_vst_support.h"
 #endif
 
-#ifdef AUDIOUNIT_SUPPORT
-#include "ardour/audio_unit.h"
-#endif
-
 #if defined(__SSE__) || defined(USE_XMMINTRIN)
 #include <xmmintrin.h>
 #endif
@@ -84,6 +80,7 @@
 #include <lrdf.h>
 #endif
 
+#include "pbd/base_ui.h"
 #include "pbd/cpus.h"
 #include "pbd/enumwriter.h"
 #include "pbd/error.h"
@@ -124,10 +121,12 @@
 #include "ardour/region.h"
 #include "ardour/route_group.h"
 #include "ardour/runtime_functions.h"
+#include "ardour/session.h"
 #include "ardour/session_event.h"
 #include "ardour/source_factory.h"
 #include "ardour/transport_fsm.h"
 #include "ardour/transport_master_manager.h"
+#include "ardour/triggerbox.h"
 #include "ardour/uri_map.h"
 
 #include "audiographer/routines.h"
@@ -165,6 +164,7 @@ std::map<std::string, bool> ARDOUR::reserved_io_names;
 
 static bool have_old_configuration_files = false;
 static bool running_from_gui             = false;
+static int  cpu_dma_latency_fd           = -1;
 
 namespace ARDOUR {
 extern void setup_enum_writer ();
@@ -176,6 +176,7 @@ extern void setup_enum_writer ();
 PBD::PropertyChange ARDOUR::bounds_change;
 
 static PBD::ScopedConnection engine_startup_connection;
+static PBD::ScopedConnection config_connection;
 
 void
 setup_hardware_optimization (bool try_optimization)
@@ -280,6 +281,60 @@ setup_hardware_optimization (bool try_optimization)
 
 	AudioGrapher::Routines::override_compute_peak (compute_peak);
 	AudioGrapher::Routines::override_apply_gain_to_buffer (apply_gain_to_buffer);
+}
+
+static void
+release_dma_latency (bool log = true)
+{
+#if !(defined PLATFORM_WINDOWS || defined __APPLE__)
+	if (cpu_dma_latency_fd >= 0) {
+		::close (cpu_dma_latency_fd);
+		if (log) {
+			info << _("Released CPU DMA latency request") << endmsg;
+		}
+	}
+	cpu_dma_latency_fd = -1;
+#endif
+}
+
+static bool
+request_dma_latency ()
+{
+#if !(defined PLATFORM_WINDOWS || defined __APPLE__)
+	if (!Glib::file_test ("/dev/cpu_dma_latency", Glib::FILE_TEST_EXISTS)) {
+		return false;
+	}
+
+	/* maximum latency in usecs, or 0 to prevent transitions to deep sleep states */
+	int32_t target = Config->get_cpu_dma_latency ();
+
+	if (target < 0) {
+		release_dma_latency ();
+		return true;
+	}
+
+	release_dma_latency (false);
+
+	cpu_dma_latency_fd = ::open("/dev/cpu_dma_latency", O_WRONLY);
+	if (cpu_dma_latency_fd < 0) {
+		warning << string_compose (_("Could not set CPU DMA latency to %1 usec (%2)"), target, strerror (errno)) << endmsg;
+		return false;
+	}
+	if (::write (cpu_dma_latency_fd, &target, sizeof(target)) > 0) {
+		info << string_compose (_("Set CPU DMA latency to %1 usec"), target) << endmsg;
+	} else {
+		warning << string_compose (_("Could not set CPU DMA latency to %1 usec (%2)"), target, strerror (errno)) << endmsg;
+	}
+#endif
+	return true;
+}
+
+static void
+config_changed (std::string what_changed)
+{
+	if (what_changed == "cpu-dma-latency") {
+		request_dma_latency ();
+	}
 }
 
 static void
@@ -464,11 +519,13 @@ ARDOUR::handle_old_configuration_files (boost::function<bool(std::string const&,
 }
 
 bool
-ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir, bool with_gui)
+ARDOUR::init (bool try_optimization, const char* localedir, bool with_gui)
 {
 	if (libardour_initialized) {
 		return true;
 	}
+
+	Temporal::set_sample_rate_callback (AudioEngine::static_sample_rate);
 
 	running_from_gui = with_gui;
 
@@ -485,6 +542,8 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 	if (!PBD::init ())
 		return false;
 
+	Temporal::init ();
+
 #if ENABLE_NLS
 	(void)bindtextdomain (PACKAGE, localedir);
 	(void)bind_textdomain_codeset (PACKAGE, "UTF-8");
@@ -492,17 +551,18 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 
 	SessionEvent::init_event_pool ();
 	TransportFSM::Event::init_pool ();
+	TriggerBox::init ();
 
 	Operations::make_operations_quarks ();
 	SessionObject::make_property_quarks ();
 	Region::make_property_quarks ();
-	MidiRegion::make_property_quarks ();
 	AudioRegion::make_property_quarks ();
 	RouteGroup::make_property_quarks ();
 	Playlist::make_property_quarks ();
 	AudioPlaylist::make_property_quarks ();
 	PresentationInfo::make_property_quarks ();
 	TransportMaster::make_property_quarks ();
+	Trigger::make_property_quarks ();
 
 	/* this is a useful ready to use PropertyChange that many
 	   things need to check. This avoids having to compose
@@ -538,11 +598,6 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 		return false;
 	}
 
-	Config->set_use_windows_vst (use_windows_vst);
-#ifdef LXVST_SUPPORT
-	Config->set_use_lxvst (true);
-#endif
-
 	Profile = new RuntimeProfile;
 
 #ifdef WINDOWS_VST_SUPPORT
@@ -557,11 +612,11 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 	}
 #endif
 
-#ifdef AUDIOUNIT_SUPPORT
-	AUPluginInfo::load_cached_info ();
-#endif
-
 	setup_hardware_optimization (try_optimization);
+
+	if (Config->get_cpu_dma_latency () >= 0) {
+		request_dma_latency ();
+	}
 
 	SourceFactory::init ();
 	Analyser::init ();
@@ -614,6 +669,10 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 	reserved_io_names[_("Master")]              = true;
 	reserved_io_names[X_("auditioner")]         = true; // auditioner.cc  Track (s, "auditioner",...)
 	reserved_io_names[X_("x-virtual-keyboard")] = false;
+	reserved_io_names[X_("MIDI Tracer 1")]      = false;
+	reserved_io_names[X_("MIDI Tracer 2")]      = false;
+	reserved_io_names[X_("MIDI Tracer 3")]      = false;
+	reserved_io_names[X_("MIDI Tracer 4")]      = false;
 
 	/* pure I/O */
 	reserved_io_names[X_("Click")]           = false; // session.cc ClickIO (*this, X_("Click")
@@ -629,6 +688,8 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 	reserved_io_names[_("FaderPort16 Send")] = false;
 
 	MIDI::Name::MidiPatchManager::instance ().load_midnams_in_thread ();
+
+	Config->ParameterChanged.connect_same_thread (config_connection, boost::bind (&config_changed, _1));
 
 	libardour_initialized = true;
 
@@ -656,6 +717,8 @@ ARDOUR::init_post_engine (uint32_t start_cnt)
 		}
 	}
 
+	BaseUI::set_thread_priority (pbd_absolute_rt_priority (PBD_SCHED_FIFO, AudioEngine::instance()->client_real_time_priority () - 2));
+
 	TransportMasterManager::instance ().restart ();
 }
 
@@ -666,6 +729,10 @@ ARDOUR::cleanup ()
 		return;
 	}
 
+	delete TriggerBox::worker;
+
+	release_dma_latency ();
+	config_connection.disconnect ();
 	engine_startup_connection.disconnect ();
 
 	delete &ControlProtocolManager::instance ();
@@ -856,57 +923,6 @@ ARDOUR::get_available_sync_options ()
 	return ret;
 }
 
-/** Return a monotonic value for the number of microseconds that have elapsed
- * since an arbitrary zero origin.
- */
-
-#ifdef __MACH__
-/* Thanks Apple for not implementing this basic SUSv2, POSIX.1-2001 function
- */
-#include <mach/mach_time.h>
-#define CLOCK_REALTIME 0
-#define CLOCK_MONOTONIC 0
-int
-clock_gettime (int /*clk_id*/, struct timespec* t)
-{
-	static bool                      initialized = false;
-	static mach_timebase_info_data_t timebase;
-	if (!initialized) {
-		mach_timebase_info (&timebase);
-		initialized = true;
-	}
-	uint64_t time;
-	time            = mach_absolute_time ();
-	double nseconds = ((double)time * (double)timebase.numer) / ((double)timebase.denom);
-	double seconds  = ((double)time * (double)timebase.numer) / ((double)timebase.denom * 1e9);
-	t->tv_sec       = seconds;
-	t->tv_nsec      = nseconds;
-	return 0;
-}
-#endif
-
-microseconds_t
-ARDOUR::get_microseconds ()
-{
-#ifdef PLATFORM_WINDOWS
-	microseconds_t ret = 0;
-	LARGE_INTEGER  freq, time;
-
-	if (QueryPerformanceFrequency (&freq))
-		if (QueryPerformanceCounter (&time))
-			ret = (microseconds_t) ((time.QuadPart * 1000000) / freq.QuadPart);
-
-	return ret;
-#else
-	struct timespec ts;
-	if (clock_gettime (CLOCK_MONOTONIC, &ts) != 0) {
-		/* EEEK! */
-		return 0;
-	}
-	return (microseconds_t)ts.tv_sec * 1000000 + (ts.tv_nsec / 1000);
-#endif
-}
-
 /** Return the number of bits per sample for a given sample format.
  *
  * This is closely related to sndfile_data_width() but does NOT
@@ -924,5 +940,21 @@ ARDOUR::format_data_width (ARDOUR::SampleFormat format)
 			return 24;
 		default:
 			return 32;
+	}
+}
+
+void
+ARDOUR::reset_performance_meters (Session *session)
+{
+	if (session) {
+		for (size_t n = 0; n < Session::NTT; ++n) {
+			session->dsp_stats[n].queue_reset ();
+		}
+	}
+	for (size_t n = 0; n < AudioEngine::NTT; ++n) {
+		AudioEngine::instance()->dsp_stats[n].queue_reset ();
+	}
+	for (size_t n = 0; n < AudioBackend::NTT; ++n) {
+		AudioEngine::instance()->current_backend()->dsp_stats[n].queue_reset ();
 	}
 }

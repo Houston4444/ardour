@@ -342,7 +342,7 @@ MidiStreamView::draw_note_lines()
 		 */
 
 		if (i <= highest_note()) {
-			_note_lines->add (y, 1.0, UIConfiguration::instance().color ("piano roll black outline"));
+			_note_lines->add_coord (y, 1.0, UIConfiguration::instance().color ("piano roll black outline"));
 		}
 
 		/* now add a thicker line/bar which covers the entire vertical
@@ -366,7 +366,7 @@ MidiStreamView::draw_note_lines()
 		double mid = y + (h/2.0);
 
 		if (mid >= 0 && h > 1.0) {
-			_note_lines->add (mid, h, color);
+			_note_lines->add_coord (mid, h, color);
 		}
 
 		prev_y = y;
@@ -474,10 +474,10 @@ MidiStreamView::setup_rec_box ()
 
 				// handle multi
 
-				samplepos_t start = 0;
+				timepos_t start;
 				if (rec_regions.size() > 0) {
 					start = rec_regions.back().first->start()
-					        + _trackview.track()->get_captured_samples (rec_regions.size() - 1);
+						+ timepos_t (_trackview.track()->get_captured_samples (rec_regions.size() - 1));
 				}
 
 				if (!rec_regions.empty()) {
@@ -488,29 +488,26 @@ MidiStreamView::setup_rec_box ()
 				PropertyList plist;
 
 				plist.add (ARDOUR::Properties::start, start);
-				plist.add (ARDOUR::Properties::length, 1);
-				/* Just above we're setting this nascent region's length to 1.  I think this
-				   is so that the RegionView gets created with a non-zero width, as apparently
-				   creating a RegionView with a zero width causes it never to be displayed
-				   (there is a warning in TimeAxisViewItem::init about this).  However, we
-				   must also set length_beats to something non-zero, otherwise the sample length
-				   of 1 causes length_beats to be set to some small quantity << 1.  Then
-				   when the position is set up below, this length_beats is used to recompute
-				   length using BeatsSamplesConverter::to, which is slightly innacurate for small
-				   beats values because it converts floating point beats to bars, beats and
-				   integer ticks.  The upshot of which being that length gets set back to 0,
-				   meaning no region view is ever seen, meaning no MIDI notes during record (#3820).
+				plist.add (ARDOUR::Properties::length, timepos_t (Temporal::Beats::ticks (1)));
+				/* Just above we're setting this nascent region's length to 1 tick.  I think this is so
+				   that the RegionView gets created with a non-zero width, as apparently creating a
+				   RegionView with a zero width causes it never to be displayed (there is a warning in
+				   TimeAxisViewItem::init about this). We don't want to use 1 sample since that results
+				   in zero length musical time duration.
 				*/
-				plist.add (ARDOUR::Properties::length_beats, 1);
 				plist.add (ARDOUR::Properties::name, string());
 				plist.add (ARDOUR::Properties::layer, 0);
 
 				boost::shared_ptr<MidiRegion> region (boost::dynamic_pointer_cast<MidiRegion>
 				                                      (RegionFactory::create (sources, plist, false)));
 				if (region) {
-					region->set_start (_trackview.track()->current_capture_start()
-					                   - _trackview.track()->get_capture_start_sample (0));
-					region->set_position (_trackview.session()->transport_sample());
+
+					/* MIDI regions should likely not be positioned using audio time, but this is
+					 * just a rec-region, so we don't really care
+					 */
+
+					region->set_start (timepos_t (_trackview.track()->current_capture_start() - _trackview.track()->get_capture_start_sample (0)));
+					region->set_position (timepos_t (_trackview.track()->current_capture_start ()));
 
 					RegionView* rv = add_region_view_internal (region, false, true);
 					MidiRegionView* mrv = dynamic_cast<MidiRegionView*> (rv);
@@ -630,7 +627,7 @@ MidiStreamView::update_rec_box ()
 
 	/* Update the region being recorded to reflect where we currently are */
 	boost::shared_ptr<ARDOUR::Region> region = rec_regions.back().first;
-	region->set_length (_trackview.track()->current_capture_end () - _trackview.track()->current_capture_start(), 0);
+	region->set_length (timecnt_t (_trackview.track()->current_capture_end () - _trackview.track()->current_capture_start()));
 
 	MidiRegionView* mrv = dynamic_cast<MidiRegionView*> (rec_regions.back().second);
 	mrv->extend_active_notes ();
@@ -682,7 +679,7 @@ struct RegionPositionSorter {
 };
 
 bool
-MidiStreamView::paste (ARDOUR::samplepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t sub_num)
+MidiStreamView::paste (timepos_t const & pos, const Selection& selection, PasteContext& ctx)
 {
 	/* Paste into the first region which starts on or before pos.  Only called when
 	   using an internal editing tool. */
@@ -710,7 +707,7 @@ MidiStreamView::paste (ARDOUR::samplepos_t pos, const Selection& selection, Past
 	}
 
 	MidiRegionView* mrv = dynamic_cast<MidiRegionView*> (*prev);
-	return mrv ? mrv->paste(pos, selection, ctx, sub_num) : false;
+	return mrv ? mrv->paste(pos, selection, ctx) : false;
 }
 
 void

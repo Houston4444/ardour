@@ -22,6 +22,9 @@
 
 #include <list>
 #include <vector>
+#include <boost/optional.hpp>
+
+#include "pbd/g_atomic_compat.h"
 
 #include "ardour/disk_io.h"
 #include "ardour/midi_buffer.h"
@@ -35,7 +38,7 @@ class MidiSource;
 class LIBARDOUR_API DiskWriter : public DiskIOProcessor
 {
 public:
-	DiskWriter (Session&, std::string const& name,
+	DiskWriter (Session&, Track&, std::string const& name,
 	            DiskIOProcessor::Flag f = DiskIOProcessor::Flag (0));
 	~DiskWriter ();
 
@@ -58,13 +61,7 @@ public:
 
 	bool set_write_source_name (const std::string& str);
 
-	std::string write_source_name () const {
-		if (_write_source_name.empty ()) {
-			return name ();
-		} else {
-			return _write_source_name;
-		}
-	}
+	std::string write_source_name () const;
 
 	boost::shared_ptr<AudioFileSource> audio_write_source (uint32_t n = 0) {
 		boost::shared_ptr<ChannelList> c = channels.reader ();
@@ -89,15 +86,17 @@ public:
 
 	std::list<boost::shared_ptr<Source> >& last_capture_sources () { return _last_capture_sources; }
 
-	bool record_enabled () const { return g_atomic_int_get (const_cast<gint*> (&_record_enabled)); }
-	bool record_safe () const { return g_atomic_int_get (const_cast<gint*> (&_record_safe)); }
+	bool record_enabled () const { return g_atomic_int_get (&_record_enabled); }
+	bool record_safe () const { return g_atomic_int_get (&_record_safe); }
 
 	void set_record_enabled (bool yn);
 	void set_record_safe (bool yn);
+	void mark_capture_xrun ();
 
 	/** @return Start position of currently-running capture (in session samples) */
-	samplepos_t current_capture_start () const { return _capture_start_sample; }
-	samplepos_t current_capture_end () const { return _capture_start_sample + _capture_captured; }
+	samplepos_t current_capture_start () const;
+	samplepos_t current_capture_end () const;
+
 	samplepos_t get_capture_start_sample (uint32_t n = 0) const;
 	samplecnt_t get_captured_samples (uint32_t n = 0) const;
 
@@ -148,8 +147,6 @@ protected:
 private:
 	static samplecnt_t _chunk_samples;
 
-	void prepare_record_status (samplepos_t /*capture_start_sample*/);
-
 	int add_channel_to (boost::shared_ptr<ChannelList>, uint32_t how_many);
 
 	void engage_record_enable ();
@@ -160,35 +157,40 @@ private:
 	bool prep_record_enable ();
 	bool prep_record_disable ();
 
-	void calculate_record_range (Evoral::OverlapType ot, samplepos_t transport_sample,
+	void calculate_record_range (Temporal::OverlapType ot, samplepos_t transport_sample,
 	                             samplecnt_t nframes, samplecnt_t& rec_nframes,
 	                             samplecnt_t& rec_offset);
 
 	void check_record_status (samplepos_t transport_sample, double speed, bool can_record);
 	void finish_capture (boost::shared_ptr<ChannelList> c);
+	void reset_capture ();
 
 	void loop (samplepos_t);
 
 	CaptureInfos                 capture_info;
 	mutable Glib::Threads::Mutex capture_info_lock;
 
-	gint          _record_enabled;
-	gint          _record_safe;
-	samplepos_t   _capture_start_sample;
+	boost::optional<samplepos_t> _capture_start_sample;
+
 	samplecnt_t   _capture_captured;
 	bool          _was_recording;
+	bool          _xrun_flag;
+	XrunPositions _xruns;
 	samplepos_t   _first_recordable_sample;
 	samplepos_t   _last_recordable_sample;
 	int           _last_possibly_recording;
 	AlignStyle    _alignment_style;
 	std::string   _write_source_name;
 	NoteMode      _note_mode;
-	volatile gint _samples_pending_write;
-	volatile gint _num_captured_loops;
 	samplepos_t   _accumulated_capture_offset;
 
 	bool          _transport_looped;
 	samplepos_t   _transport_loop_sample;
+
+	GATOMIC_QUAL gint _record_enabled;
+	GATOMIC_QUAL gint _record_safe;
+	GATOMIC_QUAL gint _samples_pending_write;
+	GATOMIC_QUAL gint _num_captured_loops;
 
 	boost::shared_ptr<SMFSource> _midi_write_source;
 

@@ -168,8 +168,6 @@ MidiTimeAxisView::set_route (boost::shared_ptr<Route> rt)
 
 	_view->apply_color (ARDOUR_UI_UTILS::gdk_color_to_rgba (color()), StreamView::RegionColor);
 
-	subplugin_menu.set_name ("ArdourContextMenu");
-
 	_note_range_changed_connection.disconnect();
 
 	if (!gui_property ("note-range-min").empty ()) {
@@ -180,8 +178,6 @@ MidiTimeAxisView::set_route (boost::shared_ptr<Route> rt)
 
 	_view->ContentsHeightChanged.connect (
 		sigc::mem_fun (*this, &MidiTimeAxisView::contents_height_changed));
-
-	ignore_toggle = false;
 
 	if (is_midi_track()) {
 		_note_mode = midi_track()->note_mode();
@@ -639,9 +635,20 @@ MidiTimeAxisView::append_extra_display_menu_items ()
 	items.push_back (MenuElem (_("Patch Selector..."),
 				sigc::mem_fun(*this, &RouteUI::select_midi_patch)));
 
+	items.push_back (CheckMenuElem (_("Restore Patch")));
+	Gtk::CheckMenuItem* cmi = dynamic_cast<Gtk::CheckMenuItem *> (&items.back());
+	cmi->set_active (midi_track ()->restore_pgm_on_load ());
+	cmi->signal_activate().connect (sigc::mem_fun (*this, &MidiTimeAxisView::toggle_restore_pgm_on_load));
+
 	items.push_back (MenuElem (_("Color Mode"), *build_color_mode_menu ()));
 
 	items.push_back (SeparatorElem ());
+}
+
+void
+MidiTimeAxisView::toggle_restore_pgm_on_load ()
+{
+	midi_track ()->set_restore_pgm_on_load (!midi_track ()->restore_pgm_on_load ());
 }
 
 void
@@ -1633,29 +1640,54 @@ MidiTimeAxisView::automation_child_menu_item (Evoral::Parameter param)
 }
 
 boost::shared_ptr<MidiRegion>
-MidiTimeAxisView::add_region (samplepos_t f, samplecnt_t length, bool commit)
+MidiTimeAxisView::add_region (timepos_t const & f, timecnt_t const & length, bool commit)
 {
 	Editor* real_editor = dynamic_cast<Editor*> (&_editor);
-	MusicSample pos (f, 0);
+	timepos_t pos (f);
 
 	if (commit) {
 		real_editor->begin_reversible_command (Operations::create_region);
 	}
 	playlist()->clear_changes ();
 
-	real_editor->snap_to (pos, RoundNearest);
+	real_editor->snap_to (pos, Temporal::RoundNearest);
 
 	boost::shared_ptr<Source> src = _session->create_midi_source_by_stealing_name (view()->trackview().track());
-	PropertyList plist;
 
-	plist.add (ARDOUR::Properties::start, 0);
-	plist.add (ARDOUR::Properties::length, length);
-	plist.add (ARDOUR::Properties::name, PBD::basename_nosuffix(src->name()));
+	const Temporal::timecnt_t start (Temporal::BeatTime); /* zero beats */
 
-	boost::shared_ptr<Region> region = (RegionFactory::create (src, plist));
-	/* sets beat position */
-	region->set_position (pos.sample, pos.division);
-	playlist()->add_region (region, pos.sample, 1.0, false, pos.division);
+	boost::shared_ptr<Region> region;
+
+	/* Create the (empty) whole-file region that will show up in the source
+	 * list. This is NOT used in any playlists.
+	 */
+
+	{
+		PropertyList plist;
+
+		plist.add (ARDOUR::Properties::start, start);
+		plist.add (ARDOUR::Properties::length, length);
+		plist.add (ARDOUR::Properties::automatic, true);
+		plist.add (ARDOUR::Properties::whole_file, true);
+		plist.add (ARDOUR::Properties::name, PBD::basename_nosuffix(src->name()));
+
+		region = (RegionFactory::create (src, plist, true));
+	}
+
+	/* Now create the region that we will actually use within the playlist */
+
+	{
+		PropertyList plist;
+
+		plist.add (ARDOUR::Properties::start, start);
+		plist.add (ARDOUR::Properties::length, length);
+		plist.add (ARDOUR::Properties::name, region->name());
+
+		region = RegionFactory::create (region, plist, false);
+	}
+
+	region->set_position (pos);
+	playlist()->add_region (region, pos, 1.0, false);
 	_session->add_command (new StatefulDiffCommand (playlist()));
 
 	if (commit) {
@@ -1692,8 +1724,12 @@ MidiTimeAxisView::stop_step_editing ()
  *  of the channel selector.
  */
 uint8_t
-MidiTimeAxisView::get_channel_for_add () const
+MidiTimeAxisView::get_preferred_midi_channel () const
 {
+	if (_editor.draw_channel() != Editing::DRAW_CHAN_AUTO) {
+		return _editor.draw_channel();
+	}
+
 	uint16_t const chn_mask = midi_track()->get_playback_channel_mask();
 	int chn_cnt = 0;
 	uint8_t channel = 0;
@@ -1730,14 +1766,14 @@ MidiTimeAxisView::contents_height_changed ()
 }
 
 bool
-MidiTimeAxisView::paste (samplepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t sub_num)
+MidiTimeAxisView::paste (timepos_t const & pos, const Selection& selection, PasteContext& ctx)
 {
 	if (!_editor.internal_editing()) {
 		// Non-internal paste, paste regions like any other route
-		return RouteTimeAxisView::paste(pos, selection, ctx, sub_num);
+		return RouteTimeAxisView::paste (pos, selection, ctx);
 	}
 
-	return midi_view()->paste(pos, selection, ctx, sub_num);
+	return midi_view()->paste (pos, selection, ctx);
 }
 
 void

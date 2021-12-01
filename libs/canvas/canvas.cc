@@ -35,7 +35,6 @@
 #include "gtkmm2ext/persistent_tooltip.h"
 
 #include "pbd/compose.h"
-#include "pbd/stacktrace.h"
 
 #include "canvas/canvas.h"
 #include "gtkmm2ext/colors.h"
@@ -109,6 +108,9 @@ Canvas::zoomed ()
 	pick_current_item (0); // no current mouse position
 }
 
+static bool debug_render = false;
+#define CANVAS_DEBUG
+
 /** Render an area of the canvas.
  *  @param area Area in window coordinates.
  *  @param context Cairo context to render to.
@@ -121,11 +123,11 @@ Canvas::render (Rect const & area, Cairo::RefPtr<Cairo::Context> const & context
 	_last_render_start_timestamp = g_get_monotonic_time();
 
 #ifdef CANVAS_DEBUG
-	if (DEBUG_ENABLED(PBD::DEBUG::CanvasRender)) {
+	if (debug_render || DEBUG_ENABLED(PBD::DEBUG::CanvasRender)) {
 		cerr << this << " RENDER: " << area << endl;
-		//cerr << "CANVAS @ " << this << endl;
-		//dump (cerr);
-		//cerr << "-------------------------\n";
+		 cerr << "CANVAS @ " << this << endl;
+		 dump (cerr);
+		 cerr << "-------------------------\n";
 	}
 #endif
 
@@ -134,6 +136,7 @@ Canvas::render (Rect const & area, Cairo::RefPtr<Cairo::Context> const & context
 	Rect root_bbox = _root.bounding_box();
 	if (!root_bbox) {
 		/* the root has no bounding box, so there's nothing to render */
+		cerr << "no bbox\n";
 		return;
 	}
 
@@ -411,7 +414,41 @@ Canvas::item_moved (Item* item, Rect pre_change_parent_bounding_box)
 void
 Canvas::queue_draw_item_area (Item* item, Rect area)
 {
-	request_redraw (item->item_to_window (area));
+	if ((area.width()) > 1.0 && (area.height() > 1.0)) {
+		/* item has a rectangular bounding box, which may fall
+		 * on non-integer locations. Expand it appropriately.
+		 */
+		Rect r = item->item_to_window (area, false);
+		r.x0 = floor (r.x0);
+		r.y0 = floor (r.y0);
+		r.x1 = ceil (r.x1);
+		r.y1 = ceil (r.y1);
+		//std::cerr << "redraw box, adjust from " << area << " to " << r << std::endl;
+		request_redraw (r);
+		return;
+	} else if (area.width() > 1.0 && area.height() == 1.0) {
+		/* horizontal line, which may fall on non-integer
+		 * coordinates.
+		 */
+		Rect r = item->item_to_window (area, false);
+		r.y0 = floor (r.y0);
+		r.y1 = ceil (r.y1);
+		//std::cerr << "redraw HLine, adjust from " << area << " to " << r << std::endl;
+		request_redraw (r);
+	} else if (area.width() == 1.0 && area.height() > 1.0) {
+		/* vertical single pixel line, which may fall on non-integer
+		 * coordinates
+		 */
+		Rect r = item->item_to_window (area, false);
+		r.x0 = floor (r.x0);
+		r.x1 = ceil (r.x1);
+		//std::cerr << "redraw VLine, adjust from " << area << " to " << r << std::endl;
+		request_redraw (r);
+	} else {
+		/* impossible? one of width or height must be zero ... */
+		//std::cerr << "redraw IMPOSSIBLE of " << area  << std::endl;
+		request_redraw (item->item_to_window (area, false));
+	}
 }
 
 void
@@ -451,6 +488,7 @@ GtkCanvas::GtkCanvas ()
 	, current_tooltip_item (0)
 	, tooltip_window (0)
 	, _in_dtor (false)
+	, resize_queued (false)
 	, _nsglview (0)
 {
 #ifdef USE_CAIRO_IMAGE_SURFACE /* usually Windows builds */
@@ -519,9 +557,9 @@ GtkCanvas::pick_current_item (Duple const & point, int state)
 	if (DEBUG_ENABLED(PBD::DEBUG::CanvasEnterLeave)) {
 		for (vector<Item const*>::const_iterator it = items.begin(); it != items.end(); ++it) {
 #ifdef CANVAS_DEBUG
-			std::cerr << "\tItem " << (*it)->whatami() << '/' << (*it)->name << " ignore events ? " << (*it)->ignore_events() << " vis ? " << (*it)->visible() << std::endl;
+			// std::cerr << "\tItem " << (*it)->whatami() << '/' << (*it)->name << " ignore events ? " << (*it)->ignore_events() << " vis ? " << (*it)->visible() << std::endl;
 #else
-			std::cerr << "\tItem " << (*it)->whatami() << '/' << " ignore events ? " << (*it)->ignore_events() << " vis ? " << (*it)->visible() << std::endl;
+			// std::cerr << "\tItem " << (*it)->whatami() << '/' << " ignore events ? " << (*it)->ignore_events() << " vis ? " << (*it)->visible() << std::endl;
 #endif
 		}
 	}
@@ -851,11 +889,15 @@ GtkCanvas::on_realize ()
 		Gtkmm2ext::nsglview_overlay (_nsglview, get_window()->gobj());
 	}
 #endif
+
+	_root.set_fill (false);
+	_root.set_outline (false);
 }
 
 void
 GtkCanvas::on_size_allocate (Gtk::Allocation& a)
 {
+	std::cerr << "GtkCanvas::size_allocate (" << a.get_width() << " x " << a.get_height() << ")\n";
 	EventBox::on_size_allocate (a);
 
 	if (_use_image_surface) {
@@ -874,6 +916,12 @@ GtkCanvas::on_size_allocate (Gtk::Allocation& a)
 	}
 #endif
 
+	/* x, y in a are relative to the parent. When passing this down to the
+	   root group, this origin is effectively 0,0
+	*/
+
+	Rect r (0., 0., a.get_width(), a.get_height());
+	_root.size_allocate (r);
 }
 
 /** Handler for GDK expose events.
@@ -1090,7 +1138,6 @@ GtkCanvas::get_mouse_position (Duple& winpos) const
 	Glib::RefPtr<Gdk::Window> self = Glib::RefPtr<Gdk::Window>::cast_const (get_window ());
 
 	if (!self) {
-		std::cerr << " no self window\n";
 		winpos = Duple (0, 0);
 		return false;
 	}
@@ -1449,6 +1496,23 @@ GtkCanvas::get_pango_context ()
 	return Glib::wrap (gdk_pango_context_get());
 }
 
+void
+GtkCanvas::queue_resize ()
+{
+	if (!resize_queued) {
+		Glib::signal_idle().connect (sigc::mem_fun (*this, &GtkCanvas::resize_handler));
+		resize_queued = true;
+	}
+}
+
+bool
+GtkCanvas::resize_handler ()
+{
+	resize_queued = false;
+	_root.layout ();
+	return false;
+}
+
 /** Create a GtkCanvaSViewport.
  *  @param hadj Adjustment to use for horizontal scrolling.
  *  @param vadj Adjustment to use for vertica scrolling.
@@ -1477,9 +1541,12 @@ GtkCanvasViewport::scrolled ()
 void
 GtkCanvasViewport::on_size_request (Gtk::Requisition* req)
 {
-	/* force the canvas to size itself */
-	// _canvas.root()->bounding_box();
+	Distance width;
+	Distance height;
 
-	req->width = 16;
-	req->height = 16;
+	_canvas.root()->size_request (width, height);
+	_canvas.request_size (Duple (width, height));
+
+	req->width = width;
+	req->height = height;
 }

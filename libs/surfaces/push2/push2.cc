@@ -130,9 +130,6 @@ Push2::Push2 (ARDOUR::Session& s)
 	/* Catch port connections and disconnections */
 	ARDOUR::AudioEngine::instance()->PortConnectedOrDisconnected.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&Push2::connection_handler, this, _1, _2, _3, _4, _5), this);
 
-	/* Catch name changes, notify GUI */
-	ARDOUR::AudioEngine::instance()->PortPrettyNameChanged.connect (port_connections, MISSING_INVALIDATOR, boost::bind (&Push2::ConnectionChange, this), this);
-
 	/* Push 2 ports might already be there */
 	port_registration_handler ();
 }
@@ -407,7 +404,7 @@ Push2::init_buttons (bool startup)
 
 		ButtonID off_buttons[] = { TapTempo, Setup, User, Stop, Convert, New, FixedLength,
 		                           Fwd32ndT, Fwd32nd, Fwd16thT, Fwd16th, Fwd8thT, Fwd8th, Fwd4trT, Fwd4tr,
-		                           Accent, Note, Session,  };
+		                           Accent, Note };
 
 		for (size_t n = 0; n < sizeof (off_buttons) / sizeof (off_buttons[0]); ++n) {
 			boost::shared_ptr<Button> b = id_button_map[off_buttons[n]];
@@ -1014,6 +1011,7 @@ Push2::set_state (const XMLNode & node, int version)
 	if ((child = node.child (X_("Input"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			_async_in->set_state (*portnode, version);
 		}
 	}
@@ -1021,6 +1019,7 @@ Push2::set_state (const XMLNode & node, int version)
 	if ((child = node.child (X_("Output"))) != 0) {
 		XMLNode* portnode = child->child (Port::state_node_name.c_str());
 		if (portnode) {
+			portnode->remove_property ("name");
 			_async_out->set_state (*portnode, version);
 		}
 	}
@@ -1079,10 +1078,11 @@ Push2::other_vpot_touch (int n, bool touching)
 		if (master) {
 			boost::shared_ptr<AutomationControl> ac = master->gain_control();
 			if (ac) {
+				const timepos_t now (session->audible_sample());
 				if (touching) {
-					ac->start_touch (session->audible_sample());
+					ac->start_touch (now);
 				} else {
-					ac->stop_touch (session->audible_sample());
+					ac->stop_touch (now);
 				}
 			}
 		}

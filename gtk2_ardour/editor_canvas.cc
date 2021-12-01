@@ -223,9 +223,9 @@ Editor::initialize_canvas ()
 	range_marker_bar->Event.connect (sigc::bind (sigc::mem_fun (*this, &Editor::canvas_range_marker_bar_event), range_marker_bar));
 	transport_marker_bar->Event.connect (sigc::bind (sigc::mem_fun (*this, &Editor::canvas_transport_marker_bar_event), transport_marker_bar));
 
-	_playhead_cursor = new EditorCursor (*this, &Editor::canvas_playhead_cursor_event);
+	_playhead_cursor = new EditorCursor (*this, &Editor::canvas_playhead_cursor_event, X_("playhead"));
 
-	_snapped_cursor = new EditorCursor (*this);
+	_snapped_cursor = new EditorCursor (*this, X_("snapped"));
 
 	_canvas_drop_zone = new ArdourCanvas::Rectangle (hv_scroll_group, ArdourCanvas::Rect (0.0, 0.0, ArdourCanvas::COORD_MAX, 0.0));
 	/* this thing is transparent */
@@ -296,10 +296,6 @@ Editor::track_canvas_viewport_size_allocated ()
 
 	if (height_changed) {
 
-		for (LocationMarkerMap::iterator i = location_markers.begin(); i != location_markers.end(); ++i) {
-			i->second->canvas_height_set (_visible_canvas_height);
-		}
-
 		vertical_adjustment.set_page_size (_visible_canvas_height);
 		if ((vertical_adjustment.get_value() + _visible_canvas_height) >= vertical_adjustment.get_upper()) {
 			/*
@@ -313,6 +309,7 @@ Editor::track_canvas_viewport_size_allocated ()
 	}
 
 	update_fixed_rulers();
+	update_tempo_based_rulers ();
 	redisplay_grid (false);
 	_summary->set_overlays_dirty ();
 }
@@ -393,16 +390,17 @@ Editor::track_canvas_drag_data_received (const RefPtr<Gdk::DragContext>& context
 }
 
 bool
-Editor::idle_drop_paths (vector<string> paths, samplepos_t sample, double ypos, bool copy)
+Editor::idle_drop_paths (vector<string> paths, timepos_t pos, double ypos, bool copy)
 {
-	drop_paths_part_two (paths, sample, ypos, copy);
+	drop_paths_part_two (paths, pos, ypos, copy);
 	return false;
 }
 
 void
-Editor::drop_paths_part_two (const vector<string>& paths, samplepos_t sample, double ypos, bool copy)
+Editor::drop_paths_part_two (const vector<string>& paths, timepos_t const & p, double ypos, bool copy)
 {
 	RouteTimeAxisView* tv;
+	timepos_t pos (p);
 
 	/* MIDI files must always be imported, because we consider them
 	 * writable. So split paths into two vectors, and follow the import
@@ -420,20 +418,19 @@ Editor::drop_paths_part_two (const vector<string>& paths, samplepos_t sample, do
 		}
 	}
 
-
 	std::pair<TimeAxisView*, int> const tvp = trackview_by_y_position (ypos, false);
 	if (tvp.first == 0) {
 
 		/* drop onto canvas background: create new tracks */
 
 		InstrumentSelector is; // instantiation builds instrument-list and sets default.
-		do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, SMFTrackName, SMFTempoIgnore, sample, is.selected_instrument());
+	        do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, SMFTrackName, SMFTempoIgnore, pos, is.selected_instrument(), false);
 
 		if (UIConfiguration::instance().get_only_copy_imported_files() || copy) {
 			do_import (audio_paths, Editing::ImportDistinctFiles, Editing::ImportAsTrack,
-			           SrcBest, SMFTrackName, SMFTempoIgnore, sample);
+			           SrcBest, SMFTrackName, SMFTempoIgnore, pos);
 		} else {
-			do_embed (audio_paths, Editing::ImportDistinctFiles, ImportAsTrack, sample);
+			do_embed (audio_paths, Editing::ImportDistinctFiles, ImportAsTrack, pos);
 		}
 
 	} else if ((tv = dynamic_cast<RouteTimeAxisView*> (tvp.first)) != 0) {
@@ -445,13 +442,13 @@ Editor::drop_paths_part_two (const vector<string>& paths, samplepos_t sample, do
 			selection->set (tv);
 
 			do_import (midi_paths, Editing::ImportSerializeFiles, ImportToTrack,
-				   SrcBest, SMFTrackName, SMFTempoIgnore, sample);
+				   SrcBest, SMFTrackName, SMFTempoIgnore, pos);
 
 			if (UIConfiguration::instance().get_only_copy_imported_files() || copy) {
 				do_import (audio_paths, Editing::ImportSerializeFiles, Editing::ImportToTrack,
-					   SrcBest, SMFTrackName, SMFTempoIgnore, sample);
+					   SrcBest, SMFTrackName, SMFTempoIgnore, pos, boost::shared_ptr<PluginInfo>(), false);
 			} else {
-				do_embed (audio_paths, Editing::ImportSerializeFiles, ImportToTrack, sample);
+				do_embed (audio_paths, Editing::ImportSerializeFiles, ImportToTrack, pos);
 			}
 		}
 	}
@@ -476,7 +473,7 @@ Editor::drop_paths (const RefPtr<Gdk::DragContext>& context,
 		ev.button.x = x;
 		ev.button.y = y;
 
-		MusicSample when (window_event_sample (&ev, 0, &cy), 0);
+		timepos_t when (window_event_sample (&ev, 0, &cy));
 		snap_to (when);
 
 		bool copy = ((context->get_actions() & (Gdk::ACTION_COPY | Gdk::ACTION_LINK | Gdk::ACTION_MOVE)) == Gdk::ACTION_COPY);
@@ -485,9 +482,9 @@ Editor::drop_paths (const RefPtr<Gdk::DragContext>& context,
 		   the main event loop with GTK/Quartz. Since import/embed wants
 		   to push up a progress dialog, defer all this till we go idle.
 		*/
-		Glib::signal_idle().connect (sigc::bind (sigc::mem_fun (*this, &Editor::idle_drop_paths), paths, when.sample, cy, copy));
+		Glib::signal_idle().connect (sigc::bind (sigc::mem_fun (*this, &Editor::idle_drop_paths), paths, when, cy, copy));
 #else
-		drop_paths_part_two (paths, when.sample, cy, copy);
+		drop_paths_part_two (paths, when, cy, copy);
 #endif
 	}
 
@@ -606,15 +603,15 @@ Editor::autoscroll_active () const
 	return autoscroll_connection.connected ();
 }
 
-std::pair <samplepos_t,samplepos_t>
+std::pair <timepos_t,timepos_t>
 Editor::session_gui_extents (bool use_extra) const
 {
 	if (!_session) {
-		return std::pair <samplepos_t,samplepos_t>(max_samplepos,0);
+		return std::make_pair (timepos_t::max (Temporal::AudioTime), timepos_t (Temporal::AudioTime));
 	}
 
-	samplecnt_t session_extent_start = _session->current_start_sample();
-	samplecnt_t session_extent_end = _session->current_end_sample();
+	timepos_t session_extent_start (_session->current_start_sample());
+	timepos_t session_extent_end (_session->current_end_sample());
 
 	/* calculate the extents of all regions in every playlist
 	 * NOTE: we should listen to playlists, and cache these values so we don't calculate them every time.
@@ -623,13 +620,14 @@ Editor::session_gui_extents (bool use_extra) const
 		boost::shared_ptr<RouteList> rl = _session->get_routes();
 		for (RouteList::iterator r = rl->begin(); r != rl->end(); ++r) {
 			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*r);
+
 			if (!tr) {
 				continue;
 			}
 			if (tr->presentation_info ().hidden ()) {
 				continue;
 			}
-			pair<samplepos_t, samplepos_t> e = tr->playlist()->get_extent ();
+			pair<timepos_t, timepos_t> e = tr->playlist()->get_extent ();
 			if (e.first == e.second) {
 				/* no regions present */
 				continue;
@@ -643,21 +641,20 @@ Editor::session_gui_extents (bool use_extra) const
 
 	/* add additional time to the ui extents (user-defined in config) */
 	if (use_extra) {
-		samplecnt_t const extra = UIConfiguration::instance().get_extra_ui_extents_time() * 60 * _session->nominal_sample_rate();
-		session_extent_end += extra;
-		session_extent_start -= extra;
+		timecnt_t const extra ((samplepos_t) (UIConfiguration::instance().get_extra_ui_extents_time() * 60 * _session->nominal_sample_rate()));
+		session_extent_end += timepos_t (extra);
+		session_extent_start.shift_earlier (extra);
 	}
 
 	/* range-check */
-	if (session_extent_end > max_samplepos) {
-		session_extent_end = max_samplepos;
+	if (session_extent_end >= timepos_t::max (Temporal::AudioTime)) {
+		session_extent_end = timepos_t::max (Temporal::AudioTime);
 	}
-	if (session_extent_start < 0) {
-		session_extent_start = 0;
+	if (session_extent_start.negative()) {
+		session_extent_start = timepos_t (0);
 	}
 
-	std::pair <samplepos_t,samplepos_t> ret (session_extent_start, session_extent_end);
-	return ret;
+	return std::make_pair (session_extent_start, session_extent_end);
 }
 
 bool
@@ -1438,6 +1435,7 @@ Editor::which_canvas_cursor(ItemType type) const
 
 		/* These items use the grabber cursor at all times */
 	case MeterMarkerItem:
+	case BBTMarkerItem:
 	case TempoMarkerItem:
 	case MeterBarItem:
 	case TempoBarItem:

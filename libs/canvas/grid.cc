@@ -88,7 +88,7 @@ Grid::compute_bounding_box () const
 	_bounding_box = Rect();
 
 	if (_items.empty()) {
-		_bounding_box_dirty = false;
+		bb_clean ();
 		return;
 	}
 
@@ -103,7 +103,7 @@ Grid::compute_bounding_box () const
 		                          outline_width() + left_margin + left_padding);
 	}
 
-	_bounding_box_dirty = false;
+	bb_clean ();
 }
 
 void
@@ -162,7 +162,7 @@ void
 Grid::reset_bg ()
 {
 	if (_bounding_box_dirty) {
-		compute_bounding_box ();
+		(void) bounding_box ();
 	}
 
 	if (!_bounding_box) {
@@ -353,11 +353,11 @@ Grid::place (Item* i, double x, double y, double col_span, double row_span)
 }
 
 void
-Grid::child_changed ()
+Grid::child_changed (bool bbox_changed)
 {
 	/* catch visibility and size changes */
 
-	Item::child_changed ();
+	Item::child_changed (bbox_changed);
 	reposition_children ();
 }
 

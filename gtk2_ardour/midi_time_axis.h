@@ -87,7 +87,7 @@ public:
 
 	void set_height (uint32_t, TrackHeightMode m = OnlySelf);
 
-	boost::shared_ptr<ARDOUR::MidiRegion> add_region (ARDOUR::samplepos_t, ARDOUR::samplecnt_t, bool);
+	boost::shared_ptr<ARDOUR::MidiRegion> add_region (Temporal::timepos_t const &, Temporal::timecnt_t const &, bool);
 
 	void show_all_automation (bool apply_to_selection = false);
 	void show_existing_automation (bool apply_to_selection = false);
@@ -95,7 +95,7 @@ public:
 
 	void get_regions_with_selected_data (RegionSelection&);
 
-	bool paste (ARDOUR::samplepos_t, const Selection&, PasteContext& ctx, const int32_t sub_num);
+	bool paste (Temporal::timepos_t const &, const Selection&, PasteContext& ctx);
 
 	ARDOUR::NoteMode  note_mode() const { return _note_mode; }
 	ARDOUR::ColorMode color_mode() const { return _color_mode; }
@@ -108,7 +108,7 @@ public:
 	void first_idle ();
 	void set_note_highlight (uint8_t note);
 
-	uint8_t get_channel_for_add () const;
+	uint8_t get_preferred_midi_channel () const;
 
 	void get_per_region_note_selection (std::list<std::pair<PBD::ID, std::set<boost::shared_ptr<Evoral::Note<Temporal::Beats> > > > >&);
 	void use_midnam_info ();
@@ -174,6 +174,7 @@ private:
 	void add_single_channel_controller_item (Gtk::Menu_Helpers::MenuList& ctl_items, int ctl, const std::string& name);
 	void add_multi_channel_controller_item (Gtk::Menu_Helpers::MenuList& ctl_items, uint16_t chanels, int ctl, const std::string& name);
 	void build_controller_menu ();
+	void toggle_restore_pgm_on_load ();
 	void toggle_channel_selector ();
 	void channel_selector_hidden ();
 	void set_channel_mode (ARDOUR::ChannelMode, uint16_t);

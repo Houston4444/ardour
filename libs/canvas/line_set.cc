@@ -71,7 +71,7 @@ LineSet::compute_bounding_box () const
 		}
 	}
 
-	_bounding_box_dirty = false;
+	bb_clean ();
 }
 
 void
@@ -131,7 +131,7 @@ LineSet::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context) const
 }
 
 void
-LineSet::add (Coord y, Distance width, Gtkmm2ext::Color color)
+LineSet::add_coord (Coord y, Distance width, Gtkmm2ext::Color color)
 {
 	begin_change ();
 

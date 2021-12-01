@@ -122,7 +122,7 @@ StreamView::set_height (double h)
 {
 	/* limit the values to something sane-ish */
 
-	if (h < 10.0 || h > 1000.0) {
+	if (h < 10.0 || h > 2500.0) {
 		return -1;
 	}
 
@@ -344,18 +344,6 @@ StreamView::playlist_switched (boost::weak_ptr<Track> wtr)
 
 
 void
-StreamView::diskstream_changed ()
-{
-	boost::shared_ptr<Track> t;
-
-	if ((t = _trackview.track()) != 0) {
-		Gtkmm2ext::UI::instance()->call_slot (invalidator (*this), boost::bind (&StreamView::display_track, this, t));
-	} else {
-		Gtkmm2ext::UI::instance()->call_slot (invalidator (*this), boost::bind (&StreamView::undisplay_track, this));
-	}
-}
-
-void
 StreamView::apply_color (Gdk::Color const& c, ColorTarget target)
 {
 	return apply_color (gdk_color_to_rgba (c), target);
@@ -553,7 +541,7 @@ StreamView::set_selected_regionviews (RegionSelection& regions)
  *  @param result Filled in with selectable things.
  */
 void
-StreamView::get_selectables (samplepos_t start, samplepos_t end, double top, double bottom, list<Selectable*>& results, bool within)
+StreamView::get_selectables (timepos_t const & start, timepos_t const & end, double top, double bottom, list<Selectable*>& results, bool within)
 {
 	if (_trackview.editor().internal_editing()) {
 		return;  // Don't select regions with an internal tool
@@ -591,11 +579,11 @@ StreamView::get_selectables (samplepos_t start, samplepos_t end, double top, dou
 		}
 
 		if (within) {
-			if ((*i)->region()->coverage (start, end) == Evoral::OverlapExternal && layer_ok) {
+			if ((*i)->region()->coverage (start, end) == Temporal::OverlapExternal && layer_ok) {
 				results.push_back (*i);
 			}
 		} else {
-			if ((*i)->region()->coverage (start, end) != Evoral::OverlapNone && layer_ok) {
+			if ((*i)->region()->coverage (start, end) != Temporal::OverlapNone && layer_ok) {
 				results.push_back (*i);
 			}
 		}
@@ -609,6 +597,16 @@ StreamView::get_inverted_selectables (Selection& sel, list<Selectable*>& results
 	for (list<RegionView*>::iterator i = region_views.begin(); i != region_views.end(); ++i) {
 		if (!sel.regions.contains (*i)) {
 			results.push_back (*i);
+		}
+	}
+}
+
+void
+StreamView::get_regionviews_at_or_after (timepos_t const & pos, RegionSelection& regions)
+{
+	for (list<RegionView*>::iterator i = region_views.begin(); i != region_views.end(); ++i) {
+		if ((*i)->region()->position() >= pos) {
+			regions.push_back (*i);
 		}
 	}
 }
@@ -721,7 +719,7 @@ StreamView::setup_new_rec_layer_time (boost::shared_ptr<Region> region)
 	   top-layered region after the start of the region we are recording and make a note of it.
 	*/
 	if (_layer_display == Stacked) {
-		_new_rec_layer_time = _trackview.track()->playlist()->find_next_top_layer_position (region->position());
+		_new_rec_layer_time = _trackview.track()->playlist()->find_next_top_layer_position (region->position()).samples();
 	} else {
 		_new_rec_layer_time = max_samplepos;
 	}

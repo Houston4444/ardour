@@ -48,17 +48,16 @@ const string DiskIOProcessor::state_node_name = X_("DiskIOProcessor");
 // PBD::Signal0<void> DiskIOProcessor::DiskOverrun;
 // PBD::Signal0<void>  DiskIOProcessor::DiskUnderrun;
 
-DiskIOProcessor::DiskIOProcessor (Session& s, string const & str, Flag f)
-	: Processor (s, str)
+DiskIOProcessor::DiskIOProcessor (Session& s, Track& t, string const & str, Flag f, Temporal::TimeDomain td)
+	: Processor (s, str, td)
 	, _flags (f)
 	, _slaved (false)
 	, in_set_state (false)
 	, playback_sample (0)
 	, _need_butler (false)
+	, _track (t)
 	, channels (new ChannelList)
 	, _midi_buf (0)
-	, _samples_written_to_ringbuffer (0)
-	, _samples_read_from_ringbuffer (0)
 {
 	set_display_to_user (false);
 }
@@ -341,22 +340,6 @@ DiskIOProcessor::ChannelInfo::~ChannelInfo ()
 	capture_transition_buf = 0;
 }
 
-void
-DiskIOProcessor::drop_track ()
-{
-	_track.reset ();
-}
-
-void
-DiskIOProcessor::set_track (boost::shared_ptr<Track> t)
-{
-	_track = t;
-
-	if (_track) {
-		_track->DropReferences.connect_same_thread (*this, boost::bind (&DiskIOProcessor::drop_track, this));
-	}
-}
-
 /** Get the start, end, and length of a location "atomically".
  *
  * Note: Locations don't get deleted, so all we care about when I say "atomic"
@@ -366,14 +349,14 @@ DiskIOProcessor::set_track (boost::shared_ptr<Track> t)
  */
 void
 DiskIOProcessor::get_location_times(const Location* location,
-                   samplepos_t*     start,
-                   samplepos_t*     end,
-                   samplepos_t*     length)
+                   timepos_t*     start,
+                   timepos_t*     end,
+                   timecnt_t*     length)
 {
 	if (location) {
 		*start  = location->start();
 		*end    = location->end();
-		*length = *end - *start;
+		*length = location->length();
 	}
 }
 

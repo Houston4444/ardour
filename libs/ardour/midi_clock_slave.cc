@@ -119,6 +119,14 @@ void
 MIDIClock_TransportMaster::pre_process (MIDI::pframes_t nframes, samplepos_t now, boost::optional<samplepos_t> session_pos)
 {
 	/* Read and parse incoming MIDI */
+	if (!_midi_port) {
+		_bpm = 0.0;
+		_running = false;
+		_current_delta = 0;
+		midi_clock_count = 0;
+		DEBUG_TRACE (DEBUG::MidiClock, "No MIDI Clock port registered");
+		return;
+	}
 
 	DEBUG_TRACE (DEBUG::MidiClock, string_compose ("preprocess with lt = %1 @ %2, running ? %3\n", current.timestamp, now, _running));
 
@@ -149,7 +157,8 @@ MIDIClock_TransportMaster::pre_process (MIDI::pframes_t nframes, samplepos_t now
 void
 MIDIClock_TransportMaster::calculate_one_ppqn_in_samples_at(samplepos_t time)
 {
-	const double samples_per_quarter_note = _session->tempo_map().samples_per_quarter_note_at (time, ENGINE->sample_rate());
+	const Temporal::TempoMetric& metric = Temporal::TempoMap::use()->metric_at (time);
+	const double samples_per_quarter_note = metric.tempo().samples_per_quarter_note (ENGINE->sample_rate());
 
 	one_ppqn_in_samples = samples_per_quarter_note / double (ppqn);
 	// DEBUG_TRACE (DEBUG::MidiClock, string_compose ("at %1, one ppqn = %2 [spl] spqn = %3, ppqn = %4\n", time, one_ppqn_in_samples, samples_per_quarter_note, ppqn));

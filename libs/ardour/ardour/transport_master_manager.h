@@ -79,12 +79,11 @@ class LIBARDOUR_API TransportMasterManager : public boost::noncopyable
 
 	boost::shared_ptr<TransportMaster> master_by_type (SyncSource src) const;
 	boost::shared_ptr<TransportMaster> master_by_name (std::string const &) const;
+	boost::shared_ptr<TransportMaster> master_by_port (boost::shared_ptr<Port> const &p) const;
 
 	TransportMasters const & transport_masters() const { return _transport_masters; }
 
 	static const std::string state_node_name;
-
-	void reconnect_ports ();
 
 	void block_disk_output ();
 	void unblock_disk_output ();

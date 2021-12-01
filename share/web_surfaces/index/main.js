@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 import ArdourClient from '/shared/ardour.js';
 
-(() => {
+{
 
     async function main () {
         try {
@@ -81,4 +81,4 @@ import ArdourClient from '/shared/ardour.js';
 
     main();
 
-})();
+}

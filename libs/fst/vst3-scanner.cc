@@ -22,6 +22,12 @@
 #include <iostream>
 #include <string>
 
+#ifdef PLATFORM_WINDOWS
+#include <windows.h>
+#else
+#include <signal.h>
+#endif
+
 #ifdef COMPILER_MSVC
 #include <sys/utime.h>
 #else
@@ -32,6 +38,7 @@
 #include "pbd/transmitter.h"
 #include "pbd/receiver.h"
 #include "pbd/pbd.h"
+#include "pbd/stacktrace.h"
 #include "pbd/win_console.h"
 #include "pbd/xml++.h"
 
@@ -39,10 +46,11 @@
 #define NO_OLDNAMES // no backwards compat _pid_t, conflict with w64 pthread/sched
 #endif
 
-#include "../ardour/filesystem_paths.cc"
 #include "../ardour/vst3_scan.cc"
 #include "../ardour/vst3_host.cc"
 #include "../ardour/vst3_module.cc"
+
+#include "../ardour/filesystem_paths.cc"
 
 using namespace PBD;
 
@@ -82,7 +90,7 @@ protected:
 
 LogReceiver log_receiver;
 
-static void vst3_plugin (string const& module_path, VST3Info const& i)
+static void vst3_plugin (string const&, string const&, VST3Info const& i)
 {
 	info << "Found Plugin: " << i.name << endmsg;
 }
@@ -109,6 +117,29 @@ scan_vst3 (std::string const& bundle_path, bool force, bool verbose)
 
 	return true;
 }
+
+#ifdef PLATFORM_WINDOWS
+static LONG WINAPI
+crash_handler (EXCEPTION_POINTERS* exceptioninfo)
+{
+	// TODO consider DrMingw if HAVE_DRMINGW
+	printf ("Error: %x\n ---8<---\n", exceptioninfo->ExceptionRecord->ExceptionCode);
+	PBD::stacktrace (std::cout, 15, 2);
+	printf (" --->8---\n");
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+#else
+static void
+sig_handler (int sig)
+{
+	printf ("Error: signal %d\n ---8<---\n", sig);
+	PBD::stacktrace (std::cout, 15, 2);
+	printf (" --->8---\n");
+	fflush(stdout);
+	fflush(stderr);
+	_exit (EXIT_FAILURE);
+}
+#endif
 
 static void
 usage ()
@@ -208,6 +239,15 @@ main (int argc, char **argv)
 	} else {
 		verbose = false;
 	}
+
+#ifdef PLATFORM_WINDOWS
+	::SetUnhandledExceptionFilter (crash_handler);
+#else
+	signal (SIGSEGV, sig_handler);
+	signal (SIGBUS, sig_handler);
+	signal (SIGILL, sig_handler);
+	signal (SIGABRT, sig_handler);
+#endif
 
 	bool err = false;
 

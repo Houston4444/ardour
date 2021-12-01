@@ -27,6 +27,7 @@
 #include <list>
 
 #include "pbd/libpbd_visibility.h"
+#include "pbd/g_atomic_compat.h"
 
 /** @file rcu.h
  * Define a set of classes to implement Read-Copy-Update.  We do not attempt to define RCU here - use google.
@@ -52,8 +53,8 @@ class /*LIBPBD_API*/ RCUManager
 {
 public:
 	RCUManager (T* new_rcu_value)
-		: _active_reads (0)
 	{
+		g_atomic_int_set (&_active_reads, 0);
 		x.rcu_value = new boost::shared_ptr<T> (new_rcu_value);
 	}
 
@@ -99,8 +100,8 @@ protected:
 	 * evaluate to the same address.
 	 */
 	union {
-		boost::shared_ptr<T>*     rcu_value;
-		mutable volatile gpointer gptr;
+		boost::shared_ptr<T>*         rcu_value;
+		mutable GATOMIC_QUAL gpointer gptr;
 	} x;
 
 	inline bool active_read () const {
@@ -108,7 +109,7 @@ protected:
 	}
 
 private:
-	mutable volatile gint _active_reads;
+	mutable GATOMIC_QUAL gint _active_reads;
 };
 
 /** Serialized RCUManager implements the RCUManager interface. It is based on the
@@ -143,9 +144,17 @@ template <class T>
 class /*LIBPBD_API*/ SerializedRCUManager : public RCUManager<T>
 {
 public:
-	SerializedRCUManager (T* new_rcu_value)
-	    : RCUManager<T> (new_rcu_value)
+	SerializedRCUManager(T* new_rcu_value)
+		: RCUManager<T>(new_rcu_value)
+		, _current_write_old (0)
 	{
+	}
+
+	void init (boost::shared_ptr<T> new_rcu_value) {
+		assert  (*RCUManager<T>::x.rcu_value == boost::shared_ptr<T> ());
+
+		boost::shared_ptr<T>* new_spp = new boost::shared_ptr<T> (new_rcu_value);
+		g_atomic_pointer_set (&RCUManager<T>::x.gptr, new_spp);
 	}
 
 	boost::shared_ptr<T> write_copy ()
@@ -175,9 +184,13 @@ public:
 
 		return new_copy;
 
-		/* notice that the write lock is still held: update() MUST
+		/* notice that the write lock is still held: update() or abort() MUST
 		 * be called or we will cause another writer to stall.
 		 */
+	}
+
+	void abort () {
+		_lock.unlock();
 	}
 
 	bool update (boost::shared_ptr<T> new_value)
@@ -232,6 +245,13 @@ public:
 		_lock.unlock ();
 
 		return ret;
+	}
+
+	void no_update () {
+		/* just releases the lock, in the event that no changes are
+		   made to a write copy.
+		*/
+		_lock.unlock ();
 	}
 
 	void flush ()

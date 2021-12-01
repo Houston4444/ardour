@@ -54,8 +54,8 @@ Stateful::Stateful ()
 	: _extra_xml (0)
 	, _instant_xml (0)
 	, _properties (new OwnedPropertyList)
-	, _stateful_frozen (0)
 {
+	g_atomic_int_set (&_stateful_frozen, 0);
 }
 
 Stateful::~Stateful ()
@@ -192,6 +192,7 @@ Stateful::clear_changes ()
 	for (OwnedPropertyList::iterator i = _properties->begin(); i != _properties->end(); ++i) {
 		i->second->clear_changes ();
 	}
+	_pending_changed.clear ();
 }
 
 PropertyList *
@@ -247,9 +248,13 @@ Stateful::apply_changes (const PropertyList& property_list)
 				string_compose ("actually setting property %1 using %2\n", p->second->property_name(), i->second->property_name())
 				);
 
-			if (apply_changes (*i->second)) {
+			if (apply_change (*i->second)) {
+				DEBUG_TRACE (DEBUG::Stateful, string_compose ("applying change succeeded, add %1 to change list\n", p->second->property_name()));
 				c.add (i->first);
+			} else {
+				DEBUG_TRACE (DEBUG::Stateful, string_compose ("applying change failed for %1\n", p->second->property_name()));
 			}
+
 		} else {
 			DEBUG_TRACE (DEBUG::Stateful, string_compose ("passed in property %1 not found in own property list\n",
 			                                              i->second->property_name()));
@@ -340,14 +345,14 @@ Stateful::changed() const
 }
 
 bool
-Stateful::apply_changes (const PropertyBase& prop)
+Stateful::apply_change (const PropertyBase& prop)
 {
 	OwnedPropertyList::iterator i = _properties->find (prop.property_id());
 	if (i == _properties->end()) {
 		return false;
 	}
 
-	i->second->apply_changes (&prop);
+	i->second->apply_change (&prop);
 	return true;
 }
 

@@ -143,9 +143,15 @@ EditorSources::EditorSources (Editor* e)
 	col_path->set_sizing (TREE_VIEW_COLUMN_FIXED);
 	col_path->set_sort_column(6);
 
+	TreeViewColumn* captd_xruns = manage (new TreeViewColumn ("", _columns.captd_xruns));
+	captd_xruns->set_fixed_width (chan_width * 1.25);
+	captd_xruns->set_sizing (TREE_VIEW_COLUMN_FIXED);
+	captd_xruns->set_sort_column(10);
+
 	_display.append_column (*col_name);
 	_display.append_column (*col_chans);
 	_display.append_column (*captd_for);
+	_display.append_column (*captd_xruns);
 	_display.append_column (*col_tags);
 	_display.append_column (*col_take_id);
 	_display.append_column (*col_nat_pos);
@@ -155,20 +161,21 @@ EditorSources::EditorSources (Editor* e)
 	Gtk::Label* l;
 
 	ColumnInfo ci[] = {
-		{ 0,   _("Name"),      _("Region name") },
-		{ 1,   _("# Ch"),      _("# Channels") },
+		{ 0,   _("Name"),         _("Region name") },
+		{ 1,   _("# Ch"),         _("# Channels") },
 		{ 2,   _("Captured For"), _("Original Track this was recorded on") },
-		{ 3,   _("Tags"),      _("Tags") },
-		{ 4,   _("Take ID"),   _("Take ID") },
-		{ 5,   _("Orig Pos"),  _("Original Position of the file on timeline, when it was recorded") },
-		{ 6,   _("Path"),      _("Path (folder) of the file location") },
+		{ 3,   _("# Xruns"),      _("Number of dropouts that occured during recording") },
+		{ 4,   _("Tags"),         _("Tags") },
+		{ 5,   _("Take ID"),      _("Take ID") },
+		{ 6,   _("Orig Pos"),     _("Original Position of the file on timeline, when it was recorded") },
+		{ 7,   _("Path"),         _("Path (folder) of the file location") },
 		{ -1, 0, 0 }
 	};
 
 	/* make Name and Path columns manually resizable */
 
 	_display.get_column (0)->set_resizable (true);
-	_display.get_column (4)->set_resizable (true);
+	_display.get_column (5)->set_resizable (true);
 
 	for (int i = 0; ci[i].index >= 0; ++i) {
 		col = _display.get_column (ci[i].index);
@@ -186,7 +193,7 @@ EditorSources::EditorSources (Editor* e)
 		/* show path as the row tooltip */
 		_display.set_tooltip_column (6); /* path */
 	}
-	
+
 	/* set the color of the name field */
 	TreeViewColumn* tv_col = _display.get_column(0);
 	CellRendererText* renderer = dynamic_cast<CellRendererText*>(_display.get_column_cell_renderer (0));
@@ -200,22 +207,22 @@ EditorSources::EditorSources (Editor* e)
 	region_name_cell->signal_editing_started().connect (sigc::mem_fun (*this, &EditorSources::name_editing_started));
 
 	/* Tags cell: make editable */
-	CellRendererText* region_tags_cell = dynamic_cast<CellRendererText*>(_display.get_column_cell_renderer (3));
+	CellRendererText* region_tags_cell = dynamic_cast<CellRendererText*>(_display.get_column_cell_renderer (4));
 	region_tags_cell->property_editable() = true;
 	region_tags_cell->signal_edited().connect (sigc::mem_fun (*this, &EditorSources::tag_edit));
 	region_tags_cell->signal_editing_started().connect (sigc::mem_fun (*this, &EditorSources::tag_editing_started));
 
 	/* right-align the Natural Pos column */
-	TreeViewColumn* nat_col = _display.get_column(5);
+	TreeViewColumn* nat_col = _display.get_column(6);
 	nat_col->set_alignment (ALIGN_RIGHT);
-	renderer = dynamic_cast<CellRendererText*>(_display.get_column_cell_renderer (5));
+	renderer = dynamic_cast<CellRendererText*>(_display.get_column_cell_renderer (6));
 	if (renderer) {
 		renderer->property_xalign() = 1.0;
 	}
 
 	/* the PATH field should expand when the pane is opened wider */
-	tv_col = _display.get_column(6);
-	renderer = dynamic_cast<CellRendererText*>(_display.get_column_cell_renderer (6));
+	tv_col = _display.get_column(7);
+	renderer = dynamic_cast<CellRendererText*>(_display.get_column_cell_renderer (7));
 	tv_col->add_attribute(renderer->property_text(), _columns.path);
 	tv_col->set_expand (true);
 
@@ -314,7 +321,7 @@ EditorSources::set_session (ARDOUR::Session* s)
 	SessionHandlePtr::set_session (s);
 
 	if (s) {
-		ARDOUR::Region::RegionPropertyChanged.connect (source_property_connection, MISSING_INVALIDATOR, boost::bind (&EditorSources::source_changed, this, _1, _2), gui_context ());
+		ARDOUR::Region::RegionsPropertyChanged.connect (source_property_connection, MISSING_INVALIDATOR, boost::bind (&EditorSources::regions_changed, this, _1, _2), gui_context ());
 
 		ARDOUR::RegionFactory::CheckNewRegion.connect (add_source_connection, MISSING_INVALIDATOR, boost::bind (&EditorSources::add_source, this, _1), gui_context());
 
@@ -323,6 +330,9 @@ EditorSources::set_session (ARDOUR::Session* s)
 		redisplay();
 
 	} else {
+		source_property_connection.disconnect ();
+		add_source_connection.disconnect ();
+		remove_source_connection.disconnect ();
 		clear();
 	}
 }
@@ -395,11 +405,14 @@ EditorSources::populate_row (TreeModel::Row row, boost::shared_ptr<ARDOUR::Regio
 	if (region->data_type() == DataType::MIDI) {
 		row[_columns.channels] = 0;  /*TODO: some better recognition of midi regions*/
 	} else {
-		row[_columns.channels] = region->n_channels();
+		row[_columns.channels] = region->sources().size();
 	}
-	
+
 	/* CAPTURED FOR */
 	row[_columns.captd_for] = source->captured_for();
+
+	/* CAPTURED DROPOUTS */
+	row[_columns.captd_xruns] = source->n_captured_xruns();
 
 	/* TAGS */
 	row[_columns.tags] = region->tags();
@@ -485,33 +498,60 @@ EditorSources::add_source (boost::shared_ptr<ARDOUR::Region> region)
 	 * if there's some other kind of source, we ignore it (for now)
 	 */
 	boost::shared_ptr<FileSource> fs = boost::dynamic_pointer_cast<FileSource> (region->source());
-	if (!fs || fs->empty()) {
+	if (!fs) {
 		return;
+	}
+
+	if (fs->empty()) {
+		/* MIDI sources are allowed to be empty */
+		if (!boost::dynamic_pointer_cast<MidiSource> (region->source())) {
+			return;
+		}
 	}
 
 	region->DropReferences.connect (remove_region_connections, MISSING_INVALIDATOR, boost::bind (&EditorSources::remove_weak_region, this, boost::weak_ptr<Region> (region)), gui_context());
 
-	TreeModel::Row row = *(_model->append());
-	populate_row (row, region);
+	PropertyChange pc;
+	boost::shared_ptr<RegionList> rl (new RegionList);
+	rl->push_back (region);
+	regions_changed (rl, pc);
 }
 
 void
-EditorSources::source_changed (boost::shared_ptr<ARDOUR::Region> region, PBD::PropertyChange const &)
+EditorSources::regions_changed (boost::shared_ptr<ARDOUR::RegionList> rl, PBD::PropertyChange const &)
 {
-	if (!region->whole_file ()) {
-		/*this isn't on our list anyway; we can ignore it*/
-		return;
+	bool freeze = rl->size () > 2;
+	if (freeze) {
+		freeze_tree_model ();
 	}
 
-	TreeModel::iterator i;
-	TreeModel::Children rows = _model->children();
+	for (RegionList::const_iterator r = rl->begin (); r != rl->end(); ++r) {
+		boost::shared_ptr<Region> region = *r;
 
-	for (i = rows.begin(); i != rows.end(); ++i) {
-		boost::shared_ptr<ARDOUR::Region> rr = (*i)[_columns.region];
-		if (region == rr) {
-			populate_row(*i, region);
+		if (!region->whole_file ()) {
+			/*this isn't on our list anyway; we can ignore it*/
 			break;
 		}
+
+		TreeModel::iterator i;
+		TreeModel::Children rows = _model->children();
+
+		for (i = rows.begin(); i != rows.end(); ++i) {
+			boost::shared_ptr<ARDOUR::Region> rr = (*i)[_columns.region];
+			if (region == rr) {
+				populate_row(*i, region);
+				break;
+			}
+		}
+
+		if (i == rows.end()) {
+			TreeModel::Row row = *(_model->append());
+			populate_row (row, region);
+		}
+	}
+
+	if (freeze) {
+		thaw_tree_model ();
 	}
 }
 
@@ -531,10 +571,10 @@ EditorSources::selection_changed ()
 			if ((iter = _model->get_iter (*i))) {
 
 				/* highlight any regions in the editor that use this region's source */
- 				boost::shared_ptr<ARDOUR::Region> region = (*iter)[_columns.region];
- 				if (!region) continue;
+				boost::shared_ptr<ARDOUR::Region> region = (*iter)[_columns.region];
+				if (!region) continue;
 
- 				boost::shared_ptr<ARDOUR::Source> source = region->source();
+				boost::shared_ptr<ARDOUR::Source> source = region->source();
 				if (source) {
 
 					set<boost::shared_ptr<Region> > regions;
@@ -567,12 +607,12 @@ EditorSources::clock_format_changed ()
 }
 
 void
-EditorSources::format_position (samplepos_t pos, char* buf, size_t bufsize, bool onoff)
+EditorSources::format_position (timepos_t const & pos, char* buf, size_t bufsize, bool onoff)
 {
-	Timecode::BBT_Time bbt;
+	Temporal::BBT_Time bbt;
 	Timecode::Time timecode;
 
-	if (pos < 0) {
+	if (pos.negative()) {
 		error << string_compose (_("EditorSources::format_position: negative timecode position: %1"), pos) << endmsg;
 		snprintf (buf, bufsize, "invalid");
 		return;
@@ -580,7 +620,7 @@ EditorSources::format_position (samplepos_t pos, char* buf, size_t bufsize, bool
 
 	switch (ARDOUR_UI::instance()->primary_clock->mode ()) {
 	case AudioClock::BBT:
-		bbt = _session->tempo_map().bbt_at_sample (pos);
+		bbt = Temporal::TempoMap::use()->bbt_at (pos);
 		if (onoff) {
 			snprintf (buf, bufsize, "%03d|%02d|%04d" , bbt.bars, bbt.beats, bbt.ticks);
 		} else {
@@ -594,7 +634,7 @@ EditorSources::format_position (samplepos_t pos, char* buf, size_t bufsize, bool
 		int mins;
 		float secs;
 
-		left = pos;
+		left = pos.samples();
 		hrs = (int) floor (left / (_session->sample_rate() * 60.0f * 60.0f));
 		left -= (samplecnt_t) floor (hrs * _session->sample_rate() * 60.0f * 60.0f);
 		mins = (int) floor (left / (_session->sample_rate() * 60.0f));
@@ -609,23 +649,23 @@ EditorSources::format_position (samplepos_t pos, char* buf, size_t bufsize, bool
 
 	case AudioClock::Seconds:
 		if (onoff) {
-			snprintf (buf, bufsize, "%.1f", pos / (float)_session->sample_rate());
+			snprintf (buf, bufsize, "%.1f", pos.samples() / (float)_session->sample_rate());
 		} else {
-			snprintf (buf, bufsize, "(%.1f)", pos / (float)_session->sample_rate());
+			snprintf (buf, bufsize, "(%.1f)", pos.samples() / (float)_session->sample_rate());
 		}
 		break;
 
 	case AudioClock::Samples:
 		if (onoff) {
-			snprintf (buf, bufsize, "%" PRId64, pos);
+			snprintf (buf, bufsize, "%" PRId64, pos.samples());
 		} else {
-			snprintf (buf, bufsize, "(%" PRId64 ")", pos);
+			snprintf (buf, bufsize, "(%" PRId64 ")", pos.samples());
 		}
 		break;
 
 	case AudioClock::Timecode:
 	default:
-		_session->timecode_time (pos, timecode);
+		_session->timecode_time (pos.samples(), timecode);
 		if (onoff) {
 			snprintf (buf, bufsize, "%02d:%02d:%02d:%02d", timecode.hours, timecode.minutes, timecode.seconds, timecode.frames);
 		} else {
@@ -708,9 +748,9 @@ EditorSources::remove_selected_sources ()
 
 					boost::shared_ptr<ARDOUR::Region> region = (*iter)[_columns.region];
 
-	 				if (!region) continue;
+					if (!region) continue;
 
- 					boost::shared_ptr<ARDOUR::Source> source = region->source();
+					boost::shared_ptr<ARDOUR::Source> source = region->source();
 					if (source) {
 						set<boost::shared_ptr<Region> > regions;
 						RegionFactory::get_regions_using_source (source, regions);
@@ -727,7 +767,7 @@ EditorSources::remove_selected_sources ()
 
 			}
 
-			_editor->remove_selected_regions(); // this operation is undo-able
+			_editor->remove_regions( _editor->get_regions_from_selection_and_entered(), false /*can_ripple*/, false /*as_part_of_other_command*/); // this operation is undo-able
 
 			if (opt==2) {
 				for (std::list<boost::weak_ptr<ARDOUR::Source> >::iterator i = to_be_removed.begin(); i != to_be_removed.end(); ++i) {
@@ -939,15 +979,19 @@ EditorSources::get_single_selection ()
 void
 EditorSources::freeze_tree_model ()
 {
+	/* store sort column id and type for later */
+	_model->get_sort_column_id (_sort_col_id, _sort_type);
+	_change_connection.block (true);
 	_display.set_model (Glib::RefPtr<Gtk::TreeStore>(0));
 	_model->set_sort_column (-2, SORT_ASCENDING); // Disable sorting to gain performance
 }
 
 void
-EditorSources::thaw_tree_model (){
-
-	_model->set_sort_column (0, SORT_ASCENDING); // renabale sorting
+EditorSources::thaw_tree_model ()
+{
+	_model->set_sort_column (_sort_col_id, _sort_type); // re-enabale sorting
 	_display.set_model (_model);
+	_change_connection.block (false);
 }
 
 XMLNode &

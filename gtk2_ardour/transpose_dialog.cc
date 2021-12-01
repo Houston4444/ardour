@@ -16,10 +16,12 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include "transpose_dialog.h"
+
 #include <gtkmm/table.h>
 #include <gtkmm/label.h>
 #include <gtkmm/stock.h>
-#include "transpose_dialog.h"
+
 #include "pbd/i18n.h"
 
 using namespace Gtk;

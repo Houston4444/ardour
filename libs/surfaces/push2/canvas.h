@@ -30,6 +30,10 @@ namespace Cairo {
 	class Region;
 }
 
+namespace Pango {
+	class Context;
+}
+
 namespace ArdourSurface {
 
 class Push2;
@@ -44,6 +48,7 @@ class Push2Canvas : public ArdourCanvas::Canvas
 
 	void request_redraw ();
 	void request_redraw (ArdourCanvas::Rect const &);
+	void queue_resize ();
 	bool vblank ();
 
 	Cairo::RefPtr<Cairo::Context> image_context() { return context; }

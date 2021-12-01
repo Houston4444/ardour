@@ -36,7 +36,6 @@
 
 #include "pbd/error.h"
 #include "pbd/convert.h"
-#include "pbd/stacktrace.h"
 #include "pbd/unwind.h"
 
 #include "ardour/profile.h"
@@ -808,6 +807,10 @@ TimeAxisView::build_display_menu ()
 {
 	using namespace Menu_Helpers;
 
+	if (_size_menu) {
+		Gtkmm2ext::detach_menu (*_size_menu);
+	}
+
 	delete display_menu;
 
 	display_menu = new Menu;
@@ -825,7 +828,7 @@ TimeAxisView::set_samples_per_pixel (double fpp)
 }
 
 void
-TimeAxisView::show_timestretch (samplepos_t start, samplepos_t end, int layers, int layer)
+TimeAxisView::show_timestretch (timepos_t const & start, timepos_t const & end, int layers, int layer)
 {
 	for (Children::iterator i = children.begin(); i != children.end(); ++i) {
 		(*i)->show_timestretch (start, end, layers, layer);
@@ -877,18 +880,18 @@ TimeAxisView::show_selection (TimeSelection& ts)
 		gap = ceil (gap * ui_scale);
 	}
 
-	for (list<AudioRange>::iterator i = ts.begin(); i != ts.end(); ++i) {
-		samplepos_t start, end;
-		samplecnt_t cnt;
+	for (list<TimelineRange>::iterator i = ts.begin(); i != ts.end(); ++i) {
+		timepos_t start, end;
+		timecnt_t cnt;
 
-		start = (*i).start;
-		end = (*i).end;
-		cnt = end - start + 1;
+		start = (*i).start();
+		end = (*i).end();
+		cnt = start.distance (end); /* XXX NUTEMPO used to add 1 here */
 
 		rect = get_selection_rect ((*i).id);
 
-		x1 = _editor.sample_to_pixel (start);
-		x2 = _editor.sample_to_pixel (start + cnt - 1);
+		x1 = _editor.time_to_pixel (start);
+		x2 = _editor.time_to_pixel (end.decrement());
 		y2 = current_height() - 1;
 
 		if (dynamic_cast<AudioTimeAxisView*>(this)) {
@@ -1069,7 +1072,7 @@ TimeAxisView::remove_child (boost::shared_ptr<TimeAxisView> child)
  *  @param result Filled in with selectable things.
  */
 void
-TimeAxisView::get_selectables (samplepos_t start, samplepos_t end, double top, double bot, list<Selectable*>& results, bool within)
+TimeAxisView::get_selectables (timepos_t const & start, timepos_t const & end, double top, double bot, list<Selectable*>& results, bool within)
 {
 	for (Children::iterator i = children.begin(); i != children.end(); ++i) {
 		if (!(*i)->hidden()) {
@@ -1355,11 +1358,9 @@ TimeAxisView::get_child_list () const
 void
 TimeAxisView::build_size_menu ()
 {
-	if (_size_menu && _size_menu->gobj ()) {
+	if (_size_menu) {
 		return;
 	}
-
-	delete _size_menu;
 
 	using namespace Menu_Helpers;
 

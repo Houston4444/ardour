@@ -75,8 +75,8 @@ using namespace PBD;
 
 const string PluginInsert::port_automation_node_name = "PortAutomation";
 
-PluginInsert::PluginInsert (Session& s, boost::shared_ptr<Plugin> plug)
-	: Processor (s, (plug ? plug->name() : string ("toBeRenamed")))
+PluginInsert::PluginInsert (Session& s, Temporal::TimeDomain td, boost::shared_ptr<Plugin> plug)
+	: Processor (s, (plug ? plug->name() : string ("toBeRenamed")), td)
 	, _sc_playback_latency (0)
 	, _sc_capture_latency (0)
 	, _plugin_signal_latency (0)
@@ -90,11 +90,11 @@ PluginInsert::PluginInsert (Session& s, boost::shared_ptr<Plugin> plug)
 	, _latency_changed (false)
 	, _bypass_port (UINT32_MAX)
 	, _inverted_bypass_enable (false)
-	, _stat_reset (0)
-	, _flush (0)
 {
-	/* the first is the master */
+	g_atomic_int_set (&_stat_reset, 0);
+	g_atomic_int_set (&_flush, 0);
 
+	/* the first is the master */
 	if (plug) {
 		add_plugin (plug);
 		create_automatable_parameters ();
@@ -120,6 +120,21 @@ PluginInsert::drop_references ()
 	}
 	for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
 		(*i)->drop_references ();
+	}
+
+	/* PluginInsert::_plugins must exist until PBD::Controllable
+	 * has emitted drop_references. This is because
+	 * AC::get_value() calls _plugin[0]->get_parameter(..)
+	 *
+	 * Usually ~Automatable, calls drop_references for each
+	 * controllable, but that runs after ~PluginInsert.
+	 */
+	{
+		Glib::Threads::Mutex::Lock lm (_control_lock);
+		for (Controls::const_iterator li = _controls.begin(); li != _controls.end(); ++li) {
+			boost::dynamic_pointer_cast<AutomationControl>(li->second)->drop_references ();
+		}
+		_controls.clear ();
 	}
 	Processor::drop_references ();
 }
@@ -295,7 +310,7 @@ PluginInsert::control_list_automation_state_changed (Evoral::Parameter which, Au
 			= boost::dynamic_pointer_cast<AutomationControl>(control (which));
 
 	if (c && s != Off) {
-		_plugins[0]->set_parameter (which.id(), c->list()->eval (_session.transport_sample()), 0);
+		_plugins[0]->set_parameter (which.id(), c->list()->eval (timepos_t (_session.transport_sample())), 0);
 	}
 }
 
@@ -501,7 +516,7 @@ PluginInsert::create_automatable_parameters ()
 
 		const bool automatable = a.find(param) != a.end();
 
-		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc));
+		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc, time_domain()));
 		boost::shared_ptr<AutomationControl> c (new PluginControl(this, param, desc, list));
 		if (!automatable || (limit_automatables > 0 && what_can_be_automated ().size() > limit_automatables)) {
 			c->set_flag (Controllable::NotAutomatable);
@@ -521,7 +536,7 @@ PluginInsert::create_automatable_parameters ()
 		if (desc.datatype != Variant::NOTHING) {
 			boost::shared_ptr<AutomationList> list;
 			if (Variant::type_is_numeric(desc.datatype)) {
-				list = boost::shared_ptr<AutomationList>(new AutomationList(param, desc));
+				list = boost::shared_ptr<AutomationList>(new AutomationList(param, desc, time_domain()));
 			}
 			boost::shared_ptr<AutomationControl> c (new PluginPropertyControl(this, param, desc, list));
 			if (!Variant::type_is_numeric(desc.datatype)) {
@@ -543,8 +558,10 @@ PluginInsert::create_automatable_parameters ()
 		desc.normal = 1;
 		desc.lower  = 0;
 		desc.upper  = 1;
-		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc));
+
+		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc, time_domain()));
 		boost::shared_ptr<AutomationControl> c (new PluginControl(this, param, desc, list));
+
 		add_control (c);
 	}
 
@@ -629,8 +646,8 @@ PluginInsert::automation_run (samplepos_t start, pframes_t nframes, bool only_ac
 {
 	// XXX does not work when rolling backwards
 	if (_loop_location && nframes > 0) {
-		const samplepos_t loop_start = _loop_location->start ();
-		const samplepos_t loop_end   = _loop_location->end ();
+		const samplepos_t loop_start = _loop_location->start_sample ();
+		const samplepos_t loop_end   = _loop_location->end_sample ();
 		const samplecnt_t looplen    = loop_end - loop_start;
 
 		samplecnt_t remain = nframes;
@@ -653,15 +670,12 @@ PluginInsert::automation_run (samplepos_t start, pframes_t nframes, bool only_ac
 }
 
 bool
-PluginInsert::find_next_event (double now, double end, Evoral::ControlEvent& next_event, bool only_active) const
+PluginInsert::find_next_event (timepos_t const & now, timepos_t const & end, Evoral::ControlEvent& next_event, bool only_active) const
 {
 	bool rv = Automatable::find_next_event (now, end, next_event, only_active);
 
 	if (_loop_location && now < end) {
-		if (rv) {
-			end = ceil (next_event.when);
-		}
-		const samplepos_t loop_end = _loop_location->end ();
+		const timepos_t loop_end = _loop_location->end ();
 		assert (now < loop_end); // due to map_loop_range ()
 		if (end > loop_end) {
 			next_event.when = loop_end;
@@ -917,32 +931,39 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 			if (clist && (static_cast<AutomationList const&> (*clist)).automation_playback ()) {
 				/* 1. Set value at [sub]cycle start */
 				bool valid;
-				float val = clist->rt_safe_eval (start, valid);
+				float val = c.list()->rt_safe_eval (timepos_t (start), valid);
+
 				if (valid) {
 					c.set_value_unchecked(val);
 				}
-#if 0
+
+				if (_plugins.front()->get_info ()->type != ARDOUR::VST3) {
+					continue;
+				}
+
+#if 1
 				/* 2. VST3: events between now and end. */
-				assert (_plugins.front()->requires_fixed_sized_buffers());
-				samplepos_t now = start;
+				timepos_t start_time (start);
+				timepos_t now (start_time);
 				while (true) {
-					Evoral::ControlEvent next_event (end, 0.0f);
-					find_next_ac_event (*ci, now, end, next_event);
-					if (next_event.when >= end) {
+					timepos_t end_time (end);
+					Evoral::ControlEvent next_event (end_time, 0.0f);
+					find_next_ac_event (*ci, now, end_time, next_event);
+					if (next_event.when >= end_time) {
 						break;
 					}
 					now = next_event.when;
 					const float val = c.list()->rt_safe_eval (now, valid);
 					if (valid) {
 						for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
-							(*i)->set_parameter (clist->parameter().id(), val, now - start);
+							(*i)->set_parameter (clist->parameter().id(), val, now.samples() - start);
 						}
 					}
 				}
 #endif
-#if 0
-				/* 3. set value at cycle-end */
-				val = c.list()->rt_safe_eval (end, valid);
+#if 1
+				/* 3. VST3: set value at cycle-end */
+				val = c.list()->rt_safe_eval (timepos_t (end), valid);
 				if (valid) {
 					for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
 						(*i)->set_parameter (clist->parameter().id(), val, end - start);
@@ -1233,7 +1254,7 @@ PluginInsert::silence (samplecnt_t nframes, samplepos_t start_sample)
 {
 	automation_run (start_sample, nframes, true); // evaluate automation only
 
-	if (!active ()) {
+	if (!check_active()) {
 		// XXX delaybuffers need to be offset by nframes
 		return;
 	}
@@ -1307,8 +1328,6 @@ PluginInsert::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sa
 		_delaybuffers.flush ();
 	}
 
-	_active = _pending_active;
-
 	/* we have no idea whether the plugin generated silence or not, so mark
 	 * all buffers appropriately.
 	 */
@@ -1317,7 +1336,7 @@ PluginInsert::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sa
 void
 PluginInsert::automate_and_run (BufferSet& bufs, samplepos_t start, samplepos_t end, double speed, pframes_t nframes)
 {
-	Evoral::ControlEvent next_event (0, 0.0f);
+	Evoral::ControlEvent next_event (timepos_t (Temporal::AudioTime), 0.0f);
 	samplecnt_t offset = 0;
 
 	Glib::Threads::Mutex::Lock lm (control_lock(), Glib::Threads::TRY_LOCK);
@@ -1330,7 +1349,9 @@ PluginInsert::automate_and_run (BufferSet& bufs, samplepos_t start, samplepos_t 
 	/* map start back into loop-range, adjust end */
 	map_loop_range (start, end);
 
-	if (!find_next_event (start, end, next_event) || _plugins.front()->requires_fixed_sized_buffers()) {
+	const bool no_split_cycle =_plugins.front()->requires_fixed_sized_buffers () || _plugins.front()->get_info ()->type == ARDOUR::VST3;
+
+	if (no_split_cycle || !find_next_event (timepos_t (start), timepos_t (end), next_event)) {
 
 		/* no events have a time within the relevant range */
 
@@ -1340,7 +1361,7 @@ PluginInsert::automate_and_run (BufferSet& bufs, samplepos_t start, samplepos_t 
 
 	while (nframes) {
 
-		samplecnt_t cnt = min ((samplecnt_t) ceil (fabs (next_event.when - start)), (samplecnt_t) nframes);
+		samplecnt_t cnt = min (timepos_t (start).distance (next_event.when).samples(), (samplecnt_t) nframes);
 		assert (cnt > 0);
 
 		connect_and_run (bufs, start, start + cnt * speed, speed, cnt, offset, true);
@@ -1351,7 +1372,7 @@ PluginInsert::automate_and_run (BufferSet& bufs, samplepos_t start, samplepos_t 
 
 		map_loop_range (start, end);
 
-		if (!find_next_event (start, end, next_event)) {
+		if (!find_next_event (timepos_t (start), timepos_t (end), next_event)) {
 			break;
 		}
 	}
@@ -3342,7 +3363,7 @@ PluginInsert::start_touch (uint32_t param_id)
 	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
 	if (ac) {
 		// ToDo subtract _plugin_signal_latency  from audible_sample() when rolling, assert > 0
-		ac->start_touch (session().audible_sample());
+		ac->start_touch (timepos_t (session().audible_sample()));
 	}
 }
 
@@ -3352,7 +3373,7 @@ PluginInsert::end_touch (uint32_t param_id)
 	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
 	if (ac) {
 		// ToDo subtract _plugin_signal_latency  from audible_sample() when rolling, assert > 0
-		ac->stop_touch (session().audible_sample());
+		ac->stop_touch (timepos_t (session().audible_sample()));
 	}
 }
 
@@ -3368,7 +3389,7 @@ PluginInsert::provides_stats () const
 }
 
 bool
-PluginInsert::get_stats (uint64_t& min, uint64_t& max, double& avg, double& dev) const
+PluginInsert::get_stats (PBD::microseconds_t& min, PBD::microseconds_t& max, double& avg, double& dev) const
 {
 	/* TODO: consider taking a try/lock: Don't run concurrently with
 	 * TimingStats::update, TimingStats::reset.

@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 # default state file version for this build
-CURRENT_SESSION_FILE_VERSION = 6000
+CURRENT_SESSION_FILE_VERSION = 7000
 
 I18N_PACKAGE = 'ardour'
 
@@ -46,7 +46,7 @@ libardour_sources = [
         'automation_control.cc',
         'automation_list.cc',
         'automation_watch.cc',
-        'beats_samples_converter.cc',
+  #  'beatbox.cc',
         'broadcast_info.cc',
         'buffer.cc',
         'buffer_manager.cc',
@@ -92,6 +92,8 @@ libardour_sources = [
         'export_profile_manager.cc',
         'export_status.cc',
         'export_timespan.cc',
+        'ffmpegfileimportable.cc',
+        'ffmpegfilesource.cc',
         'file_source.cc',
         'filename_extensions.cc',
         'filesystem_paths.cc',
@@ -133,7 +135,6 @@ libardour_sources = [
         'midi_model.cc',
         'midi_patch_manager.cc',
         'midi_playlist.cc',
-        'midi_playlist_source.cc',
         'midi_port.cc',
         'midi_region.cc',
         'midi_ring_buffer.cc',
@@ -146,10 +147,13 @@ libardour_sources = [
         'midi_ui.cc',
         'mididm.cc',
         'midiport_manager.cc',
-        'mix.cc',
+	'minibpm.cc',
+	'mix.cc',
         'mode.cc',
         'monitor_control.cc',
+        'monitor_port.cc',
         'monitor_processor.cc',
+        'monitor_return.cc',
         'mp3fileimportable.cc',
         'mp3filesource.cc',
         'mtc_slave.cc',
@@ -172,6 +176,7 @@ libardour_sources = [
         'plugin.cc',
         'plugin_insert.cc',
         'plugin_manager.cc',
+        'plugin_scan_result.cc',
         'polarity_processor.cc',
         'port.cc',
         'port_engine_shared.cc',
@@ -235,6 +240,7 @@ libardour_sources = [
         'sndfilesource.cc',
         'solo_control.cc',
         'solo_isolate_control.cc',
+        'solo_mute_release.cc',
         'solo_safe_control.cc',
         'soundcloud_upload.cc',
         'source.cc',
@@ -242,13 +248,14 @@ libardour_sources = [
         'speakers.cc',
         'srcfilesource.cc',
         'stripable.cc',
+  # 'step_sequencer.cc',
         'strip_silence.cc',
-        'system_exec.cc',
+	'system_exec.cc',
         'revision.cc',
         'rt_midibuffer.cc',
         'template_utils.cc',
-        'tempo.cc',
         'tempo_map_importer.cc',
+        'thawlist.cc',
         'thread_buffers.cc',
         'ticker.cc',
         'track.cc',
@@ -258,6 +265,7 @@ libardour_sources = [
         'transport_master.cc',
         'transport_master_manager.cc',
         'transpose.cc',
+        'triggerbox.cc',
         'unknown_processor.cc',
         'user_bundle.cc',
         'utils.cc',
@@ -328,8 +336,8 @@ def configure(conf):
     if conf.is_defined ('HAVE_LV2_1_10_0'):
         conf.define ('LV2_EXTENDED', 1)
 
-    autowaf.check_pkg(conf, 'soundtouch', uselib_store='SOUNDTOUCH',
-                      atleast_version='1.8.0', mandatory=False)
+    #autowaf.check_pkg(conf, 'soundtouch', uselib_store='SOUNDTOUCH',
+    #                  atleast_version='1.8.0', mandatory=False)
     autowaf.check_pkg(conf, 'cppunit', uselib_store='CPPUNIT',
                       atleast_version='1.12.0', mandatory=False)
     autowaf.check_pkg(conf, 'ogg', uselib_store='OGG', atleast_version='1.1.2')
@@ -364,11 +372,9 @@ def configure(conf):
     autowaf.check_header(conf, 'cxx', 'boost/weak_ptr.hpp')
     autowaf.check_header(conf, 'cxx', 'boost/scoped_ptr.hpp')
     autowaf.check_header(conf, 'cxx', 'boost/ptr_container/ptr_list.hpp')
-    if conf.env['WINDOWS_VST_SUPPORT'] == True and Options.options.dist_target == 'mingw':
-        conf.check(compiler='cxx',
-                   lib='gdi32',
-                   mandatory=True,
-                   uselib_store='GDI32')
+
+    if conf.env['WINDOWS_VST_SUPPORT'] == True:
+        conf.check(compiler='cxx', lib='gdi32', mandatory=True, uselib_store='GDI32')
 
 
 def build(bld):
@@ -443,18 +449,17 @@ def build(bld):
 
     if bld.is_defined('WINDOWS_VST_SUPPORT'):
         obj.source += [ 'windows_vst_plugin.cc']
-        obj.includes += [ '../fst' ]
         obj.defines += [ 'WINDOWS_VST_SUPPORT' ]
-        if bld.env['build_target'] == 'mingw':
-            obj.use += [ 'vstwin' ]
-            obj.uselib += ['GDI32']
+        obj.includes += [ '../fst' ]
+        obj.use += [ 'vstwin' ]
+        obj.uselib += ['GDI32']
 
     if bld.is_defined('LXVST_SUPPORT'):
         obj.source += [ 'lxvst_plugin.cc', 'linux_vst_support.cc' ]
         obj.defines += [ 'LXVST_SUPPORT' ]
 
     if bld.is_defined('WINDOWS_VST_SUPPORT') or bld.is_defined('LXVST_SUPPORT') or bld.is_defined('MACVST_SUPPORT'):
-        obj.source += [ 'session_vst.cc', 'vst_plugin.cc', 'vst_info_file.cc', 'vst_state.cc' ]
+        obj.source += [ 'session_vst.cc', 'vst_plugin.cc', 'vst_state.cc', 'vst2_scan.cc' ]
 
     if bld.is_defined('MACVST_SUPPORT'):
         obj.source += [ 'mac_vst_plugin.cc', 'mac_vst_support.cc' ]
@@ -469,7 +474,7 @@ def build(bld):
         obj.use    += ['libappleutility']
 
     if bld.is_defined('AUDIOUNIT_SUPPORT'):
-        obj.source += [ 'audio_unit.cc' ]
+        obj.source += [ 'audio_unit.cc', 'auv2_scan.cc' ]
 
     avx_sources = []
     fma_sources = []
@@ -656,6 +661,7 @@ def build(bld):
             profilingobj.source = '''
                     test/dummy_lxvst.cc
                     test/test_util.cc
+                    test/test_ui.cc
             '''.split()
 
             profilingobj.source.append('test/profiling/%s.cc' % p)

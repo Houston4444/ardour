@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020-2021 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,13 +21,26 @@
 
 #include <boost/shared_ptr.hpp>
 #include <boost/unordered_map.hpp>
-#include <glibmm/main.h>
+#include <glibmm/threads.h>
+
+#include "pbd/abstract_ui.h"
 
 #include "component.h"
 #include "typed_value.h"
 #include "mixer.h"
 
 namespace ArdourSurface {
+
+class FeedbackHelperUI : public AbstractUI<BaseUI::BaseRequestObject>
+{
+public:
+	FeedbackHelperUI ();
+	~FeedbackHelperUI () {};
+
+protected:
+	virtual void do_request (BaseUI::BaseRequestObject*);
+
+};
 
 class ArdourFeedback : public SurfaceComponent
 {
@@ -48,6 +61,11 @@ private:
 	Glib::Threads::Mutex      _client_state_lock;
 	PBD::ScopedConnectionList _transport_connections;
 	sigc::connection          _periodic_connection;
+
+	// Only needed for server event loop integration method #3
+	mutable FeedbackHelperUI  _helper;
+
+	PBD::EventLoop* event_loop () const;
 
 	bool poll () const;
 

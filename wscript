@@ -79,7 +79,7 @@ compiler_flags_dictionaries= {
         # Flags used for "strict" compilation, C only (i.e. compiler will warn about language issues)
         'c-strict' : ['-std=c99', '-pedantic', '-Wshadow'],
         # Flags used for "strict" compilation, C++ only (i.e. compiler will warn about language issues)
-        'cxx-strict' : [ '-ansi', '-Wnon-virtual-dtor', '-Woverloaded-virtual', '-fstrict-overflow' ],
+        'cxx-strict' : [ '-Wnon-virtual-dtor', '-Woverloaded-virtual', '-fstrict-overflow' ],
         # Flags required for whatever consider the strictest possible compilation
         'ultra-strict' : ['-Wredundant-decls', '-Wstrict-prototypes', '-Wmissing-prototypes'],
         # Flag to turn on C99 compliance by itself
@@ -291,6 +291,7 @@ children = [
         'libs/fst',
         'libs/vfork',
         'libs/ardouralsautil',
+        'libs/auscan',
 ]
 
 i18n_children = [
@@ -609,14 +610,8 @@ int main() { return 0; }''',
     # end optimization section
 
     #
-    # no VST on x86_64
+    # LinuxVST 32/64bit GUI distinction
     #
-
-    if conf.env['build_target'] == 'x86_64' and opt.windows_vst:
-        print("\n\n==================================================")
-        print("64bit Windows VST support on 64bit Linux is experimental.")
-        print("(This version of ardour will not load 32bit VSTs)")
-        print("==================================================\n\n")
 
     if conf.env['LXVST_SUPPORT'] == True:
         if conf.env['build_target'] == 'x86_64':
@@ -774,6 +769,9 @@ int main() { return 0; }''',
         if platform != 'darwin' and not is_clang and not Options.options.dist_target == 'mingw':
             linker_flags += [ '-rdynamic' ]
 
+    if opt.gprofile:
+        linker_flags += [ flags_dict['gprofile'] ]
+
     conf.env.append_value('CFLAGS', compiler_flags)
     conf.env.append_value('CFLAGS', c_flags)
     conf.env.append_value('CXXFLAGS', compiler_flags)
@@ -891,8 +889,10 @@ def options(opt):
                     help='Compile with -arch arm64 (macOS ONLY)')
     opt.add_option('--versioned', action='store_true', default=False, dest='versioned',
                     help='Add revision information to executable name inside the build directory')
-    opt.add_option('--windows-vst', action='store_true', default=False, dest='windows_vst',
+    opt.add_option('--windows-vst', action='store_true', default=True, dest='windows_vst',
                     help='Compile with support for Windows VST')
+    opt.add_option('--no-windows-vst', action='store_false', dest='windows_vst',
+                    help='Compile without support for Windows VST')
     opt.add_option('--windows-key', type='string', action='store', dest='windows_key', default='Mod4><Super',
                     help='X Modifier(s) (Mod1,Mod2, etc) for the Windows key (X11 builds only). ' +
                     'Multiple modifiers must be separated by \'><\'')
@@ -902,8 +902,6 @@ def options(opt):
                     help='additional include directory where header files can be found (split multiples with commas)')
     opt.add_option('--also-libdir', type='string', action='store', dest='also_libdir', default='',
                     help='additional include directory where shared libraries can be found (split multiples with commas)')
-    opt.add_option('--wine-include', type='string', action='store', dest='wine_include', default='/usr/include/wine/windows',
-                    help='directory where Wine\'s Windows header files can be found')
     opt.add_option('--noconfirm', action='store_true', default=False, dest='noconfirm',
                     help='Do not ask questions that require confirmation during the build')
     opt.add_option('--cxx11', action='store_true', default=False, dest='cxx11',
@@ -1148,6 +1146,7 @@ def configure(conf):
         conf.env.append_value('LDFLAGS', '-L/usr/X11R6/lib')
 
     autowaf.check_pkg(conf, 'glib-2.0', uselib_store='GLIB', atleast_version='2.28', mandatory=True)
+    autowaf.check_pkg(conf, 'glib-2.0', uselib_store='GLIB_2_64', atleast_version='2.64', mandatory=False)
     autowaf.check_pkg(conf, 'gthread-2.0', uselib_store='GTHREAD', atleast_version='2.2', mandatory=True)
     autowaf.check_pkg(conf, 'glibmm-2.4', uselib_store='GLIBMM', atleast_version='2.32.0', mandatory=True)
     autowaf.check_pkg(conf, 'sndfile', uselib_store='SNDFILE', atleast_version='1.0.18', mandatory=True)
@@ -1285,12 +1284,11 @@ int main () { return 0; }
     #if opts.tranzport:
     #    conf.env['TRANZPORT'] = 1
     if opts.windows_vst:
-        conf.define('WINDOWS_VST_SUPPORT', 1)
-        conf.env['WINDOWS_VST_SUPPORT'] = True
-        if not Options.options.dist_target == 'mingw':
-            conf.env.append_value('CFLAGS', '-I' + Options.options.wine_include)
-            conf.env.append_value('CXXFLAGS', '-I' + Options.options.wine_include)
-            autowaf.check_header(conf, 'cxx', 'windows.h', mandatory = True)
+        if Options.options.dist_target == 'mingw':
+            conf.define('WINDOWS_VST_SUPPORT', 1)
+            conf.env['WINDOWS_VST_SUPPORT'] = True
+        else:
+            conf.env['WINDOWS_VST_SUPPORT'] = False
     if opts.lxvst:
         if sys.platform == 'darwin':
             conf.env['LXVST_SUPPORT'] = False
@@ -1464,7 +1462,7 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('Libjack linking',       conf.env['libjack_link'])
     write_config_text('Libjack metadata',      conf.is_defined ('HAVE_JACK_METADATA'))
     write_config_text('Lua Binding Doc',       conf.is_defined('LUABINDINGDOC'))
-    write_config_text('Lua Commandline Tool',  conf.is_defined('HAVE_READLINE') and not (conf.is_defined('WINDOWS_VST_SUPPORT') and conf.env['build_target'] != 'mingw'))
+    write_config_text('Lua Commandline Tool',  conf.is_defined('HAVE_READLINE'))
     write_config_text('LV2 UI embedding',      conf.is_defined('HAVE_SUIL'))
     write_config_text('LV2 support',           conf.is_defined('LV2_SUPPORT'))
     write_config_text('LV2 extensions',        conf.is_defined('LV2_EXTENDED'))
@@ -1485,7 +1483,7 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('Unit tests',            conf.env['BUILD_TESTS'])
     write_config_text('Use LLD linker',        opts.use_lld)
     write_config_text('VST3 support',          conf.is_defined('VST3_SUPPORT'))
-    write_config_text('Windows VST support',   opts.windows_vst)
+    write_config_text('Windows VST support',   conf.is_defined('WINDOWS_VST_SUPPORT'))
     write_config_text('Wiimote support',       conf.is_defined('BUILD_WIIMOTE'))
     write_config_text('Windows key',           opts.windows_key)
     config_text.write("\\n\\\n")

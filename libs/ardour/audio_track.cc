@@ -30,6 +30,8 @@
 
 #include "evoral/Curve.h"
 
+#include "temporal/tempo.h"
+
 #include "ardour/amp.h"
 #include "ardour/audio_buffer.h"
 #include "ardour/audio_track.h"
@@ -108,6 +110,7 @@ AudioTrack::state (bool save_template)
 
 		freeze_node = new XMLNode (X_("freeze-info"));
 		freeze_node->set_property ("playlist", _freeze_record.playlist->name());
+		freeze_node->set_property ("playlist-id", _freeze_record.playlist->id().to_s ());
 		freeze_node->set_property ("state", _freeze_record.state);
 
 		for (vector<FreezeRecordProcessorInfo*>::iterator i = _freeze_record.processor_info.begin(); i != _freeze_record.processor_info.end(); ++i) {
@@ -149,16 +152,19 @@ AudioTrack::set_state_part_two ()
 		}
 		_freeze_record.processor_info.clear ();
 
-		if ((prop = fnode->property (X_("playlist"))) != 0) {
-			boost::shared_ptr<Playlist> pl = _session.playlists()->by_name (prop->value());
-			if (pl) {
-				_freeze_record.playlist = boost::dynamic_pointer_cast<AudioPlaylist> (pl);
-				_freeze_record.playlist->use();
-			} else {
-				_freeze_record.playlist.reset ();
-				_freeze_record.state = NoFreeze;
+		boost::shared_ptr<Playlist> freeze_pl;
+		if ((prop = fnode->property (X_("playlist-id"))) != 0) {
+			freeze_pl = _session.playlists()->by_id (prop->value());
+		} else if ((prop = fnode->property (X_("playlist"))) != 0) {
+			freeze_pl = _session.playlists()->by_name (prop->value());
+		}
+		if (freeze_pl) {
+			_freeze_record.playlist = boost::dynamic_pointer_cast<AudioPlaylist> (freeze_pl);
+			_freeze_record.playlist->use();
+		} else {
+			_freeze_record.playlist.reset ();
+			_freeze_record.state = NoFreeze;
 			return;
-			}
 		}
 
 		fnode->get_property (X_("state"), _freeze_record.state);
@@ -209,7 +215,7 @@ AudioTrack::export_stuff (BufferSet& buffers, samplepos_t start, samplecnt_t nfr
 	assert(buffers.count().n_audio() >= 1);
 	assert ((samplecnt_t) buffers.get_audio(0).capacity() >= nframes);
 
-	if (apl->read (buffers.get_audio(0).data(), mix_buffer.get(), gain_buffer.get(), start, nframes) != nframes) {
+	if (apl->read (buffers.get_audio(0).data(), mix_buffer.get(), gain_buffer.get(), timepos_t (start), timecnt_t (nframes)) != nframes) {
 		return -1;
 	}
 
@@ -219,7 +225,7 @@ AudioTrack::export_stuff (BufferSet& buffers, samplepos_t start, samplecnt_t nfr
 	++bi;
 	for ( ; bi != buffers.audio_end(); ++bi, ++n) {
 		if (n < _disk_reader->output_streams().n_audio()) {
-			if (apl->read (bi->data(), mix_buffer.get(), gain_buffer.get(), start, nframes, n) != nframes) {
+			if (apl->read (bi->data(), mix_buffer.get(), gain_buffer.get(), timepos_t (start), timecnt_t (nframes), n) != nframes) {
 				return -1;
 			}
 			b = bi->data();
@@ -397,15 +403,24 @@ AudioTrack::freeze_me (InterThreadInfo& itt)
 
 	PropertyList plist;
 
-	plist.add (Properties::start, 0);
-	plist.add (Properties::length, srcs[0]->length(srcs[0]->natural_position()));
+	plist.add (Properties::start, timepos_t (0));
+	plist.add (Properties::length, srcs[0]->length());
 	plist.add (Properties::name, region_name);
 	plist.add (Properties::whole_file, true);
 
 	boost::shared_ptr<Region> region (RegionFactory::create (srcs, plist, false));
 
 	new_playlist->set_orig_track_id (id());
-	new_playlist->add_region (region, _session.current_start_sample());
+
+	timepos_t pos;
+
+	pos = timepos_t (_session.current_start_sample());
+
+	if (time_domain() != Temporal::AudioTime) {
+		pos = timepos_t (pos.beats());
+	}
+
+	new_playlist->add_region (region, pos);
 	new_playlist->set_frozen (true);
 	region->set_locked (true);
 

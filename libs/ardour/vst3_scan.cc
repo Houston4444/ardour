@@ -37,6 +37,7 @@
 #include "pbd/basename.h"
 #include "pbd/error.h"
 #include "pbd/failed_constructor.h"
+#include "pbd/localtime_r.h"
 
 #include "ardour/filesystem_paths.h"
 #include "ardour/vst3_module.h"
@@ -46,31 +47,55 @@
 using namespace std;
 using namespace Steinberg;
 
+static const char* fmt_media (Vst::MediaType m) {
+	switch (m) {
+		case Vst::kAudio: return "kAudio";
+		case Vst::kEvent: return "kEvent";
+		default: return "?";
+	}
+}
+
+static const char* fmt_dir (Vst::BusDirection d) {
+	switch (d) {
+		case Vst::kInput: return "kInput";
+		case Vst::kOutput: return "kOutput";
+		default: return "?";
+	}
+}
+
+static const char* fmt_type (Vst::BusType t) {
+	switch (t) {
+		case Vst::kMain: return "kMain";
+		case Vst::kAux: return "kAux";
+		default: return "?";
+	}
+}
+
 static int32
 count_channels (Vst::IComponent* c, Vst::MediaType media, Vst::BusDirection dir, Vst::BusType type, bool verbose = false)
 {
 	/* see also libs/ardour/vst3_plugin.cc VST3PI::count_channels */
 	int32 n_busses = c->getBusCount (media, dir);
 	if (verbose) {
-		PBD::info << "VST3: media: " << media << " dir: " << dir << " type: " << type << " n_busses: " << n_busses << endmsg;
+		PBD::info << "VST3: media: " << fmt_media (media) << " dir: " << fmt_dir (dir) << " type: " << fmt_type (type) << " n_busses: " << n_busses << endmsg;
 	}
 	int32 n_channels = 0;
 	for (int32 i = 0; i < n_busses; ++i) {
 		Vst::BusInfo bus;
 		tresult rv = c->getBusInfo (media, dir, i, bus);
 		if (rv == kResultTrue && bus.busType == type) {
-			if (verbose) {
-				PBD::info << "VST3: bus: " << i << " count: " << bus.channelCount << endmsg;
-			}
 #if 1
 			if ((type == Vst::kMain && i != 0) || (type == Vst::kAux && i != 1)) {
 				/* For now allow we only support one main bus, and one aux-bus.
 				 * Also an aux-bus by itself is currently N/A.
 				 */
-				std::cerr << "VST3: Ignored extra bus. type: " << type << " index: " << i << "\n";
+				PBD::info << "VST3: \\ ignored bus: " << i << " type: " << fmt_type (bus.busType) << " count: " << bus.channelCount << endmsg;
 				continue;
 			}
 #endif
+			if (verbose) {
+				PBD::info << "VST3: - bus: " << i << " count: " << bus.channelCount << endmsg;
+			}
 			if (media == Vst::kEvent) {
 #if 0
 				/* Supported MIDI Channel count (for a single MIDI input) */
@@ -82,8 +107,10 @@ count_channels (Vst::IComponent* c, Vst::MediaType media, Vst::BusDirection dir,
 			} else {
 				n_channels += bus.channelCount;
 			}
-		} else if (verbose) {
-			PBD::info << "VST3: error getting busInfo for bus: " << i << " rv: " << rv << " busType: " << bus.busType << endmsg;
+		} else if (verbose && rv == kResultTrue) {
+			PBD::info << "VST3: \\ ignored bus: " << i << " mismatched type: " << fmt_type (bus.busType) << endmsg;
+		} else {
+			PBD::info << "VST3: \\ error getting busInfo for bus: " << i << " rv: " << rv << ", got type: " << fmt_type (bus.busType) << endmsg;
 		}
 	}
 	return n_channels;
@@ -112,7 +139,7 @@ discover_vst3 (boost::shared_ptr<ARDOUR::VST3PluginModule> m, std::vector<ARDOUR
 		PBD::info << "FactoryInfo: '" << fi.vendor << "' '" << fi.url << "' '" << fi.email << "'" << endmsg;
 	}
 
-	IPluginFactory2* factory2 = FUnknownPtr<IPluginFactory2> (factory);
+	IPtr<IPluginFactory2> factory2 = FUnknownPtr<IPluginFactory2> (factory);
 
 	int32 class_cnt = factory->countClasses ();
 	if (verbose) {
@@ -176,7 +203,7 @@ discover_vst3 (boost::shared_ptr<ARDOUR::VST3PluginModule> m, std::vector<ARDOUR
 				continue;
 			}
 
-			FUnknownPtr<Vst::IAudioProcessor> processor;
+			IPtr<Vst::IAudioProcessor> processor;
 			if (!(processor = FUnknownPtr<Vst::IAudioProcessor> (component))) {
 				cerr << "VST3: No valid processor";
 				component->terminate ();
@@ -282,7 +309,7 @@ ARDOUR::module_path_vst3 (string const& path)
 		std::string p1 = Glib::path_get_dirname (path);
 		std::string p2 = Glib::path_get_dirname (p1);
 		std::string p3 = Glib::path_get_dirname (p2);
-		if (   Glib::path_get_basename (p1) == vst3_bindir ()
+		if (  (Glib::path_get_basename (p1) == "x86_64-win" || Glib::path_get_basename (p1) == "x86-win")
 		    && Glib::path_get_basename (p2) == "Contents"
 		    && Glib::path_get_basename (p3) == Glib::path_get_basename (path)
 		   ) {
@@ -347,11 +374,18 @@ ARDOUR::vst3_cache_file (std::string const& module_path)
 }
 
 string
-ARDOUR::vst3_valid_cache_file (std::string const& module_path, bool verbose)
+ARDOUR::vst3_valid_cache_file (std::string const& module_path, bool verbose, bool* is_new)
 {
 	string const cache_file = ARDOUR::vst3_cache_file (module_path);
 	if (!Glib::file_test (cache_file, Glib::FileTest (Glib::FILE_TEST_EXISTS | Glib::FILE_TEST_IS_REGULAR))) {
+		if (is_new) {
+			*is_new = true;
+		}
 		return "";
+	}
+
+	if (is_new) {
+		*is_new = false;
 	}
 
 	if (verbose) {
@@ -376,7 +410,7 @@ ARDOUR::vst3_valid_cache_file (std::string const& module_path, bool verbose)
 }
 
 static void
-touch_cachefile (std::string const& module_path, std::string const& cache_file)
+touch_cachefile (std::string const& module_path, std::string const& cache_file, bool verbose)
 {
 	GStatBuf sb_vst;
 	GStatBuf sb_v3i;
@@ -384,7 +418,23 @@ touch_cachefile (std::string const& module_path, std::string const& cache_file)
 		struct utimbuf utb;
 		utb.actime = sb_v3i.st_atime;
 		utb.modtime = std::max (sb_vst.st_mtime, sb_v3i.st_mtime);
-		g_utime (cache_file.c_str (), &utb);
+		if (0 != g_utime (cache_file.c_str (), &utb)) {
+			PBD::error << "Could not set cachefile timestamp." << endmsg;
+		} else if (verbose) {
+			const time_t mtime = sb_vst.st_mtime;
+			char v3itme[128];
+			char vsttme[128];
+			struct tm local_time;
+			localtime_r (&utb.modtime, &local_time);
+			strftime (v3itme, sizeof(v3itme), "%Y-%m-%d %H:%M:%S", &local_time);
+			localtime_r (&mtime, &local_time);
+			strftime (vsttme, sizeof(vsttme), "%Y-%m-%d %H:%M:%S", &local_time);
+			PBD::info << "Touch cachefile: set mtime = "
+			          << utb.modtime << " (" << v3itme << "), plugin mtime = "
+			          << sb_vst.st_mtime << " (" << vsttme << ")" << endmsg;
+		}
+	} else {
+		PBD::error << "Could not stat VST3 module." << endmsg;
 	}
 }
 
@@ -399,7 +449,7 @@ vst3_save_cache_file (std::string const& module_path, XMLNode* root, bool verbos
 		PBD::error << "Could not save VST3 plugin cache to: " << cache_file << endmsg;
 		return false;
 	} else {
-		touch_cachefile (module_path, cache_file);
+		touch_cachefile (module_path, cache_file, verbose);
 	}
 	if (verbose) {
 		root->dump (std::cout, "\t");
@@ -408,7 +458,7 @@ vst3_save_cache_file (std::string const& module_path, XMLNode* root, bool verbos
 }
 
 bool
-ARDOUR::vst3_scan_and_cache (std::string const& module_path, std::string const& bundle_path, boost::function<void (std::string const&, VST3Info const&)> cb, bool verbose)
+ARDOUR::vst3_scan_and_cache (std::string const& module_path, std::string const& bundle_path, boost::function<void (std::string const&, std::string const&, VST3Info const&)> cb, bool verbose)
 {
 	XMLNode* root = new XMLNode ("VST3Cache");
 	root->set_property ("version", 1);
@@ -418,9 +468,17 @@ ARDOUR::vst3_scan_and_cache (std::string const& module_path, std::string const& 
 	try {
 		boost::shared_ptr<VST3PluginModule> m = VST3PluginModule::load (module_path);
 		std::vector<VST3Info> nfo;
-		discover_vst3 (m, nfo, verbose);
+		if (!discover_vst3 (m, nfo, verbose)) {
+			delete root;
+			return false;
+		}
+		if (nfo.empty ()) {
+			cerr << "No plugins in VST3 module: '" << module_path << "'\n";
+			delete root;
+			return false;
+		}
 		for (std::vector<VST3Info>::const_iterator i = nfo.begin(); i != nfo.end(); ++i) {
-			cb (module_path, *i);
+			cb (module_path, bundle_path, *i);
 			root->add_child_nocopy (i->state ());
 		}
 

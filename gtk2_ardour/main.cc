@@ -70,6 +70,7 @@
 #include "pbd/i18n.h"
 
 #ifdef PLATFORM_WINDOWS
+#include <windows.h>  // CreateMutex
 #include <fcntl.h> // Needed for '_fmode'
 #include <shellapi.h> // console
 #endif
@@ -120,11 +121,14 @@ gui_jack_error ()
 
 #ifndef NDEBUG
 static void ardour_g_log (const gchar *log_domain, GLogLevelFlags log_level, const gchar *message, gpointer user_data) {
+
+	g_log_default_handler (log_domain, log_level, message, NULL);
+
 	switch (log_level) {
 		case G_LOG_FLAG_FATAL:
-		case G_LOG_LEVEL_CRITICAL:
 			fatal << "g_log: " << message << endmsg;
 			break;
+		case G_LOG_LEVEL_CRITICAL:
 		case G_LOG_LEVEL_ERROR:
 			error << "g_log: " << message << endmsg;
 			break;
@@ -337,6 +341,17 @@ int main (int argc, char *argv[])
 		     << endl;
 	}
 
+#ifdef PLATFORM_WINDOWS
+	CreateMutexA (0, 1, string_compose ("%1%2", PROGRAM_NAME, PROGRAM_VERSION).c_str ());
+	if (GetLastError() == ERROR_ALREADY_EXISTS) {
+		Gtk::Main main (argc, argv);
+		Gtk::MessageDialog msg (string_compose (_("%1 is already running."), PROGRAM_NAME),
+				false, Gtk::MESSAGE_ERROR , Gtk::BUTTONS_OK, true);
+		msg.run ();
+		exit (EXIT_FAILURE);
+	}
+#endif
+
 #ifdef HAVE_DRMINGW
 	/* prevent missing libs popups */
 	UINT prev_error_mode = SetErrorMode (SEM_FAILCRITICALERRORS);
@@ -371,7 +386,7 @@ int main (int argc, char *argv[])
 	SetErrorMode (prev_error_mode);
 #endif
 
-	if (!ARDOUR::init (ARDOUR_COMMAND_LINE::use_vst, ARDOUR_COMMAND_LINE::try_hw_optimization, localedir.c_str(), true)) {
+	if (!ARDOUR::init (ARDOUR_COMMAND_LINE::try_hw_optimization, localedir.c_str(), true)) {
 		error << string_compose (_("could not initialize %1."), PROGRAM_NAME) << endmsg;
 		Gtk::Main main (argc, argv);
 		Gtk::MessageDialog msg (string_compose (_("Could not initialize %1 (likely due to corrupt config files).\n"
@@ -402,9 +417,7 @@ int main (int argc, char *argv[])
 	}
 
 #ifndef NDEBUG
-	g_log_set_handler (NULL,
-			GLogLevelFlags (G_LOG_LEVEL_WARNING | G_LOG_FLAG_FATAL |  G_LOG_LEVEL_CRITICAL | G_LOG_FLAG_RECURSION),
-			&ardour_g_log, NULL);
+	g_log_set_default_handler (&ardour_g_log, NULL);
 #endif
 
 	ui->run (text_receiver);

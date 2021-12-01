@@ -95,23 +95,24 @@ public:
 
 	void set_samples_per_pixel (double);
 	void set_height (uint32_t h, TrackHeightMode m = OnlySelf);
-	void show_timestretch (samplepos_t start, samplepos_t end, int layers, int layer);
+	void show_timestretch (Temporal::timepos_t const & start, Temporal::timepos_t const & end, int layers, int layer);
 	void hide_timestretch ();
 	void selection_click (GdkEventButton*);
 	void set_selected_points (PointSelection&);
 	void set_selected_regionviews (RegionSelection&);
-	void get_selectables (ARDOUR::samplepos_t start, ARDOUR::samplepos_t end, double top, double bot, std::list<Selectable *>&, bool within = false);
+	void get_selectables (Temporal::timepos_t const &, Temporal::timepos_t const &, double top, double bot, std::list<Selectable *>&, bool within = false);
 	void get_inverted_selectables (Selection&, std::list<Selectable*>&);
+	void get_regionviews_at_or_after (Temporal::timepos_t const &, RegionSelection&);
 	void set_layer_display (LayerDisplay d);
 	void toggle_layer_display ();
 	LayerDisplay layer_display () const;
 
-	boost::shared_ptr<ARDOUR::Region> find_next_region (samplepos_t pos, ARDOUR::RegionPoint, int32_t dir);
-	samplepos_t find_next_region_boundary (samplepos_t pos, int32_t dir);
+	boost::shared_ptr<ARDOUR::Region> find_next_region (ARDOUR::timepos_t const & pos, ARDOUR::RegionPoint, int32_t dir);
+	ARDOUR::timepos_t find_next_region_boundary (ARDOUR::timepos_t const & pos, int32_t dir);
 
 	/* Editing operations */
 	void cut_copy_clear (Selection&, Editing::CutCopyOp);
-	bool paste (ARDOUR::samplepos_t, const Selection&, PasteContext& ctx, const int32_t sub_num);
+	bool paste (Temporal::timepos_t const &, const Selection&, PasteContext& ctx);
 	RegionView* combine_regions ();
 	void uncombine_regions ();
 	void uncombine_region (RegionView*);
@@ -140,6 +141,8 @@ public:
 	void chan_count_changed ();
 	void meter_changed ();
 	void effective_gain_display () { gm.effective_gain_display(); }
+
+	static sigc::signal<void, bool> signal_ctrl_touched;
 
 	std::string state_id() const;
 
@@ -193,6 +196,14 @@ protected:
 
 	ProcessorAutomationNode*
 	find_processor_automation_node (boost::shared_ptr<ARDOUR::Processor> i, Evoral::Parameter);
+
+	/* O(log(N)) lookup of menu-item by AC */
+	Gtk::CheckMenuItem*
+	find_menu_item_by_ctrl (boost::shared_ptr<ARDOUR::AutomationControl>);
+
+	/* O(1) IFF route_owned_only == true, O(N) otherwise */
+	boost::shared_ptr<AutomationTimeAxisView>
+	find_atav_by_ctrl (boost::shared_ptr<ARDOUR::AutomationControl>, bool route_owned_only = true);
 
 	boost::shared_ptr<AutomationLine>
 	find_processor_automation_curve (boost::shared_ptr<ARDOUR::Processor> i, Evoral::Parameter);
@@ -261,6 +272,8 @@ protected:
 	 */
 	std::list<ProcessorAutomationInfo*> processor_automation;
 
+	std::map<boost::shared_ptr<PBD::Controllable>, Gtk::CheckMenuItem*> ctrl_item_map;
+
 	typedef std::vector<boost::shared_ptr<AutomationLine> > ProcessorAutomationCurves;
 	ProcessorAutomationCurves processor_automation_curves;
 	/** parameter -> menu item map for the plugin automation menu */
@@ -299,10 +312,15 @@ private:
 	void update_playlist_tip ();
 	void parameter_changed (std::string const & p);
 	void update_track_number_visibility();
+	void show_touched_automation (boost::weak_ptr<PBD::Controllable>);
+	void maybe_hide_automation (bool, boost::weak_ptr<PBD::Controllable>);
 
 	void drop_instrument_ref ();
 	void reread_midnam ();
 	PBD::ScopedConnectionList midnam_connection;
+
+	PBD::ScopedConnection ctrl_touched_connection;
+	sigc::connection      ctrl_autohide_connection;
 };
 
 #endif /* __ardour_route_time_axis_h__ */

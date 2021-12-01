@@ -399,7 +399,7 @@ HSliderOption::HSliderOption (
 
 	_hscale.ensure_style ();
 	int width, height;
-	get_pixel_size (_hscale.create_pango_layout (X_("a long piece of text that is about as wide as we want sliders to be")), width, height);
+	get_pixel_size (_hscale.create_pango_layout (X_("a piece of text that is as wide sliders should be")), width, height);
 	_hscale.set_size_request (width, -1);
 }
 
@@ -643,20 +643,20 @@ ClockOption::set_state_from_config ()
 	Timecode::Time TC;
 	samplepos_t when;
 	if (!Timecode::parse_timecode_format(_get(), TC)) {
-		_clock.set (0, true);
+		_clock.set (timepos_t (0), true);
 	}
 	TC.rate = _session->samples_per_timecode_frame();
 	TC.drop = _session->timecode_drop_frames();
 	_session->timecode_to_sample(TC, when, false, false);
 	if (TC.negative) { when=-when; }
-	_clock.set (when, true);
+	_clock.set (timepos_t (when), true);
 }
 
 void
 ClockOption::save_clock_time ()
 {
 	Timecode::Time TC;
-	_session->sample_to_timecode(_clock.current_time(), TC, false, false);
+	_session->sample_to_timecode (_clock.current_time().samples(), TC, false, false);
 	_set (Timecode::timecode_format_time(TC));
 }
 
@@ -942,7 +942,7 @@ DirectoryOption::selection_changed ()
 
 /*--------------------------*/
 
-OptionEditorContainer::OptionEditorContainer (PBD::Configuration* c, string const& str)
+OptionEditorContainer::OptionEditorContainer (PBD::Configuration* c)
 	: OptionEditor (c)
 {
 	set_border_width (4);

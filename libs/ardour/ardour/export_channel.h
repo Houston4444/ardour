@@ -119,15 +119,14 @@ class LIBARDOUR_API RegionExportChannelFactory
 	void update_buffers (samplecnt_t samples);
 
 	AudioRegion const & region;
-	AudioTrack & track;
 	Type type;
 
 	samplecnt_t samples_per_cycle;
 	size_t n_channels;
 	BufferSet buffers;
 	bool buffers_up_to_date;
-	samplecnt_t region_start;
-	samplecnt_t position;
+	samplepos_t region_start;
+	samplepos_t position;
 
 	boost::scoped_array<Sample> mixdown_buffer;
 	boost::scoped_array<Sample> gain_buffer;

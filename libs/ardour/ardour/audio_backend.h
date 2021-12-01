@@ -161,6 +161,8 @@ public:
 	 */
 	virtual bool is_realtime () const = 0;
 
+	virtual int client_real_time_priority () { return PBD_RT_PRI_PROC; }
+
 	/* Discovering devices and parameters */
 
 	/** Return true if this backend requires the selection of a "driver"
@@ -846,6 +848,15 @@ public:
 		position = 0;
 		return false;
 	}
+
+	enum TimingTypes {
+		DeviceWait = 0,
+		RunLoop,
+		/* end */
+		NTT
+	};
+
+	PBD::TimingStats dsp_stats[NTT];
 
 protected:
 	AudioBackendInfo& _info;

@@ -70,15 +70,9 @@ using namespace PBD;
 using namespace Gtk;
 using namespace Glib;
 using namespace Editing;
-using Gtkmm2ext::Keyboard;
+using namespace Temporal;
 
-struct ColumnInfo {
-	int                index;
-	int                sort_idx;
-	Gtk::AlignmentEnum al;
-	const char*        label;
-	const char*        tooltip;
-};
+using Gtkmm2ext::Keyboard;
 
 //#define SHOW_REGION_EXTRAS
 
@@ -177,8 +171,14 @@ EditorRegions::EditorRegions (Editor* e)
 	TreeViewColumn* col;
 	Gtk::Label*     l;
 
+	struct ColumnInfo {
+		int                index;
+		int                sort_idx;
+		Gtk::AlignmentEnum al;
+		const char*        label;
+		const char*        tooltip;
+	} ci[] = {
 	/* clang-format off */
-	ColumnInfo ci[] = {
 		{ 0,  0,  ALIGN_LEFT,    _("Name"),      _("Region name") },
 		{ 1,  1,  ALIGN_LEFT,    _("# Ch"),      _("# Channels in the region") },
 		{ 2,  2,  ALIGN_LEFT,    _("Tags"),      _("Tags") },
@@ -365,7 +365,7 @@ EditorRegions::set_session (ARDOUR::Session* s)
 {
 	SessionHandlePtr::set_session (s);
 
-	ARDOUR::Region::RegionPropertyChanged.connect (region_property_connection, MISSING_INVALIDATOR, boost::bind (&EditorRegions::region_changed, this, _1, _2), gui_context ());
+	ARDOUR::Region::RegionsPropertyChanged.connect (region_property_connection, MISSING_INVALIDATOR, boost::bind (&EditorRegions::regions_changed, this, _1, _2), gui_context ());
 	ARDOUR::RegionFactory::CheckNewRegion.connect (check_new_region_connection, MISSING_INVALIDATOR, boost::bind (&EditorRegions::add_region, this, _1), gui_context ());
 
 	redisplay ();
@@ -392,7 +392,9 @@ EditorRegions::add_region (boost::shared_ptr<Region> region)
 	}
 
 	PropertyChange pc;
-	region_changed (region, pc);
+	boost::shared_ptr<RegionList> rl (new RegionList);
+	rl->push_back (region);
+	regions_changed (rl, pc);
 }
 
 void
@@ -437,38 +439,49 @@ EditorRegions::remove_unused_regions ()
 }
 
 void
-EditorRegions::region_changed (boost::shared_ptr<Region> r, const PropertyChange& what_changed)
+EditorRegions::regions_changed (boost::shared_ptr<RegionList> rl, const PropertyChange& what_changed)
 {
-	RegionRowMap::iterator map_it = region_row_map.find (r);
-
-	boost::shared_ptr<ARDOUR::Playlist> pl = r->playlist ();
-	if (!(pl && _session && _session->playlist_is_active (pl))) {
-		/* this region is not on an active playlist
-		 * maybe it got deleted, or whatever */
-		if (map_it != region_row_map.end ()) {
-			Gtk::TreeModel::iterator r = map_it->second;
-			region_row_map.erase (map_it);
-			_model->erase (r);
-		}
-		return;
+	bool freeze = rl->size () > 2;
+	if (freeze) {
+		freeze_tree_model ();
 	}
+	for (RegionList::const_iterator i = rl->begin (); i != rl->end(); ++i) {
+		boost::shared_ptr<Region> r = *i;
 
-	if (map_it != region_row_map.end ()) {
-		/* found the region, update its row properties */
-		TreeModel::Row row = *(map_it->second);
-		populate_row (r, row, what_changed);
+		RegionRowMap::iterator map_it = region_row_map.find (r);
 
-	} else {
-		/* new region, add it to the list */
-		TreeModel::iterator iter = _model->append ();
-		TreeModel::Row      row  = *iter;
-		region_row_map.insert (pair<boost::shared_ptr<ARDOUR::Region>, Gtk::TreeModel::iterator> (r, iter));
+		boost::shared_ptr<ARDOUR::Playlist> pl = r->playlist ();
+		if (!(pl && _session && _session->playlist_is_active (pl))) {
+			/* this region is not on an active playlist
+			 * maybe it got deleted, or whatever */
+			if (map_it != region_row_map.end ()) {
+				Gtk::TreeModel::iterator r = map_it->second;
+				region_row_map.erase (map_it);
+				_model->erase (r);
+			}
+			break;
+		}
 
-		/* set the properties that don't change */
-		row[_columns.region] = r;
+		if (map_it != region_row_map.end ()) {
+			/* found the region, update its row properties */
+			TreeModel::Row row = *(map_it->second);
+			populate_row (r, row, what_changed);
 
-		/* now populate the properties that might change... */
-		populate_row (r, row, PropertyChange ());
+		} else {
+			/* new region, add it to the list */
+			TreeModel::iterator iter = _model->append ();
+			TreeModel::Row      row  = *iter;
+			region_row_map.insert (pair<boost::shared_ptr<ARDOUR::Region>, Gtk::TreeModel::iterator> (r, iter));
+
+			/* set the properties that don't change */
+			row[_columns.region] = r;
+
+			/* now populate the properties that might change... */
+			populate_row (r, row, PropertyChange ());
+		}
+	}
+	if (freeze) {
+		thaw_tree_model ();
 	}
 }
 
@@ -530,9 +543,7 @@ EditorRegions::redisplay ()
 	}
 
 	/* store sort column id and type for later */
-	int sort_col_id;
-	Gtk::SortType sort_type;
-	_model->get_sort_column_id (sort_col_id, sort_type);
+	_model->get_sort_column_id (_sort_col_id, _sort_type);
 
 	_display.set_model (Glib::RefPtr<Gtk::TreeStore> (0));
 	_model->clear ();
@@ -543,7 +554,7 @@ EditorRegions::redisplay ()
 
 	RegionFactory::foreach_region (sigc::mem_fun (*this, &EditorRegions::add_region));
 
-	_model->set_sort_column (sort_col_id, sort_type); // re-enabale sorting
+	_model->set_sort_column (_sort_col_id, _sort_type); // re-enabale sorting
 	_display.set_model (_model);
 }
 
@@ -575,7 +586,6 @@ EditorRegions::clock_format_changed ()
 	PropertyChange change;
 	change.add (ARDOUR::Properties::start);
 	change.add (ARDOUR::Properties::length);
-	change.add (ARDOUR::Properties::position);
 	change.add (ARDOUR::Properties::sync_position);
 	change.add (ARDOUR::Properties::fade_in);
 	change.add (ARDOUR::Properties::fade_out);
@@ -592,10 +602,11 @@ EditorRegions::clock_format_changed ()
 }
 
 void
-EditorRegions::format_position (samplepos_t pos, char* buf, size_t bufsize, bool onoff)
+EditorRegions::format_position (timepos_t const & p, char* buf, size_t bufsize, bool onoff)
 {
-	Timecode::BBT_Time bbt;
+	Temporal::BBT_Time bbt;
 	Timecode::Time     timecode;
+	samplepos_t pos (p.samples());
 
 	if (pos < 0) {
 		error << string_compose (_ ("EditorRegions::format_position: negative timecode position: %1"), pos) << endmsg;
@@ -605,7 +616,7 @@ EditorRegions::format_position (samplepos_t pos, char* buf, size_t bufsize, bool
 
 	switch (ARDOUR_UI::instance ()->primary_clock->mode ()) {
 		case AudioClock::BBT:
-			bbt = _session->tempo_map ().bbt_at_sample (pos);
+			bbt = Temporal::TempoMap::use()->bbt_at (p);
 			if (onoff) {
 				snprintf (buf, bufsize, "%03d|%02d|%04d", bbt.bars, bbt.beats, bbt.ticks);
 			} else {
@@ -666,9 +677,9 @@ EditorRegions::populate_row (boost::shared_ptr<Region> region, TreeModel::Row co
 	/* the grid is most interested in the regions that are *visible* in the editor.
 	 * this is a convenient place to flag changes to the grid cache, on a visible region */
 	PropertyChange grid_interests;
-	grid_interests.add (ARDOUR::Properties::position);
 	grid_interests.add (ARDOUR::Properties::length);
 	grid_interests.add (ARDOUR::Properties::sync_position);
+
 	if (what_changed.contains (grid_interests)) {
 		_editor->mark_region_boundary_cache_dirty ();
 	}
@@ -689,7 +700,7 @@ EditorRegions::populate_row (boost::shared_ptr<Region> region, TreeModel::Row co
 	PropertyChange c;
 	const bool     all = what_changed == c;
 
-	if (all || what_changed.contains (Properties::position)) {
+	if (all || what_changed.contains (Properties::length)) {
 		populate_row_position (region, row);
 	}
 	if (all || what_changed.contains (Properties::start) || what_changed.contains (Properties::sync_position)) {
@@ -704,7 +715,7 @@ EditorRegions::populate_row (boost::shared_ptr<Region> region, TreeModel::Row co
 	if (all || what_changed.contains (Properties::locked)) {
 		populate_row_locked (region, row);
 	}
-	if (all || what_changed.contains (Properties::position_lock_style)) {
+	if (all || what_changed.contains (Properties::time_domain)) {
 		populate_row_glued (region, row);
 	}
 	if (all || what_changed.contains (Properties::muted)) {
@@ -762,11 +773,12 @@ EditorRegions::populate_row_length (boost::shared_ptr<Region> region, TreeModel:
 	char buf[16];
 
 	if (ARDOUR_UI::instance ()->primary_clock->mode () == AudioClock::BBT) {
-		TempoMap&          map (_session->tempo_map ());
-		Timecode::BBT_Time bbt = map.bbt_at_beat (map.beat_at_sample (region->last_sample ()) - map.beat_at_sample (region->first_sample ()));
+		TempoMap::SharedPtr map (TempoMap::use());
+		Temporal::BBT_Time bbt; /* uninitialized until full duration works */
+		// Temporal::BBT_Time bbt = map->bbt_duration_at (region->position(), region->length());
 		snprintf (buf, sizeof (buf), "%03d|%02d|%04d", bbt.bars, bbt.beats, bbt.ticks);
 	} else {
-		format_position (region->length (), buf, sizeof (buf));
+		format_position (timepos_t (region->length ()), buf, sizeof (buf));
 	}
 
 	row[_columns.length] = buf;
@@ -781,7 +793,7 @@ EditorRegions::populate_row_end (boost::shared_ptr<Region> region, TreeModel::Ro
 
 	if (region->last_sample () >= region->first_sample ()) {
 		char buf[16];
-		format_position (region->last_sample (), buf, sizeof (buf));
+		format_position (region->nt_last (), buf, sizeof (buf));
 		row[_columns.end] = buf;
 	} else {
 		row[_columns.end] = "empty";
@@ -854,7 +866,7 @@ EditorRegions::populate_row_locked (boost::shared_ptr<Region> region, TreeModel:
 void
 EditorRegions::populate_row_glued (boost::shared_ptr<Region> region, TreeModel::Row const& row)
 {
-	if (region->position_lock_style () == MusicTime) {
+	if (region->position_time_domain () == Temporal::BeatTime) {
 		row[_columns.glued] = true;
 	} else {
 		row[_columns.glued] = false;
@@ -881,7 +893,7 @@ EditorRegions::populate_row_name (boost::shared_ptr<Region> region, TreeModel::R
 	if (region->data_type() == DataType::MIDI) {
 		row[_columns.channels] = 0;  /*TODO: some better recognition of midi regions*/
 	} else {
-		row[_columns.channels] = region->n_channels();
+		row[_columns.channels] = region->sources().size();
 	}
 
 	row[_columns.tags] = region->tags ();
@@ -1006,20 +1018,20 @@ void
 EditorRegions::drag_data_received (const RefPtr<Gdk::DragContext>& context,
                                    int x, int y,
                                    const SelectionData& data,
-                                   guint info, guint time)
+                                   guint info, guint dtime)
 {
 	vector<string> paths;
 
 	if (data.get_target () == "GTK_TREE_MODEL_ROW") {
 		/* something is being dragged over the region list */
 		_editor->_drags->abort ();
-		_display.on_drag_data_received (context, x, y, data, info, time);
+		_display.on_drag_data_received (context, x, y, data, info, dtime);
 		return;
 	}
 
-	if (_editor->convert_drop_to_paths (paths, context, x, y, data, info, time) == 0) {
-		samplepos_t pos  = 0;
-		bool        copy = ((context->get_actions () & (Gdk::ACTION_COPY | Gdk::ACTION_LINK | Gdk::ACTION_MOVE)) == Gdk::ACTION_COPY);
+	if (_editor->convert_drop_to_paths (paths, context, x, y, data, info, dtime) == 0) {
+		timepos_t pos;
+		bool      copy = ((context->get_actions () & (Gdk::ACTION_COPY | Gdk::ACTION_LINK | Gdk::ACTION_MOVE)) == Gdk::ACTION_COPY);
 
 		if (UIConfiguration::instance ().get_only_copy_imported_files () || copy) {
 			_editor->do_import (paths, Editing::ImportDistinctFiles, Editing::ImportAsRegion,
@@ -1027,7 +1039,7 @@ EditorRegions::drag_data_received (const RefPtr<Gdk::DragContext>& context,
 		} else {
 			_editor->do_embed (paths, Editing::ImportDistinctFiles, ImportAsRegion, pos);
 		}
-		context->drag_finish (true, false, time);
+		context->drag_finish (true, false, dtime);
 	}
 }
 
@@ -1149,7 +1161,6 @@ EditorRegions::get_dragged_region ()
 		return boost::shared_ptr<Region> ();
 	}
 
-	assert (regions.size () == 1);
 	return regions.front ();
 }
 
@@ -1189,6 +1200,9 @@ EditorRegions::get_single_selection ()
 void
 EditorRegions::freeze_tree_model ()
 {
+	/* store sort column id and type for later */
+	_model->get_sort_column_id (_sort_col_id, _sort_type);
+	_change_connection.block (true);
 	_display.set_model (Glib::RefPtr<Gtk::TreeStore> (0));
 	_model->set_sort_column (-2, SORT_ASCENDING); //Disable sorting to gain performance
 }
@@ -1196,8 +1210,9 @@ EditorRegions::freeze_tree_model ()
 void
 EditorRegions::thaw_tree_model ()
 {
-	_model->set_sort_column (0, SORT_ASCENDING); // renabale sorting
+	_model->set_sort_column (_sort_col_id, _sort_type); // re-enabale sorting
 	_display.set_model (_model);
+	_change_connection.block (false);
 }
 
 void
@@ -1220,7 +1235,7 @@ EditorRegions::glued_changed (std::string const& path)
 		boost::shared_ptr<ARDOUR::Region> region = (*i)[_columns.region];
 		if (region) {
 			/* `glued' means MusicTime, and we're toggling here */
-			region->set_position_lock_style ((*i)[_columns.glued] ? AudioTime : MusicTime);
+			region->set_position_time_domain ((*i)[_columns.glued] ? Temporal::AudioTime : Temporal::BeatTime);
 		}
 	}
 }

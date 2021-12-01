@@ -160,7 +160,6 @@ SoundFileBox::SoundFileBox (bool /*persistent*/)
 
 {
 	set_name (X_("SoundFileBox"));
-	set_size_request (300, -1);
 
 	preview_label.set_markup (_("<b>Sound File Information</b>"));
 
@@ -196,20 +195,23 @@ SoundFileBox::SoundFileBox (bool /*persistent*/)
 	table.set_homogeneous (false);
 	table.set_row_spacings (6);
 
-	table.attach (channels, 0, 1, 0, 1, FILL, FILL);
-	table.attach (samplerate, 0, 1, 1, 2, FILL, FILL);
-	table.attach (format, 0, 1, 2, 4, FILL, FILL);
-	table.attach (length, 0, 1, 4, 5, FILL, FILL);
-	table.attach (timecode, 0, 1, 5, 6, FILL, FILL);
-	table.attach (tempomap, 0, 1, 6, 7, FILL, FILL);
+	int row = 0;
+	table.attach (format,     0, 1, row, row+2, FILL, FILL);  row+=2;
+	table.attach (channels,   0, 1, row, row+1, FILL, FILL);  row+=1;
+	table.attach (samplerate, 0, 1, row, row+1, FILL, FILL);  row+=1;
+	table.attach (length,     0, 1, row, row+1, FILL, FILL);  row+=1;
+	table.attach (timecode,   0, 1, row, row+1, FILL, FILL);  row+=1;
+	table.attach (tempomap,   0, 1, row, row+1, FILL, FILL);
 
-	table.attach (channels_value, 1, 2, 0, 1, FILL, FILL);
-	table.attach (samplerate_value, 1, 2, 1, 2, FILL, FILL);
-	table.attach (format_text, 1, 2, 2, 4, FILL, FILL);
-	table.attach (length_clock, 1, 2, 4, 5, FILL, FILL);
-	table.attach (timecode_clock, 1, 2, 5, 6, FILL, FILL);
-	table.attach (tempomap_value, 1, 2, 6, 7, FILL, FILL);
+	row = 0;
+	table.attach (format_text,     1, 2, row, row+2, FILL, FILL);  row+=2;
+	table.attach (channels_value,  1, 2, row, row+1, FILL, FILL);  row+=1;
+	table.attach (samplerate_value,1, 2, row, row+1, FILL, FILL);  row+=1;
+	table.attach (length_clock,    1, 2, row, row+1, FILL, FILL);  row+=1;
+	table.attach (timecode_clock,  1, 2, row, row+1, FILL, FILL);  row+=1;
+	table.attach (tempomap_value,  1, 2, row, row+1, FILL, FILL);  row+=1;
 
+	length_clock.set_is_duration (true, timepos_t());
 	length_clock.set_mode (ARDOUR_UI::instance()->primary_clock->mode());
 	timecode_clock.set_mode (AudioClock::Timecode);
 
@@ -255,6 +257,13 @@ SoundFileBox::SoundFileBox (bool /*persistent*/)
 
 	channels_value.set_alignment (0.0f, 0.5f);
 	samplerate_value.set_alignment (0.0f, 0.5f);
+}
+
+void
+SoundFileBox::on_size_request (Gtk::Requisition* req)
+{
+	VBox::on_size_request (req);
+	req->width = std::max<gint> (req->width, 300 * UIConfiguration::instance().get_ui_scale ());
 }
 
 void
@@ -333,23 +342,19 @@ SoundFileBox::setup_labels (const string& filename)
 
 		preview_label.set_markup (_("<b>Midi File Information</b>"));
 
-		format_text.set_text ("MIDI");
 		samplerate_value.set_text ("-");
 		tags_entry.get_buffer()->set_text ("");
-		timecode_clock.set (0);
+		timecode_clock.set (timepos_t ());
 		tags_entry.set_sensitive (false);
 
 		if (ms) {
-			if (ms->is_type0()) {
-				channels_value.set_text (to_string<uint32_t>(ms->channels().size()));
+			if (ms->smf_format()==0) {
+				format_text.set_text ("MIDI Type 0");
 			} else {
-				if (ms->num_tracks() > 1) {
-					channels_value.set_text (to_string(ms->num_tracks()) + _("(Tracks)"));
-				} else {
-					channels_value.set_text (to_string(ms->num_tracks()));
-				}
+				format_text.set_text (string_compose("%1 (%2 Tracks)", ms->smf_format()==2 ? "MIDI Type 2" : "MIDI Type 1", ms->num_tracks()));
 			}
-			length_clock.set (ms->length(ms->natural_position()));
+			channels_value.set_text (to_string<uint32_t>(ms->num_channels()));
+			length_clock.set_duration (timecnt_t (0));
 			switch (ms->num_tempos()) {
 			case 0:
 				tempomap_value.set_text (_("No tempo data"));
@@ -370,7 +375,7 @@ SoundFileBox::setup_labels (const string& filename)
 			}
 		} else {
 			channels_value.set_text ("");
-			length_clock.set (0);
+			length_clock.set (timepos_t());
 			tempomap_value.set_text (_("No tempo data"));
 		}
 
@@ -391,8 +396,8 @@ SoundFileBox::setup_labels (const string& filename)
 		samplerate_value.set_text ("");
 		tags_entry.get_buffer()->set_text ("");
 
-		length_clock.set (0);
-		timecode_clock.set (0);
+		length_clock.set (timepos_t());
+		timecode_clock.set (timepos_t());
 
 		tags_entry.set_sensitive (false);
 		play_btn.set_sensitive (false);
@@ -423,8 +428,9 @@ SoundFileBox::setup_labels (const string& filename)
 	samplecnt_t const nfr = _session ? _session->nominal_sample_rate() : 25;
 	double src_coef = (double) nfr / sf_info.samplerate;
 
-	length_clock.set (sf_info.length * src_coef + 0.5, true);
-	timecode_clock.set (sf_info.timecode * src_coef + 0.5, true);
+	length_clock.set_is_duration (true, timepos_t());
+	length_clock.set_duration (timecnt_t (samplecnt_t (llrint (sf_info.length * src_coef + 0.5))), true);
+	timecode_clock.set (timepos_t (samplepos_t (llrint (sf_info.timecode * src_coef + 0.5))), true);
 
 	// this is a hack that is fixed in trunk, i think (august 26th, 2007)
 
@@ -503,8 +509,8 @@ SoundFileBox::audition ()
 
 		PropertyList plist;
 
-		plist.add (ARDOUR::Properties::start, 0);
-		plist.add (ARDOUR::Properties::length, ms->length(ms->natural_position()));
+		plist.add (ARDOUR::Properties::start, timepos_t (Temporal::Beats()));
+		plist.add (ARDOUR::Properties::length, ms->length());
 		plist.add (ARDOUR::Properties::name, rname);
 		plist.add (ARDOUR::Properties::layer, 0);
 
@@ -552,29 +558,30 @@ SoundFileBox::audition ()
 
 		PropertyList plist;
 
-		plist.add (ARDOUR::Properties::start, 0);
-		plist.add (ARDOUR::Properties::length, srclist[0]->length(srclist[0]->natural_position()));
+		plist.add (ARDOUR::Properties::start, timepos_t (0));
+		plist.add (ARDOUR::Properties::length, srclist[0]->length());
 		plist.add (ARDOUR::Properties::name, rname);
 		plist.add (ARDOUR::Properties::layer, 0);
 
 		r = boost::dynamic_pointer_cast<AudioRegion> (RegionFactory::create (srclist, plist, false));
 	}
 
-	sampleoffset_t audition_position = 0;
-	switch(_import_position) {
+	timepos_t audition_position;
+
+	switch (_import_position) {
 		case ImportAtTimestamp:
-			audition_position = 0;
 			break;
 		case ImportAtPlayhead:
-			audition_position = _session->transport_sample();
+			audition_position = timepos_t (_session->transport_sample());
 			break;
 		case ImportAtStart:
-			audition_position = _session->current_start_sample();
+			audition_position = timepos_t (_session->current_start_sample());
 			break;
 		case ImportAtEditPoint:
 			audition_position = PublicEditor::instance().get_preferred_edit_position ();
 			break;
 	}
+
 	r->set_position(audition_position);
 
 	_session->audition_region(r);
@@ -1662,17 +1669,8 @@ SoundFileOmega::check_info (const vector<string>& paths, bool& same_size, bool& 
 			if (reader.open (*i)) {
 				err = true;
 			} else {
-				if (reader.is_type0 ()) {
-					if (reader.channels().size() > 1) {
-						/* for type-0 files, we can split
-						 * "one track per channel"
-						 */
-						multichannel = true;
-					}
-				} else {
-					if (reader.num_tracks() > 1) {
-						multichannel = true;
-					}
+				if (reader.num_channels() > 1) {
+					multichannel = true;
 				}
 			}
 
@@ -1755,8 +1753,10 @@ SoundFileOmega::SoundFileOmega (string title, ARDOUR::Session* s,
 				bool persistent,
 				Editing::ImportMode mode_hint)
 	: SoundFileBrowser (title, s, persistent)
+	, instrument_combo (false)
 	, copy_files_btn ( _("Copy files to session"))
 	, smf_tempo_btn (_("Use MIDI Tempo Map (if defined)"))
+	, smf_marker_btn (_("Import MIDI markers (if any)"))
 	, selected_audio_track_cnt (selected_audio_tracks)
 	, selected_midi_track_cnt (selected_midi_tracks)
 	, _import_active (false)
@@ -1808,6 +1808,7 @@ SoundFileOmega::SoundFileOmega (string title, ARDOUR::Session* s,
 	options.attach (midi_track_name_combo, 2, 3, 1, 2, FILL, SHRINK, 8, 0);
 
 	options.attach (smf_tempo_btn, 2, 3, 3, 4, FILL, SHRINK, 8, 0);
+	options.attach (smf_marker_btn, 2, 3, 4, 5, FILL, SHRINK, 8, 0);
 
 	l = manage (new Label);
 	l->set_markup (_("<b>Instrument</b>"));
@@ -1985,6 +1986,13 @@ SoundFileOmega::get_use_smf_tempo_map () const
 	return smf_tempo_btn.get_active ();
 }
 
+bool
+SoundFileOmega::get_use_smf_markers () const
+{
+	return smf_marker_btn.get_active ();
+}
+
+
 ImportDisposition
 SoundFileOmega::get_channel_disposition () const
 {
@@ -2058,22 +2066,23 @@ SoundFileOmega::do_something (int action)
 	ImportMode mode = get_mode ();
 	ImportDisposition chns = get_channel_disposition ();
 	PluginInfoPtr instrument = instrument_combo.selected_instrument();
-	samplepos_t where;
+	timepos_t where;
 	MidiTrackNameSource mts = get_midi_track_name_source ();
 	MidiTempoMapDisposition mtd = (get_use_smf_tempo_map () ? SMFTempoUse : SMFTempoIgnore);
+	bool with_midi_markers = get_use_smf_markers ();
 
 	switch (pos) {
 	case ImportAtEditPoint:
 		where = PublicEditor::instance().get_preferred_edit_position ();
 		break;
 	case ImportAtTimestamp:
-		where = -1;
+		where = timepos_t::max (Temporal::AudioTime);
 		break;
 	case ImportAtPlayhead:
-		where = _session->transport_sample();
+		where = timepos_t (_session->transport_sample());
 		break;
 	case ImportAtStart:
-		where = _session->current_start_sample();
+		where = timepos_t (_session->current_start_sample());
 		break;
 	}
 
@@ -2082,7 +2091,7 @@ SoundFileOmega::do_something (int action)
 	_import_active = true;
 
 	if (copy_files_btn.get_active()) {
-		PublicEditor::instance().do_import (paths, chns, mode, quality, mts, mtd, where, instrument);
+		PublicEditor::instance().do_import (paths, chns, mode, quality, mts, mtd, where, instrument, with_midi_markers);
 	} else {
 		PublicEditor::instance().do_embed (paths, chns, mode, where, instrument);
 	}

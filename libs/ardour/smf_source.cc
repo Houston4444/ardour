@@ -43,6 +43,8 @@
 #include "evoral/Control.h"
 #include "evoral/SMF.h"
 
+#include "temporal/tempo.h"
+
 #include "ardour/debug.h"
 #include "ardour/midi_channel_filter.h"
 #include "ardour/midi_model.h"
@@ -67,10 +69,7 @@ SMFSource::SMFSource (Session& s, const string& path, Source::Flag flags)
 	, FileSource(s, DataType::MIDI, path, string(), flags)
 	, Evoral::SMF()
 	, _open (false)
-	, _last_ev_time_beats(0.0)
 	, _last_ev_time_samples(0)
-	, _smf_last_read_end (0)
-	, _smf_last_read_time (0)
 {
 	/* note that origin remains empty */
 
@@ -83,17 +82,18 @@ SMFSource::SMFSource (Session& s, const string& path, Source::Flag flags)
 
 	_flags = Source::Flag (_flags | Empty);
 
-	/* file is not opened until write */
-
-	if (flags & Writable) {
-		return;
+	if (_flags & Writable) {
+		if (open_for_write ()) {
+			throw failed_constructor ();
+		}
+		/* no fd left open here */
+	} else {
+		if (open (_path)) {
+			throw failed_constructor ();
+		}
+		_open = true;
 	}
 
-	if (open (_path)) {
-		throw failed_constructor ();
-	}
-
-	_open = true;
 }
 
 /** Constructor used for external-to-session files.  File must exist. */
@@ -103,10 +103,7 @@ SMFSource::SMFSource (Session& s, const string& path)
 	, FileSource(s, DataType::MIDI, path, string(), Source::Flag (0))
 	, Evoral::SMF()
 	, _open (false)
-	, _last_ev_time_beats(0.0)
 	, _last_ev_time_samples(0)
-	, _smf_last_read_end (0)
-	, _smf_last_read_time (0)
 {
 	/* note that origin remains empty */
 
@@ -116,11 +113,6 @@ SMFSource::SMFSource (Session& s, const string& path)
 
         assert (Glib::file_test (_path, Glib::FILE_TEST_EXISTS));
 	existence_check ();
-
-	if (_flags & Writable) {
-		/* file is not opened until write */
-		return;
-	}
 
 	if (open (_path)) {
 		throw failed_constructor ();
@@ -135,10 +127,7 @@ SMFSource::SMFSource (Session& s, const XMLNode& node, bool must_exist)
 	, MidiSource(s, node)
 	, FileSource(s, node, must_exist)
 	, _open (false)
-	, _last_ev_time_beats(0.0)
 	, _last_ev_time_samples(0)
-	, _smf_last_read_end (0)
-	, _smf_last_read_time (0)
 {
 	if (set_state(node, Stateful::loading_state_version)) {
 		throw failed_constructor ();
@@ -179,17 +168,18 @@ SMFSource::SMFSource (Session& s, const XMLNode& node, bool must_exist)
 	if (!(_flags & Source::Empty)) {
 		assert (Glib::file_test (_path, Glib::FILE_TEST_EXISTS));
 		existence_check ();
+		if (open (_path)) {
+			throw failed_constructor ();
+		}
+		_open = true;
 	} else {
 		assert (_flags & Source::Writable);
-		/* file will be opened on write */
-		return;
+		if (open_for_write ()) {
+			throw failed_constructor ();
+		}
+		/* no fd left open here */
 	}
 
-	if (open (_path)) {
-		throw failed_constructor ();
-	}
-
-	_open = true;
 }
 
 SMFSource::~SMFSource ()
@@ -212,28 +202,29 @@ SMFSource::open_for_write ()
 void
 SMFSource::close ()
 {
-	/* nothing to do: file descriptor is never kept open */
+	/* nothing to do: file descriptor is never kept open.
+	 * Note, keep `_open = true` regardless.
+	 */
 }
 
 extern PBD::Timing minsert;
 
-/** All stamps in audio samples */
-samplecnt_t
-SMFSource::read_unlocked (const Lock&                    lock,
+timecnt_t
+SMFSource::read_unlocked (const Lock&                     lock,
                           Evoral::EventSink<samplepos_t>& destination,
-                          samplepos_t const               source_start,
-                          samplepos_t                     start,
-                          samplecnt_t                     duration,
-                          Evoral::Range<samplepos_t>*     loop_range,
-                          MidiStateTracker*              tracker,
-                          MidiChannelFilter*             filter) const
+                          timepos_t const &               source_start,
+                          timepos_t const &               start,
+                          timecnt_t const &               duration,
+                          Temporal::Range*                loop_range,
+                          MidiStateTracker*               tracker,
+                          MidiChannelFilter*              filter) const
 {
 	int      ret  = 0;
-	uint64_t time = 0; // in SMF ticks, 1 tick per _ppqn
+	timepos_t time; // in SMF ticks, 1 tick per _ppqn
 
 	if (writable() && !_open) {
 		/* nothing to read since nothing has ben written */
-		return duration;
+		return timecnt_t();
 	}
 
 	DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF read_unlocked: start %1 duration %2\n", start, duration));
@@ -245,23 +236,23 @@ SMFSource::read_unlocked (const Lock&                    lock,
 
 	size_t scratch_size = 0; // keep track of scratch to minimize reallocs
 
-	BeatsSamplesConverter converter(_session.tempo_map(), source_start);
+	/* start of read in SMF ticks (which may differ from our own musical ticks */
+	const uint64_t start_ticks = llrint (start.beats().to_ticks() * (Temporal::Beats::PPQN / ppqn()));
 
-	const uint64_t start_ticks = converter.from(start).to_ticks();
 	DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF read_unlocked: start in ticks %1\n", start_ticks));
 
-	if (_smf_last_read_end == 0 || start != _smf_last_read_end) {
+	if (_smf_last_read_end.zero() || start != _smf_last_read_end) {
 		DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF read_unlocked: seek to %1\n", start));
 		Evoral::SMF::seek_to_start();
 		while (time < start_ticks) {
-			gint ignored;
+			Evoral::event_id_t ignored;
 
 			ret = read_event(&ev_delta_t, &ev_size, &ev_buffer, &ignored);
 			if (ret == -1) { // EOF
 				_smf_last_read_end = start + duration;
-				return duration;
+				return timecnt_t();
 			}
-			time += ev_delta_t; // accumulate delta time
+			time += timepos_t::from_ticks (ev_delta_t); // accumulate delta time
 		}
 	} else {
 		DEBUG_TRACE (DEBUG::MidiSourceIO, string_compose ("SMF read_unlocked: set time to %1\n", _smf_last_read_time));
@@ -271,14 +262,14 @@ SMFSource::read_unlocked (const Lock&                    lock,
 	_smf_last_read_end = start + duration;
 
 	while (true) {
-		gint ignored; /* XXX don't ignore note id's ??*/
+		Evoral::event_id_t ignored; /* XXX don't ignore note id's ??*/
 
 		ret = read_event(&ev_delta_t, &ev_size, &ev_buffer, &ignored);
 		if (ret == -1) { // EOF
 			break;
 		}
 
-		time += ev_delta_t; // accumulate delta time
+		time += timepos_t::from_ticks (ev_delta_t); // accumulate delta time
 		_smf_last_read_time = time;
 
 		if (ret == 0) { // meta-event (skipped, just accumulate time)
@@ -293,15 +284,16 @@ SMFSource::read_unlocked (const Lock&                    lock,
 		/* Note that we add on the source start time (in session samples) here so that ev_sample_time
 		   is in session samples.
 		*/
-		const samplepos_t ev_sample_time = converter.to(Temporal::Beats::ticks_at_rate(time, ppqn())) + source_start;
+		const samplepos_t ev_sample_time = (time + timepos_t (source_start.beats())).samples();
+		timepos_t est (ev_sample_time);
 
 		if (loop_range) {
-			loop_range->squish (ev_sample_time);
+			est = loop_range->squish (est);
 		}
 
-		if (ev_sample_time < start + duration) {
+		if (est < start + duration) {
 			if (!filter || !filter->filter(ev_buffer, ev_size)) {
-				destination.write (ev_sample_time, Evoral::MIDI_EVENT, ev_size, ev_buffer);
+				destination.write (est.samples(), Evoral::MIDI_EVENT, ev_size, ev_buffer);
 				if (tracker) {
 					tracker->track(ev_buffer);
 				}
@@ -319,17 +311,20 @@ SMFSource::read_unlocked (const Lock&                    lock,
 	return duration;
 }
 
-samplecnt_t
-SMFSource::write_unlocked (const Lock&                 lock,
+timecnt_t
+SMFSource::write_unlocked (const Lock&                  lock,
                            MidiRingBuffer<samplepos_t>& source,
-                           samplepos_t                  position,
-                           samplecnt_t                  cnt)
+                           timepos_t const &            position,
+                           timecnt_t const &            cnt)
 {
+
 	if (!_writing) {
 		mark_streaming_write_started (lock);
 	}
 
 	samplepos_t        time;
+	const samplepos_t        pos_samples = position.samples();
+	const samplecnt_t        cnt_samples = cnt.samples();
 	Evoral::EventType type;
 	uint32_t          size;
 
@@ -349,8 +344,8 @@ SMFSource::write_unlocked (const Lock&                 lock,
 			break;
 		}
 
-		if ((cnt != max_samplecnt) &&
-		    (time > position + _capture_length + cnt)) {
+		if ((cnt != std::numeric_limits<timecnt_t>::max()) &&
+		    (time > pos_samples + _capture_length + cnt_samples)) {
 			/* The diskstream doesn't want us to write everything, and this
 			   event is past the end of this block, so we're done for now. */
 			break;
@@ -376,11 +371,11 @@ SMFSource::write_unlocked (const Lock&                 lock,
 		}
 
 		/* Convert event time from absolute to source relative. */
-		if (time < position) {
+		if (time < pos_samples) {
 			error << _("Event time is before MIDI source position") << endmsg;
 			break;
 		}
-		time -= position;
+		time -= pos_samples;
 
 		ev.set(buf, size, time);
 		ev.set_event_type(Evoral::MIDI_EVENT);
@@ -390,13 +385,19 @@ SMFSource::write_unlocked (const Lock&                 lock,
 			continue;
 		}
 
-		append_event_samples(lock, ev, position);
+		append_event_samples(lock, ev, pos_samples);
 	}
 
 	Evoral::SMF::flush ();
 	free (buf);
 
 	return cnt;
+}
+
+void
+SMFSource::update_length (timecnt_t const & cnt)
+{
+	_length = cnt;
 }
 
 /** Append an event with a timestamp in beats */
@@ -417,7 +418,7 @@ SMFSource::append_event_beats (const Glib::Threads::Mutex::Lock&   lock,
 	Temporal::Beats time = ev.time();
 	if (time < _last_ev_time_beats) {
 		const Temporal::Beats difference = _last_ev_time_beats - time;
-		if (difference.to_double() / (double)ppqn() < 1.0) {
+		if (difference < Temporal::Beats::ticks (ppqn())) {
 			/* Close enough.  This problem occurs because Sequence is not
 			   actually ordered due to fuzzy time comparison.  I'm pretty sure
 			   this is inherently a bad idea which causes problems all over the
@@ -426,7 +427,7 @@ SMFSource::append_event_beats (const Glib::Threads::Mutex::Lock&   lock,
 		} else {
 			/* Out of order by more than a tick. */
 			warning << string_compose(_("Skipping event with unordered beat time %1 < %2 (off by %3 beats, %4 ticks)"),
-			                          ev.time(), _last_ev_time_beats, difference, difference.to_double() / (double)ppqn())
+			                          ev.time(), _last_ev_time_beats, difference, difference)
 			        << endmsg;
 			return;
 		}
@@ -444,7 +445,7 @@ SMFSource::append_event_beats (const Glib::Threads::Mutex::Lock&   lock,
 		_model->append (ev, event_id);
 	}
 
-	_length_beats = max(_length_beats, time);
+	_length  = max (_length, timecnt_t (time));
 
 	const Temporal::Beats delta_time_beats = time - _last_ev_time_beats;
 	const uint32_t      delta_time_ticks = delta_time_beats.to_ticks(ppqn());
@@ -476,8 +477,11 @@ SMFSource::append_event_samples (const Glib::Threads::Mutex::Lock& lock,
 		return;
 	}
 
-	BeatsSamplesConverter converter(_session.tempo_map(), position);
-	const Temporal::Beats  ev_time_beats = converter.from(ev.time());
+	/* a distance measure that starts at @param position (audio time) and
+	   extends for ev.time() (audio time)
+	*/
+	const timecnt_t distance (timepos_t (ev.time()), timepos_t (position));
+	const Temporal::Beats  ev_time_beats = distance.beats ();
 	Evoral::event_id_t   event_id;
 
 	if (ev.id() < 0) {
@@ -488,19 +492,22 @@ SMFSource::append_event_samples (const Glib::Threads::Mutex::Lock& lock,
 
 	if (_model) {
 		const Evoral::Event<Temporal::Beats> beat_ev (ev.event_type(),
-		                                            ev_time_beats,
-		                                            ev.size(),
-		                                            const_cast<uint8_t*>(ev.buffer()));
+		                                              ev_time_beats,
+		                                              ev.size(),
+		                                              const_cast<uint8_t*>(ev.buffer()));
 		_model->append (beat_ev, event_id);
 	}
 
-	_length_beats = max(_length_beats, ev_time_beats);
+	_length = max (_length, timecnt_t (ev_time_beats, timepos_t (position)));
 
-	const Temporal::Beats last_time_beats  = converter.from (_last_ev_time_samples);
-	const Temporal::Beats delta_time_beats = ev_time_beats - last_time_beats;
-	const uint32_t      delta_time_ticks = delta_time_beats.to_ticks(ppqn());
+	/* a distance measure that starts at @param _last_ev_time_samples (audio time) and
+	   extends for ev.time() (audio time)
+	*/
+	const timecnt_t       delta_distance (timepos_t (ev.time()), timepos_t (_last_ev_time_samples));
+	const Temporal::Beats delta_time_beats = delta_distance.beats ();
+	const uint32_t        delta_time_ticks = delta_time_beats.to_ticks(ppqn());
 
-	Evoral::SMF::append_event_delta(delta_time_ticks, ev.size(), ev.buffer(), event_id);
+	Evoral::SMF::append_event_delta (delta_time_ticks, ev.size(), ev.buffer(), event_id);
 	_last_ev_time_samples = ev.time();
 	_flags = Source::Flag (_flags & ~Empty);
 	_flags = Source::Flag (_flags & ~Missing);
@@ -657,7 +664,7 @@ SMFSource::load_model (const Glib::Threads::Mutex::Lock& lock, bool force_reload
 	uint32_t size    = 0;
 	uint8_t* buf     = NULL;
 	int ret;
-	gint event_id;
+	Evoral::event_id_t event_id;
 	bool have_event_id;
 
 	// TODO simplify event allocation
@@ -711,7 +718,7 @@ SMFSource::load_model (const Glib::Threads::Mutex::Lock& lock, bool force_reload
 				scratch_size = std::max(size, scratch_size);
 				size = scratch_size;
 
-				_length_beats = max(_length_beats, event_time);
+				_length = max (_length, timecnt_t (event_time));
 			}
 
 			/* event ID's must immediately precede the event they are for */
@@ -731,7 +738,7 @@ SMFSource::load_model (const Glib::Threads::Mutex::Lock& lock, bool force_reload
         // _playback_buf->dump (cerr);
         // cerr << "----------------\n";
 
-	_model->end_write (Evoral::Sequence<Temporal::Beats>::ResolveStuckNotes, _length_beats);
+	_model->end_write (Evoral::Sequence<Temporal::Beats>::ResolveStuckNotes, _length.beats());
 	_model->set_edited (false);
 	invalidate(lock);
 
@@ -749,7 +756,7 @@ SMFSource::destroy_model (const Glib::Threads::Mutex::Lock& lock)
 void
 SMFSource::flush_midi (const Lock& lock)
 {
-	if (!writable() || _length_beats == 0.0) {
+	if (!writable() || _length.zero()) {
 		return;
 	}
 

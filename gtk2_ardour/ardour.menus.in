@@ -276,6 +276,7 @@
         <menuitem action='set-tempo-from-edit-range'/>
       </menu>
       <menuitem action='set-mouse-mode-object-range'/>
+      <menuitem action='show-touched-automation'/>
       <separator/>
       <menu action="LuaScripts">
         <menuitem action='toggle-script-manager'/>
@@ -333,6 +334,7 @@
         <menuitem action='remove-overlap'/>
         <menuitem action='transform-region'/>
         <menuitem action='fork-region'/>
+        <menuitem action='deinterlace-midi'/>
         <menuitem action='show-region-list-editor'/>
       </menu>
       <menu action='RegionMenuGain'>
@@ -358,6 +360,13 @@
         <menuitem action='nudge-forward-by-capture-offset'/>
         <menuitem action='nudge-backward-by-capture-offset'/>
         <menuitem action='sequence-regions'/>
+      </menu>
+      <menu action='RegionMenuMarkers'>
+        <menuitem action='add-region-cue-marker'/>
+        <menuitem action='clear-region-cue-markers'/>
+        <separator/>
+        <menuitem action='make-region-markers-cd'/>
+        <menuitem action='make-region-markers-global'/>
       </menu>
       <menu action='RegionMenuTrim'>
         <menuitem action='trim-front'/>
@@ -397,15 +406,34 @@
       <menuitem action='AddTrackBus'/>
 #ifdef MIXBUS
       <menuitem action='addExistingAudioFiles'/>
+      <menu action='MixTools'>
+          <menuitem action='lua-store-mixer-settings'/>
+              <menuitem action='lua-recall-mixer-settings'/>
+              <menuitem action='lua-reset-mixer'/>
+              <menuitem action='lua-manage-tracks'/>
+      </menu>
 #endif
       <menuitem action='duplicate-routes'/>
       <separator/>
       <menuitem action='track-record-enable-toggle'/>
       <menuitem action='track-solo-toggle'/>
       <menuitem action='track-mute-toggle'/>
+      <menu action='TrackPlaylistMenu'>
+        <menuitem action='show-plist-selector'/>
+        <separator/>
+        <menuitem action='new-playlists-for-all-tracks'/>
+        <menuitem action='new-playlists-for-armed-tracks'/>
+        <menuitem action='new-playlists-for-selected-tracks'/>
+        <separator/>
+        <menuitem action='copy-playlists-for-all-tracks'/>
+        <menuitem action='copy-playlists-for-armed-tracks'/>
+        <menuitem action='copy-playlists-for-selected-tracks'/>
+      </menu>
       <separator/>
       <menuitem action='insert-time'/>
       <menuitem action='remove-time'/>
+      <menuitem action='remove-gaps'/>
+      <separator/>
       <menuitem action="move-selected-tracks-up"/>
       <menuitem action="move-selected-tracks-down"/>
       <menu action='TrackHeightMenu'>
@@ -417,8 +445,6 @@
         <menuitem action='track-height-small'/>
       </menu>
       <separator/>
-        <menuitem action='toggle-layer-display'/>
-      <separator/>
       <menuitem action='toggle-track-active'/>
       <menuitem action='remove-track'/>
       <separator/>
@@ -429,6 +455,10 @@
       <menuitem action='ToggleMaximalMixer'/>
 
       <separator/>
+      <menu name='LayerDisplay' action = 'LayerDisplay'>
+        <menuitem action='layer-display-stacked'/>
+        <menuitem action='layer-display-overlaid'/>
+      </menu>
 
       <menu action="AutomationMenu">
         <menuitem action="toggle-all-existing-automation"/>
@@ -436,8 +466,6 @@
 
       <separator/>
 
-      <menuitem action="toggle-layer-display"/>
-      
       <menu action="PrimaryClockMenu">
         <menuitem action='focus-on-clock'/>
         <menuitem action="primary-clock-timecode"/>
@@ -451,9 +479,22 @@
         <menuitem action="secondary-clock-minsec"/>
         <menuitem action="secondary-clock-samples"/>
       </menu>
-
+      <menu action="RulerMenu">
+        <menuitem action="toggle-minsec-ruler"/>
+        <menuitem action="toggle-timecode-ruler"/>
+        <menuitem action="toggle-samples-ruler"/>
+        <menuitem action="toggle-bbt-ruler"/>
+        <separator/>
+        <menuitem action="toggle-meter-ruler"/>
+        <menuitem action="toggle-tempo-ruler"/>
+        <menuitem action="toggle-range-ruler"/>
+        <menuitem action="toggle-loop-punch-ruler"/>
+        <menuitem action="toggle-cd-marker-ruler"/>
+        <menuitem action="toggle-marker-ruler"/>
+        <separator/>
+        <menuitem action="toggle-video-ruler"/>
+      </menu>
       <separator/>
-
       <menu action="ZoomMenu">
         <menuitem action='temporal-zoom-in'/>
         <menuitem action='temporal-zoom-out'/>
@@ -475,22 +516,13 @@
         <menuitem action='zoom-focus-edit'/>
         <menuitem action='cycle-zoom-focus'/>
       </menu>
-
-      <menu action="RulerMenu">
-        <menuitem action="toggle-minsec-ruler"/>
-        <menuitem action="toggle-timecode-ruler"/>
-        <menuitem action="toggle-samples-ruler"/>
-        <menuitem action="toggle-bbt-ruler"/>
-        <separator/>
-        <menuitem action="toggle-meter-ruler"/>
-        <menuitem action="toggle-tempo-ruler"/>
-        <menuitem action="toggle-range-ruler"/>
-        <menuitem action="toggle-loop-punch-ruler"/>
-        <menuitem action="toggle-cd-marker-ruler"/>
-        <menuitem action="toggle-marker-ruler"/>
-        <separator/>
-        <menuitem action="toggle-video-ruler"/>
+      <menu action="ScrollMenu">
+        <menuitem action='scroll-tracks-down'/>
+        <menuitem action='scroll-tracks-up'/>
+        <menuitem action='scroll-forward'/>
+        <menuitem action='scroll-backward'/>
       </menu>
+      <separator/>
       <menu action="VideoMonitorMenu">
         <menuitem action="zoom-vmon-100"/>
         <menuitem action="toggle-vmon-letterbox"/>
@@ -502,12 +534,7 @@
         <menuitem action="toggle-vmon-frame"/>
         <menuitem action="toggle-vmon-osdbg"/>
       </menu>
-      <menu action="ScrollMenu">
-        <menuitem action='scroll-tracks-down'/>
-        <menuitem action='scroll-tracks-up'/>
-        <menuitem action='scroll-forward'/>
-        <menuitem action='scroll-backward'/>
-      </menu>
+      <separator/>
       <menu action="SavedViewMenu">
         <menuitem action='save-visual-state-1'/>
         <menuitem action='goto-visual-state-1'/>
@@ -552,6 +579,14 @@
       <menuitem action='ToggleVCAPane'/>
       <menuitem action='ToggleMonitorSection'/>
       <menuitem action='ToggleFoldbackStrip'/>
+#ifdef MIXBUS
+      <separator/>
+      <menuitem action='ToggleStripCtrls'/>
+#ifdef MIXBUS32C
+      <menuitem action='ToggleStripEQ'/>
+      <menuitem action='ToggleStripBus'/>
+#endif
+#endif
 
     </menu>
     <menu action = 'WindowMenu'>
@@ -569,48 +604,66 @@
         <menuitem action='attach-mixer'/>
         <menuitem action='detach-mixer'/>
       </menu>
+      <menu action='RecorderMenu'>
+        <menuitem action='show-recorder'/>
+        <menuitem action='hide-recorder'/>
+        <menuitem action='attach-recorder'/>
+        <menuitem action='detach-recorder'/>
+      </menu>
       <menu action='PrefsMenu'>
         <menuitem action='show-preferences'/>
         <menuitem action='hide-preferences'/>
         <menuitem action='attach-preferences'/>
         <menuitem action='detach-preferences'/>
       </menu>
+      <!-- Common Ardour Widows (all toggle) !-->
       <menuitem action='toggle-meterbridge'/>
-      <separator/>
-#ifndef MIXBUS
-      <menuitem action='toggle-inspector'/>
-#endif
       <menuitem action='toggle-locations'/>
-#ifndef MIXBUS
-      <menuitem action='toggle-bundle-manager'/>
-#endif
       <menuitem action='toggle-big-clock'/>
       <menuitem action='toggle-big-transport'/>
-      <menuitem action='toggle-transport-masters'/>
+      <menuitem action='toggle-virtual-keyboard'/>
+
+      <separator/><!-- Video Monitor !-->
+      <menuitem action='ToggleJadeo'/>
+
+      <separator/><!-- Connection dialogs !-->
+      <menuitem action='toggle-audio-connection-manager'/>
+      <menuitem action='toggle-midi-connection-manager'/>
+
+#ifndef MIXBUS
+      <separator/><!-- Ardour specific connection customization !-->
+      <menuitem action='toggle-inspector'/>
+      <menuitem action='toggle-bundle-manager'/>
 #if 0
       <menuitem action='toggle-speaker-config'/>
 #endif
+#endif
+
+      <separator/><!-- Plugin Related !-->
+      <menuitem action='toggle-plugin-manager'/>
+#ifdef MIXBUS
+      <separator/>
+      <menuitem action='license-manager'/>
+#endif
+
+      <separator/><!-- Misc Configuration !-->
+      <menuitem action='toggle-luawindow'/>
+      <menuitem action='ManageTemplates'/>
+      <menuitem action='toggle-transport-masters'/>
+      <menuitem action='toggle-key-editor'/>
+
+      <separator/><!-- Performance measurement !-->
       <menuitem action='toggle-plugin-dsp-load'/>
+      <menuitem action='toggle-dsp-statistics'/>
 #if 0
       <menuitem action='toggle-idle-o-meter'/>
 #endif
 
-      <separator/>
-      <menuitem action='ToggleJadeo'/>
-      <separator/>
-
-      <menuitem action='toggle-audio-connection-manager'/>
-      <menuitem action='toggle-midi-connection-manager'/>
-      <separator/>
-      <menuitem action='toggle-luawindow'/>
-      <menuitem action='ManageTemplates'/>
-      <menuitem action='toggle-key-editor'/>
-      <separator/>
-      <menuitem action='toggle-virtual-keyboard'/>
+      <separator/><!-- Logging !-->
       <menuitem action='NewMIDITracer'/>
       <menuitem action='toggle-log-window'/>
-      <separator/>
     </menu>
+
     <menu name='Help' action='Help'>
 #ifndef __APPLE__
       <menuitem action='toggle-about'/>
@@ -648,6 +701,13 @@
     <menuitem action='detach-mixer'/>
   </popup>
 
+  <popup action="recorderTabbableButtonMenu" accelerators='true'>
+    <menuitem action='show-recorder'/>
+    <menuitem action='hide-recorder'/>
+    <menuitem action='attach-recorder'/>
+    <menuitem action='detach-recorder'/>
+  </popup>
+
   <popup action="preferencesTabbableButtonMenu" accelerators='true'>
     <menuitem action='show-preferences'/>
     <menuitem action='hide-preferences'/>
@@ -683,11 +743,13 @@
     <menuitem action='controls'/>
     <menuitem action='send_options'/>
     <separator/>
+#ifndef MIXBUS
     <menu action="disk-io-menu">
       <menuitem action='disk-io-prefader'/>
       <menuitem action='disk-io-postfader'/>
       <menuitem action='disk-io-custom'/>
     </menu>
+#endif
     <menuitem action='custom-volume-pos'/>
     <separator/>
     <menuitem action='clear'/>
@@ -756,6 +818,7 @@
       <menuitem action='remove-overlap'/>
       <menuitem action='transform-region'/>
       <menuitem action='fork-region'/>
+      <menuitem action='deinterlace-midi'/>
       <menuitem action='show-region-list-editor'/>
     </menu>
     <menu action='RegionMenuPosition'>
@@ -771,6 +834,13 @@
       <menuitem action='nudge-forward-by-capture-offset'/>
       <menuitem action='nudge-backward-by-capture-offset'/>
       <menuitem action='sequence-regions'/>
+    </menu>
+    <menu action='RegionMenuMarkers'>
+      <menuitem action='add-region-cue-marker'/>
+      <menuitem action='clear-region-cue-markers'/>
+      <separator/>
+      <menuitem action='make-region-markers-cd'/>
+      <menuitem action='make-region-markers-global'/>
     </menu>
     <menu action='RegionMenuTrim'>
       <menuitem action='trim-front'/>

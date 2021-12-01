@@ -26,6 +26,8 @@
 #include "pbd/pthread_utils.h"
 #include "pbd/memento_command.h"
 
+#include "temporal/tempo.h"
+
 #include "ardour/session.h"
 #include "ardour/location.h"
 #include "ardour/tempo.h"
@@ -37,6 +39,7 @@
 #include "pbd/i18n.h"
 
 using namespace ARDOUR;
+using namespace Temporal;
 
 PBD::Signal2<void,std::string,std::string> BasicUI::AccessAction;
 
@@ -113,7 +116,7 @@ BasicUI::loop_toggle ()
 }
 
 void
-BasicUI::loop_location (samplepos_t start, samplepos_t end)
+BasicUI::loop_location (timepos_t const & start, timepos_t const & end)
 {
 	Location* tll;
 	if ((tll = session->locations()->auto_loop_location()) == 0) {
@@ -147,7 +150,7 @@ BasicUI::goto_end ()
 void
 BasicUI::add_marker (const std::string& markername)
 {
-	samplepos_t where = session->audible_sample();
+	timepos_t where (session->audible_sample());
 	Location *location = new Location (*session, where, where, markername, Location::IsMark);
 	session->begin_reversible_command (_("add marker"));
 	XMLNode &before = session->locations()->get_state();
@@ -167,7 +170,7 @@ BasicUI::remove_marker_at_playhead ()
 
 		//find location(s) at this time
 		Locations::LocationList locs;
-		session->locations()->find_all_between (session->audible_sample(), session->audible_sample()+1, locs, Location::Flags(0));
+		session->locations()->find_all_between (timepos_t (session->audible_sample()), timepos_t (session->audible_sample()+1), locs, Location::Flags(0));
 		for (Locations::LocationList::iterator i = locs.begin(); i != locs.end(); ++i) {
 			if ((*i)->is_mark()) {
 				session->locations()->remove (*i);
@@ -186,21 +189,112 @@ BasicUI::remove_marker_at_playhead ()
 }
 
 void
+BasicUI::button_varispeed (bool fwd)
+{
+	// incrementally increase speed by semitones
+	// (keypress auto-repeat is 100ms)
+	const float maxspeed = Config->get_shuttle_max_speed();
+	float semitone_ratio = exp2f (1.0f/12.0f);
+	const float octave_down = pow (1.0/semitone_ratio, 12.0);
+	float transport_speed = get_transport_speed ();
+	float speed;
+
+	if (Config->get_rewind_ffwd_like_tape_decks()) {
+
+		if (fwd) {
+			if (transport_speed <= 0) {
+				session->request_transport_speed (1.0);
+				session->request_roll (TRS_UI);
+				return;
+			}
+		} else {
+			if (transport_speed >= 0) {
+				session->request_transport_speed (-1.0);
+				session->request_roll (TRS_UI);
+				return;
+			}
+		}
+
+
+	} else {
+
+		if (fabs (transport_speed) <= 0.1) {
+
+			/* close to zero, maybe flip direction */
+
+			if (fwd) {
+				if (transport_speed <= 0) {
+					session->request_transport_speed (1.0);
+					session->request_roll (TRS_UI);
+				}
+			} else {
+				if (transport_speed >= 0) {
+					session->request_transport_speed (-1.0);
+					session->request_roll (TRS_UI);
+				}
+			}
+
+			/* either we've just started, or we're moving as slowly as we
+			 * ever should
+			 */
+
+			return;
+		}
+
+		if (fwd) {
+			if (transport_speed < 0.f) {
+				if (fabs (transport_speed) < octave_down) {
+					/* we need to move the speed back towards zero */
+					semitone_ratio = powf (1.f / semitone_ratio, 4.f);
+				} else {
+					semitone_ratio = 1.f / semitone_ratio;
+				}
+			} else {
+				if (fabs (transport_speed) < octave_down) {
+					/* moving very slowly, use 4 semitone steps */
+					semitone_ratio = powf (semitone_ratio, 4.f);
+				}
+			}
+		} else {
+			if (transport_speed > 0.f) {
+				/* we need to move the speed back towards zero */
+
+				if (transport_speed < octave_down) {
+					semitone_ratio = powf (1.f / semitone_ratio, 4.f);
+				} else {
+					semitone_ratio = 1.f / semitone_ratio;
+				}
+			} else {
+				if (fabs (transport_speed) < octave_down) {
+					/* moving very slowly, use 4 semitone steps */
+					semitone_ratio = powf (semitone_ratio, 4.f);
+				}
+			}
+		}
+	}
+
+	speed = semitone_ratio * transport_speed;
+	speed = std::max (-maxspeed, std::min (maxspeed, speed));
+	session->request_transport_speed (speed);
+	session->request_roll (TRS_UI);
+}
+
+void
 BasicUI::rewind ()
 {
-	session->request_transport_speed (get_transport_speed() - 1.5);
+	button_varispeed (false);
 }
 
 void
 BasicUI::ffwd ()
 {
-	session->request_transport_speed (get_transport_speed() + 1.5);
+	button_varispeed (true);
 }
 
 void
 BasicUI::transport_stop ()
 {
-	session->request_transport_speed (0.0);
+	session->request_stop ();
 }
 
 bool
@@ -282,8 +376,10 @@ BasicUI::transport_play (bool from_last_start)
 		session->request_play_range (0, true);
 	}
 
-	if (!rolling) {
-		session->request_transport_speed (1.0f);
+	if (rolling) {
+		session->request_transport_speed (1.0, TRS_UI);
+	} else {
+		session->request_roll ();
 	}
 }
 
@@ -327,10 +423,10 @@ BasicUI::save_state ()
 void
 BasicUI::prev_marker ()
 {
-	samplepos_t pos = session->locations()->first_mark_before (session->transport_sample());
+	timepos_t pos = session->locations()->first_mark_before (timepos_t (session->transport_sample()));
 
 	if (pos >= 0) {
-		session->request_locate (pos, RollIfAppropriate);
+		session->request_locate (pos.samples());
 	} else {
 		session->goto_start ();
 	}
@@ -339,10 +435,10 @@ BasicUI::prev_marker ()
 void
 BasicUI::next_marker ()
 {
-	samplepos_t pos = session->locations()->first_mark_after (session->transport_sample());
+	timepos_t pos = session->locations()->first_mark_after (timepos_t (session->transport_sample()));
 
 	if (pos >= 0) {
-		session->request_locate (pos, RollIfAppropriate);
+		session->request_locate (pos.samples());
 	} else {
 		session->goto_end();
 	}
@@ -450,32 +546,28 @@ BasicUI::jump_by_seconds (double secs, LocateTransportDisposition ltd)
 }
 
 void
-BasicUI::jump_by_bars (double bars, LocateTransportDisposition ltd)
+BasicUI::jump_by_bars (int bars, LocateTransportDisposition ltd)
 {
-	TempoMap& tmap (session->tempo_map());
-	Timecode::BBT_Time bbt (tmap.bbt_at_sample (session->transport_sample()));
+	TempoMap::SharedPtr tmap (TempoMap::fetch());
+	Temporal::BBT_Time bbt (tmap->bbt_at (timepos_t (session->transport_sample())));
 
-	bars += bbt.bars;
-	if (bars < 0) {
-		bars = 0;
+	bbt.bars += bbt.bars;
+	if (bbt.bars < 0) {
+		bbt.bars = 1;
 	}
 
-	AnyTime any;
-	any.type = AnyTime::BBT;
-	any.bbt.bars = bars;
-
-	session->request_locate (session->convert_to_samples (any), ltd);
+	session->request_locate (tmap->sample_at (bbt), ltd);
 }
 
 void
-BasicUI::jump_by_beats (double beats, LocateTransportDisposition ltd)
+BasicUI::jump_by_beats (int beats, LocateTransportDisposition ltd)
 {
-	TempoMap& tmap (session->tempo_map ());
-	double qn_goal = tmap.quarter_note_at_sample (session->transport_sample ()) + beats;
-	if (qn_goal < 0.0) {
-		qn_goal = 0.0;
+	Beats qn_goal = timepos_t (session->transport_sample ()).beats() + Beats (beats, 0);
+
+	if (qn_goal < Beats()) {
+		qn_goal = Beats();
 	}
-	session->request_locate (tmap.sample_at_quarter_note (qn_goal), ltd);
+	session->request_locate (timepos_t (qn_goal).samples());
 }
 
 void
@@ -586,9 +678,9 @@ BasicUI::toggle_roll (bool roll_out_of_bounded_mode)
 	} else { /* not rolling */
 
 		if (session->get_play_loop() && Config->get_loop_is_mode()) {
-			session->request_locate (session->locations()->auto_loop_location()->start(), MustRoll);
+			session->request_locate (session->locations()->auto_loop_location()->start().samples(), MustRoll);
 		} else {
-			session->request_transport_speed (1.0f);
+			session->request_roll (TRS_UI);
 		}
 	}
 }
@@ -701,7 +793,7 @@ BasicUI::goto_nth_marker (int n)
 	for (Locations::LocationList::iterator i = ordered.begin(); n >= 0 && i != ordered.end(); ++i) {
 		if ((*i)->is_mark() && !(*i)->is_hidden() && !(*i)->is_session_range()) {
 			if (n == 0) {
-				session->request_locate ((*i)->start(), RollIfAppropriate);
+				session->request_locate ((*i)->start().samples());
 				break;
 			}
 			--n;

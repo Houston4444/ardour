@@ -85,6 +85,8 @@
 #include "pbd/scoped_file_descriptor.h"
 #include "pbd/xml++.h"
 
+#include "temporal/tempo.h"
+
 #include "gtkmm2ext/application.h"
 #include "gtkmm2ext/bindings.h"
 #include "gtkmm2ext/gtk_ui.h"
@@ -143,8 +145,6 @@
 
 #include "temporal/time.h"
 
-typedef uint64_t microseconds_t;
-
 #include "about.h"
 #include "editing.h"
 #include "enums_convert.h"
@@ -158,6 +158,7 @@ typedef uint64_t microseconds_t;
 #include "big_clock_window.h"
 #include "big_transport_window.h"
 #include "bundle_manager.h"
+#include "dsp_stats_window.h"
 #include "duplicate_routes_dialog.h"
 #include "debug.h"
 #include "engine_dialog.h"
@@ -184,9 +185,11 @@ typedef uint64_t microseconds_t;
 #include "opts.h"
 #include "pingback.h"
 #include "plugin_dspload_window.h"
+#include "plugin_manager_ui.h"
 #include "processor_box.h"
 #include "public_editor.h"
 #include "rc_option_editor.h"
+#include "recorder_ui.h"
 #include "route_time_axis.h"
 #include "route_params_ui.h"
 #include "save_as_dialog.h"
@@ -203,6 +206,7 @@ typedef uint64_t microseconds_t;
 #include "time_info_box.h"
 #include "timers.h"
 #include "transport_masters_dialog.h"
+#include "triggerbox_ui.h"
 #include "utils.h"
 #include "utils_videotl.h"
 #include "video_server_dialog.h"
@@ -224,7 +228,7 @@ using namespace Editing;
 
 ARDOUR_UI *ARDOUR_UI::theArdourUI = 0;
 
-sigc::signal<void, samplepos_t> ARDOUR_UI::Clock;
+sigc::signal<void, timepos_t> ARDOUR_UI::Clock;
 sigc::signal<void> ARDOUR_UI::CloseAllDialogs;
 
 static bool
@@ -300,13 +304,13 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, main_window_visibility (0)
 	, editor (0)
 	, mixer (0)
+	, recorder (0)
 	, nsm (0)
 	, _was_dirty (false)
 	, _mixer_on_top (false)
 	, _shared_popup_menu (0)
 	, startup_fsm (0)
 	, secondary_clock_spacer (0)
-	, auto_input_button (ArdourButton::led_default_elements)
 	, latency_disable_button (ArdourButton::led_default_elements)
 	, time_info_box (0)
 	, auto_return_button (ArdourButton::led_default_elements)
@@ -324,7 +328,6 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, last_key_press_time (0)
 	, save_as_dialog (0)
 	, meterbridge (0)
-	, luawindow (0)
 	, rc_option_editor (0)
 	, speaker_config_window (X_("speaker-config"), _("Speaker Configuration"))
 	, add_route_dialog (X_("add-routes"), _("Add Tracks/Busses"))
@@ -335,7 +338,9 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, export_video_dialog (X_("video-export"), _("Video Export Dialog"))
 	, lua_script_window (X_("script-manager"), _("Script Manager"))
 	, idleometer (X_("idle-o-meter"), _("Idle'o'Meter"))
+	, plugin_manager_ui (X_("plugin-manager"), _("Plugin Manager"))
 	, plugin_dsp_load_window (X_("plugin-dsp-load"), _("Plugin DSP Load"))
+	, dsp_statistics_window (X_("dsp-statistics"), _("Performance Meters"))
 	, transport_masters_window (X_("transport-masters"), _("Transport Masters"))
 	, session_option_editor (X_("session-options-editor"), _("Properties"), boost::bind (&ARDOUR_UI::create_session_option_editor, this))
 	, add_video_dialog (X_("add-video"), _("Add Video"), boost::bind (&ARDOUR_UI::create_add_video_dialog, this))
@@ -346,6 +351,7 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, audio_port_matrix (X_("audio-connection-manager"), _("Audio Connections"), boost::bind (&ARDOUR_UI::create_global_port_matrix, this, ARDOUR::DataType::AUDIO))
 	, midi_port_matrix (X_("midi-connection-manager"), _("MIDI Connections"), boost::bind (&ARDOUR_UI::create_global_port_matrix, this, ARDOUR::DataType::MIDI))
 	, key_editor (X_("key-editor"), _("Keyboard Shortcuts"), boost::bind (&ARDOUR_UI::create_key_editor, this))
+	, luawindow (X_("luawindow"), S_("Window|Scripting"), boost::bind (&ARDOUR_UI::create_luawindow, this))
 	, video_server_process (0)
 	, have_configure_timeout (false)
 	, last_configure_time (0)
@@ -353,11 +359,13 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, have_disk_speed_dialog_displayed (false)
 	, _status_bar_visibility (X_("status-bar"))
 	, _feedback_exists (false)
+	, _ambiguous_latency (false)
 	, _log_not_acknowledged (LogLevelNone)
 	, duplicate_routes_dialog (0)
-	, editor_visibility_button (S_("Window|Editor"))
-	, mixer_visibility_button (S_("Window|Mixer"))
-	, prefs_visibility_button (S_("Window|Preferences"))
+	, editor_visibility_button (S_("Window|Edit"))
+	, mixer_visibility_button (S_("Window|Mix"))
+	, prefs_visibility_button (S_("Window|Prefs"))
+	, recorder_visibility_button (S_("Window|Rec"))
 {
 	Gtkmm2ext::init (localedir);
 
@@ -499,10 +507,13 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 		virtual_keyboard_window.set_state (*ui_xml, 0);
 		audio_port_matrix.set_state (*ui_xml, 0);
 		midi_port_matrix.set_state (*ui_xml, 0);
+		luawindow.set_state (*ui_xml, 0);
 		export_video_dialog.set_state (*ui_xml, 0);
 		lua_script_window.set_state (*ui_xml, 0);
 		idleometer.set_state (*ui_xml, 0);
+		plugin_manager_ui.set_state (*ui_xml, 0);
 		plugin_dsp_load_window.set_state (*ui_xml, 0);
+		dsp_statistics_window.set_state (*ui_xml, 0);
 		transport_masters_window.set_state (*ui_xml, 0);
 	}
 
@@ -528,8 +539,11 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	WM::Manager::instance().register_window (&virtual_keyboard_window);
 	WM::Manager::instance().register_window (&audio_port_matrix);
 	WM::Manager::instance().register_window (&midi_port_matrix);
+	WM::Manager::instance().register_window (&luawindow);
 	WM::Manager::instance().register_window (&idleometer);
+	WM::Manager::instance().register_window (&plugin_manager_ui);
 	WM::Manager::instance().register_window (&plugin_dsp_load_window);
+	WM::Manager::instance().register_window (&dsp_statistics_window);
 	WM::Manager::instance().register_window (&transport_masters_window);
 
 	/* session-sensitive windows */
@@ -635,14 +649,13 @@ the audio backend and save the session."), PROGRAM_NAME);
 void
 ARDOUR_UI::post_engine ()
 {
-	/* Things to be done once (and once ONLY) after we have a backend running in the AudioEngine
-	 */
+	/* Things to be done once (and once ONLY) after we have a backend running in the AudioEngine */
+
 #ifdef AUDIOUNIT_SUPPORT
-	std::string au_msg;
-	if (AUPluginInfo::au_get_crashlog(au_msg)) {
-		popup_error(_("Audio Unit Plugin Scan Failed. Automatic AU scanning has been disabled. Please see the log window for further details."));
-		error << _("Audio Unit Plugin Scan Failed:") << endmsg;
-		info << au_msg << endmsg;
+	string aucrsh = Glib::build_filename (ARDOUR::user_cache_directory(), "au_crash");
+	if (Glib::file_test (aucrsh, Glib::FILE_TEST_EXISTS)) {
+		popup_error (_("Indexing Audio Unit Plugin Failed.\nAutomatic AU scanning has been disabled\n(check with 'auval', then re-enable scanning the in preferences)."));
+		::g_unlink (aucrsh.c_str());
 	}
 #endif
 
@@ -655,7 +668,7 @@ ARDOUR_UI::post_engine ()
 	AudioEngine::instance()->BecameSilent.connect (forever_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::audioengine_became_silent, this), gui_context());
 
 	if (setup_windows ()) {
-		throw failed_constructor ();
+		throw failed_constructor (); // TODO catch me if you can
 	}
 
 	transport_ctrl.map_actions ();
@@ -834,6 +847,11 @@ ARDOUR_UI::~ARDOUR_UI ()
 
 	stop_video_server();
 
+	/* unsubscribe from AudioEngine::Stopped */
+	if (recorder) {
+		recorder->cleanup ();
+	}
+
 	if (getenv ("ARDOUR_RUNNING_UNDER_VALGRIND")) {
 		// don't bother at 'real' exit. the OS cleans up for us.
 		delete big_clock; big_clock = 0;
@@ -842,7 +860,7 @@ ARDOUR_UI::~ARDOUR_UI ()
 		delete _process_thread; _process_thread = 0;
 		delete time_info_box; time_info_box = 0;
 		delete meterbridge; meterbridge = 0;
-		delete luawindow; luawindow = 0;
+		delete recorder; recorder = 0;
 		delete editor; editor = 0;
 		delete mixer; mixer = 0;
 		delete rc_option_editor; rc_option_editor = 0; // failed to wrap object warning
@@ -1074,9 +1092,6 @@ If you still wish to quit, please use the\n\n\
 
 	halt_connection.disconnect ();
 	AudioEngine::instance()->stop ();
-#ifdef WINDOWS_VST_SUPPORT
-	fst_stop_threading();
-#endif
 	quit ();
 }
 
@@ -1494,7 +1509,8 @@ ARDOUR_UI::session_add_midi_route (
 		bool strict_io,
 		PluginInfoPtr instrument,
 		Plugin::PresetRecord* pset,
-		ARDOUR::PresentationInfo::order_t order)
+		ARDOUR::PresentationInfo::order_t order,
+		bool with_triggers)
 {
 	if (_session == 0) {
 		warning << _("You cannot add a track without a session already loaded.") << endmsg;
@@ -1512,7 +1528,7 @@ ARDOUR_UI::session_add_midi_route (
 			one_midi_channel.set (DataType::MIDI, 1);
 
 			list<boost::shared_ptr<MidiTrack> > tracks;
-			tracks = _session->new_midi_track (one_midi_channel, one_midi_channel, strict_io, instrument, pset, route_group, how_many, name_template, order, ARDOUR::Normal);
+			tracks = _session->new_midi_track (one_midi_channel, one_midi_channel, strict_io, instrument, pset, route_group, how_many, name_template, order, ARDOUR::Normal, true, with_triggers);
 
 			if (tracks.size() != how_many) {
 				error << string_compose(P_("could not create %1 new mixed track", "could not create %1 new mixed tracks", how_many), how_many) << endmsg;
@@ -1545,7 +1561,8 @@ ARDOUR_UI::session_add_audio_route (
 	uint32_t how_many,
 	string const & name_template,
 	bool strict_io,
-	ARDOUR::PresentationInfo::order_t order)
+	ARDOUR::PresentationInfo::order_t order,
+	bool with_triggers)
 {
 	list<boost::shared_ptr<AudioTrack> > tracks;
 	RouteList routes;
@@ -1554,7 +1571,7 @@ ARDOUR_UI::session_add_audio_route (
 
 	try {
 		if (track) {
-			tracks = _session->new_audio_track (input_channels, output_channels, route_group, how_many, name_template, order, mode);
+			tracks = _session->new_audio_track (input_channels, output_channels, route_group, how_many, name_template, order, mode, true, with_triggers);
 
 			if (tracks.size() != how_many) {
 				error << string_compose (P_("could not create %1 new audio track", "could not create %1 new audio tracks", how_many), how_many)
@@ -1675,7 +1692,7 @@ ARDOUR_UI::transport_goto_wallclock ()
 		samples += tmnow.tm_min * (60 * sample_rate);
 		samples += tmnow.tm_sec * sample_rate;
 
-		_session->request_locate (samples, RollIfAppropriate);
+		_session->request_locate (samples);
 
 		/* force displayed area in editor to start no matter
 		   what "follow playhead" setting is.
@@ -1824,7 +1841,7 @@ ARDOUR_UI::transport_roll ()
 	}
 
 	if (!rolling) {
-		_session->request_transport_speed (1.0f);
+		_session->request_roll ();
 	}
 }
 
@@ -1893,16 +1910,16 @@ ARDOUR_UI::toggle_roll (bool with_abort, bool roll_out_of_bounded_mode)
 		}
 
 		if (_session->get_play_loop() && Config->get_loop_is_mode()) {
-			_session->request_locate (_session->locations()->auto_loop_location()->start(), MustRoll);
+			_session->request_locate (_session->locations()->auto_loop_location()->start().samples(), MustRoll);
 		} else {
 			if (UIConfiguration::instance().get_follow_edits()) {
-				list<AudioRange>& range = editor->get_selection().time;
-				if (range.front().start == _session->transport_sample()) { // if playhead is exactly at the start of a range, we assume it was placed there by follow_edits
+				list<TimelineRange>& range = editor->get_selection().time;
+				if (range.front().start().samples() == _session->transport_sample()) { // if playhead is exactly at the start of a range, we assume it was placed there by follow_edits
 					_session->request_play_range (&range, true);
-					_session->set_requested_return_sample (range.front().start);  //force an auto-return here
+					_session->set_requested_return_sample (range.front().start().samples());  //force an auto-return here
 				}
 			}
-			_session->request_transport_speed (1.0f);
+			_session->request_roll ();
 		}
 	}
 }
@@ -1983,54 +2000,111 @@ ARDOUR_UI::transport_rec_count_in ()
 }
 
 void
-ARDOUR_UI::transport_ffwd_rewind (int option, int dir)
+ARDOUR_UI::transport_ffwd_rewind (bool fwd)
 {
 	if (!_session) {
 		return;
 	}
+	// incrementally increase speed by semitones
+	// (keypress auto-repeat is 100ms)
+	const float maxspeed = Config->get_shuttle_max_speed();
+	float semitone_ratio = exp2f (1.0f/12.0f);
+	const float octave_down = powf (1.f / semitone_ratio, 12.f);
+	float transport_speed = _session->actual_speed();
+	float speed;
 
-	/* engine speed is always positive, so multiply by transport
-	 * (-1, 0, 1) to get directional value
-	 */
+	if (Config->get_rewind_ffwd_like_tape_decks()) {
 
-	const float current_transport_speed = _session->engine_speed () * _session->transport_speed ();
-	float target_speed = current_transport_speed;
+		if (fwd) {
+			if (transport_speed <= 0) {
+				_session->request_transport_speed (1.0);
+				_session->request_roll (TRS_UI);
+				return;
+			}
+		} else {
+			if (transport_speed >= 0) {
+				_session->request_transport_speed (-1.0);
+				_session->request_roll (TRS_UI);
+				return;
+			}
+		}
 
-	switch (option) {
-	case 0:
-		target_speed = dir * 1.0f;
-		break;
-	case 1:
-		target_speed = dir * 4.0f;
-		break;
-	case -1:
-		target_speed = dir * 0.5f;
-		break;
+
+	} else {
+
+		if (fabs (transport_speed) <= 0.1) {
+
+			/* close to zero, maybe flip direction */
+
+			if (fwd) {
+				if (transport_speed <= 0) {
+					_session->request_transport_speed (1.0);
+					_session->request_roll (TRS_UI);
+				}
+			} else {
+				if (transport_speed >= 0) {
+					_session->request_transport_speed (-1.0);
+					_session->request_roll (TRS_UI);
+				}
+			}
+
+			/* either we've just started, or we're moving as slowly as we
+			 * ever should
+			 */
+
+			return;
+		}
+
+		if (fwd) {
+			if (transport_speed < 0.f) {
+				if (fabs (transport_speed) < octave_down) {
+					/* we need to move the speed back towards zero */
+					semitone_ratio = powf (1.f / semitone_ratio, 4.f);
+				} else {
+					semitone_ratio = 1.f / semitone_ratio;
+				}
+			} else {
+				if (fabs (transport_speed) < octave_down) {
+					/* moving very slowly, use 4 semitone steps */
+					semitone_ratio = powf (semitone_ratio, 4.f);
+				}
+			}
+		} else {
+			if (transport_speed > 0.f) {
+				/* we need to move the speed back towards zero */
+
+				if (transport_speed < octave_down) {
+					semitone_ratio = powf (1.f / semitone_ratio, 4.f);
+				} else {
+					semitone_ratio = 1.f / semitone_ratio;
+				}
+			} else {
+				if (fabs (transport_speed) < octave_down) {
+					/* moving very slowly, use 4 semitone steps */
+					semitone_ratio = powf (semitone_ratio, 4.f);
+				}
+			}
+		}
+
 	}
 
-	/* if wanting to move forward/backward and current speed is at or above current
-	   speed (i.e. same direction, and moving), then speed up.
-	*/
+	speed = semitone_ratio * transport_speed;
+	speed = std::max (-maxspeed, std::min (maxspeed, speed));
+	_session->request_transport_speed (speed);
+	_session->request_roll (TRS_UI);
 
-	const bool speed_up = (dir > 0 && current_transport_speed >= target_speed) || (dir < 0 && current_transport_speed <= target_speed);
-
-	if (speed_up) {
-		target_speed = current_transport_speed * 1.5f;
-	}
-
-	_session->request_transport_speed (target_speed);
 }
 
 void
-ARDOUR_UI::transport_rewind (int option)
+ARDOUR_UI::transport_rewind ()
 {
-	transport_ffwd_rewind (option, -1);
+	transport_ffwd_rewind (false);
 }
 
 void
-ARDOUR_UI::transport_forward (int option)
+ARDOUR_UI::transport_forward ()
 {
-	transport_ffwd_rewind (option, 1);
+	transport_ffwd_rewind (true);
 }
 
 void
@@ -2098,7 +2172,7 @@ ARDOUR_UI::update_clocks ()
 	if (!_session) return;
 
 	if (editor && !editor->dragging_playhead() && !editor->pending_locate_request()) {
-		Clock (_session->audible_sample()); /* EMIT_SIGNAL */
+		Clock (timepos_t (_session->audible_sample())); /* EMIT_SIGNAL */
 	}
 }
 
@@ -2163,7 +2237,7 @@ void
 ARDOUR_UI::primary_clock_value_changed ()
 {
 	if (_session) {
-		_session->request_locate (primary_clock->current_time ());
+		_session->request_locate (primary_clock->current_time ().samples());
 	}
 }
 
@@ -2171,7 +2245,7 @@ void
 ARDOUR_UI::big_clock_value_changed ()
 {
 	if (_session) {
-		_session->request_locate (big_clock->current_time ());
+		_session->request_locate (big_clock->current_time ().samples());
 	}
 }
 
@@ -2179,7 +2253,7 @@ void
 ARDOUR_UI::secondary_clock_value_changed ()
 {
 	if (_session) {
-		_session->request_locate (secondary_clock->current_time ());
+		_session->request_locate (secondary_clock->current_time ().samples());
 	}
 }
 void
@@ -2611,7 +2685,7 @@ ARDOUR_UI::cleanup_peakfiles ()
 	RegionSelection rs;
 	TrackViewList empty;
 	empty.clear();
-	editor->get_regions_after(rs, (samplepos_t) 0, empty);
+	editor->get_regions_after(rs, timepos_t (), empty);
 	std::list<RegionView*> views = rs.by_layer();
 
 	// remove displayed audio-region-views waveforms
@@ -2770,6 +2844,7 @@ ARDOUR_UI::add_route_dialog_response (int r)
 	RouteGroup* route_group = add_route_dialog->route_group ();
 	AutoConnectOption oac = Config->get_output_auto_connect();
 	bool strict_io = add_route_dialog->use_strict_io ();
+	bool with_triggers = add_route_dialog->use_triggers ();
 
 	if (oac & AutoConnectMaster) {
 		output_chan.set (DataType::AUDIO, (_session->master_out() ? _session->master_out()->n_inputs().n_audio() : input_chan.n_audio()));
@@ -2784,16 +2859,16 @@ ARDOUR_UI::add_route_dialog_response (int r)
 
 	switch (add_route_dialog->type_wanted()) {
 	case AddRouteDialog::AudioTrack:
-		session_add_audio_route (true, input_chan.n_audio(), output_chan.n_audio(), add_route_dialog->mode(), route_group, count, name_template, strict_io, order);
+		session_add_audio_route (true, input_chan.n_audio(), output_chan.n_audio(), add_route_dialog->mode(), route_group, count, name_template, strict_io, order, with_triggers);
 		break;
 	case AddRouteDialog::AudioBus:
-		session_add_audio_route (false, input_chan.n_audio(), output_chan.n_audio(), ARDOUR::Normal, route_group, count, name_template, strict_io, order);
+		session_add_audio_route (false, input_chan.n_audio(), output_chan.n_audio(), ARDOUR::Normal, route_group, count, name_template, strict_io, order, false);
 		break;
 	case AddRouteDialog::MidiTrack:
-		session_add_midi_route (true, route_group, count, name_template, strict_io, instrument, 0, order);
+		session_add_midi_route (true, route_group, count, name_template, strict_io, instrument, 0, order, with_triggers);
 		break;
 	case AddRouteDialog::MidiBus:
-		session_add_midi_route (false, route_group, count, name_template, strict_io, instrument, 0, order);
+		session_add_midi_route (false, route_group, count, name_template, strict_io, instrument, 0, order, false);
 		break;
 	case AddRouteDialog::VCAMaster:
 		_session->vca_manager().create_vca (count, name_template);
@@ -2891,6 +2966,10 @@ what you would like to do.\n"), PROGRAM_NAME));
 	message.show();
 	image->show();
 	hbox->show();
+
+	if (Splash::exists ()) {
+		Splash::instance()->hide ();
+	}
 
 	switch (dialog.run ()) {
 	case RESPONSE_ACCEPT:
@@ -3039,3 +3118,4 @@ ARDOUR_UI::setup_toplevel_window (Gtk::Window& window, const string& name, void*
 	window.signal_key_press_event().connect (sigc::bind (sigc::mem_fun (*this, &ARDOUR_UI::key_event_handler), &window), false);
 	window.signal_key_release_event().connect (sigc::bind (sigc::mem_fun (*this, &ARDOUR_UI::key_event_handler), &window), false);
 }
+

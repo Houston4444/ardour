@@ -128,8 +128,8 @@ public:
 	void resolve_note(uint8_t note_num, Temporal::Beats end_time);
 
 	void cut_copy_clear (Editing::CutCopyOp);
-	bool paste (samplepos_t pos, const ::Selection& selection, PasteContext& ctx, const int32_t sub_num);
-	void paste_internal (samplepos_t pos, unsigned paste_count, float times, const MidiCutBuffer&);
+	bool paste (Temporal::timepos_t const & pos, const ::Selection& selection, PasteContext& ctx);
+	void paste_internal (Temporal::timepos_t const & pos, unsigned paste_count, float times, const MidiCutBuffer&);
 
 	void add_canvas_patch_change (ARDOUR::MidiModel::PatchChangePtr patch);
 	void remove_canvas_patch_change (PatchChange* pc);
@@ -153,7 +153,7 @@ public:
 	void change_patch_change (PatchChange& old_patch, const MIDI::Name::PatchPrimaryKey& new_patch);
 	void change_patch_change (ARDOUR::MidiModel::PatchChangePtr, Evoral::PatchChange<Temporal::Beats> const &);
 
-	void add_patch_change (samplecnt_t, Evoral::PatchChange<Temporal::Beats> const &);
+	void add_patch_change (Temporal::timecnt_t const &, Evoral::PatchChange<Temporal::Beats> const &);
 	void move_patch_change (PatchChange &, Temporal::Beats);
 	void delete_patch_change (PatchChange *);
 	void edit_patch_change (PatchChange *);
@@ -205,14 +205,15 @@ public:
 	void   delete_note (boost::shared_ptr<NoteType>);
 	size_t selection_size() { return _selection.size(); }
 	void   select_all_notes ();
-	void   select_range(samplepos_t start, samplepos_t end);
+	void   select_range(Temporal::timepos_t const & start, Temporal::timepos_t const & end);
 	void   invert_selection ();
+	void   extend_selection ();
 
 	Temporal::Beats earliest_in_selection ();
-	void move_selection(double dx, double dy, double cumulative_dy);
-	void note_dropped (NoteBase* ev, double d_qn, int8_t d_note, bool copy);
+	void move_selection(Temporal::timecnt_t const & dx, double dy, double cumulative_dy);
+	void note_dropped (NoteBase* ev, Temporal::timecnt_t const & d_qn, int8_t d_note, bool copy);
 	NoteBase* copy_selection (NoteBase* primary);
-	void move_copies(double dx_qn, double dy, double cumulative_dy);
+	void move_copies(Temporal::timecnt_t const & dx_qn, double dy, double cumulative_dy);
 
 	void select_notes (std::list<Evoral::event_id_t>, bool allow_audition);
 	void select_matching_notes (uint8_t notenum, uint16_t channel_mask, bool add, bool extend);
@@ -259,8 +260,8 @@ public:
 	MouseState mouse_state() const { return _mouse_state; }
 
 	struct NoteResizeData {
-		Note                     *note;
-		ArdourCanvas::Rectangle  *resize_rect;
+		::Note                  *note;
+		ArdourCanvas::Rectangle *resize_rect;
 	};
 
 	/** Snap a region relative pixel coordinate to pixel units.
@@ -270,46 +271,13 @@ public:
 	 */
 	double snap_to_pixel(double x, bool ensure_snap = false);
 
-	/** Snap a region relative pixel coordinate to sample units.
+	/** Snap a region relative pixel coordinate to time units.
 	 * @param x a pixel coordinate relative to region start
 	 * @param ensure_snap ignore SnapOff and magnetic snap.
 	 * Required for inverting snap logic with modifier keys and snap delta calculation.
-	 * @return the snapped samplepos_t coordinate relative to region start
+	 * @return the snapped timepos_t coordinate relative to region start
 	 */
-	samplepos_t snap_pixel_to_sample(double x, bool ensure_snap = false);
-
-	/** Convert a timestamp in beats into samples (both relative to region position) */
-	samplepos_t region_beats_to_region_samples(Temporal::Beats beats) const;
-	/** Convert a timestamp in beats into absolute samples */
-	samplepos_t region_beats_to_absolute_samples(Temporal::Beats beats) const {
-		return _region->position() + region_beats_to_region_samples (beats);
-	}
-	/** Convert a timestamp in samples to beats (both relative to region position) */
-	Temporal::Beats region_samples_to_region_beats(samplepos_t) const;
-	double region_samples_to_region_beats_double(samplepos_t) const;
-
-	/** Convert a timestamp in beats measured from source start into absolute samples */
-	samplepos_t source_beats_to_absolute_samples(Temporal::Beats beats) const;
-	/** Convert a timestamp in beats measured from source start into region-relative samples */
-	samplepos_t source_beats_to_region_samples(Temporal::Beats beats) const {
-		return source_beats_to_absolute_samples (beats) - _region->position();
-	}
-	/** Convert a timestamp in absolute samples to beats measured from source start*/
-	Temporal::Beats absolute_samples_to_source_beats(samplepos_t) const;
-
-	ARDOUR::BeatsSamplesConverter const & region_relative_time_converter () const {
-		return _region_relative_time_converter;
-	}
-
-	ARDOUR::BeatsSamplesConverter const & source_relative_time_converter () const {
-		return _source_relative_time_converter;
-	}
-
-	ARDOUR::DoubleBeatsSamplesConverter const & region_relative_time_converter_double () const {
-		return _region_relative_time_converter_double;
-	}
-
-	double session_relative_qn (double qn) const;
+	Temporal::timepos_t snap_pixel_to_time (double x, bool ensure_snap = false);
 
 	void goto_previous_note (bool add_to_selection);
 	void goto_next_note (bool add_to_selection);
@@ -344,7 +312,7 @@ public:
 	 * \param state the keyboard modifier mask for the canvas event (click).
 	 * \param shift_snap true alters snap behavior to round down always (false if the gui has already done that).
 	 */
-	void create_note_at (samplepos_t t, double y, Temporal::Beats length, uint32_t state, bool shift_snap);
+	void create_note_at (Temporal::timepos_t const & t, double y, Temporal::Beats length, uint32_t state, bool shift_snap);
 
 	/** An external request to clear the note selection, remove MRV from editor
 	 * selection.
@@ -371,6 +339,8 @@ public:
 	friend class Editor;
 
 	void clear_note_selection ();
+	void invert_note_selection ();
+	void extend_note_selection ();
 
 	void move_note_starts_earlier_fine () { change_note_lengths (true, false, Temporal::Beats(), true, false); }
 	void move_note_starts_earlier () { change_note_lengths (false, false, Temporal::Beats(), true, false); }
@@ -459,7 +429,7 @@ public:
 	void trim_note(NoteBase* ev, ARDOUR::MidiModel::TimeType start_delta,
 	               ARDOUR::MidiModel::TimeType end_delta);
 
-	void update_drag_selection (samplepos_t start, samplepos_t end, double y0, double y1, bool extend);
+	void update_drag_selection (Temporal::timepos_t const & start, Temporal::timepos_t const & end, double y0, double y1, bool extend);
 	void update_vertical_drag_selection (double last_y, double y, bool extend);
 
 	void add_to_selection (NoteBase*);
@@ -471,6 +441,7 @@ public:
 	void show_verbose_cursor (boost::shared_ptr<NoteType>) const;
 
 	uint8_t get_velocity_for_add (ARDOUR::MidiModel::TimeType time) const;
+	uint8_t get_channel_for_add (ARDOUR::MidiModel::TimeType time) const;
 
 	uint8_t  _current_range_min;
 	uint8_t  _current_range_max;
@@ -479,10 +450,6 @@ public:
 	typedef boost::unordered_map<ARDOUR::MidiModel::PatchChangePtr, boost::shared_ptr<PatchChange> > PatchChanges;
 	typedef boost::unordered_map<ARDOUR::MidiModel::constSysExPtr, boost::shared_ptr<SysEx> >        SysExes;
 	typedef std::vector<NoteBase*> CopyDragEvents;
-
-	ARDOUR::BeatsSamplesConverter _region_relative_time_converter;
-	ARDOUR::BeatsSamplesConverter _source_relative_time_converter;
-	ARDOUR::DoubleBeatsSamplesConverter _region_relative_time_converter_double;
 
 	boost::shared_ptr<ARDOUR::MidiModel> _model;
 	Events                               _events;
@@ -563,7 +530,9 @@ public:
 	void data_recorded (boost::weak_ptr<ARDOUR::MidiSource>);
 
 	/** Get grid type as beats, or default to 1 if not snapped to beats. */
-	Temporal::Beats get_grid_beats(samplepos_t pos) const;
+	Temporal::Beats get_grid_beats(Temporal::timepos_t const & pos) const;
+
+	Temporal::Beats get_draw_length_beats(Temporal::timepos_t const & pos) const;
 
 	void remove_ghost_note ();
 	void mouse_mode_changed ();
@@ -582,8 +551,6 @@ public:
 
 	Gtkmm2ext::Color _patch_change_outline;
 	Gtkmm2ext::Color _patch_change_fill;
-
-	Temporal::Beats snap_sample_to_grid_underneath (samplepos_t p, int32_t divisions, bool shift_snap) const;
 
 	PBD::ScopedConnection _mouse_mode_connection;
 

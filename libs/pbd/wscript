@@ -56,10 +56,12 @@ libpbd_sources = [
     'localtime_r.cc',
     'malign.cc',
     'md5.cc',
+    'microseconds.cc',
     'mountpoint.cc',
     'openuri.cc',
     'pathexpand.cc',
     'pbd.cc',
+    'pcg_rand.cc',
     'pool.cc',
     'property_list.cc',
     'pthread_utils.cc',
@@ -172,7 +174,7 @@ def build(bld):
     obj.name         = 'libpbd'
     obj.target       = 'pbd'
     obj.use          = 'pbdsignals'
-    obj.uselib       = 'GLIBMM SIGCPP XML UUID SNDFILE GIOMM ARCHIVE CURL XML'
+    obj.uselib       = 'GLIBMM SIGCPP XML UUID SNDFILE GIOMM ARCHIVE CURL'
     if sys.platform == 'darwin':
         TaskGen.task_gen.mappings['.mm'] = TaskGen.task_gen.mappings['.cc']
         if 'cocoa_open_uri.mm' not in obj.source:
@@ -221,4 +223,4 @@ def build(bld):
         testobj.name         = 'libpbd-tests'
         testobj.defines      = [ 'PACKAGE="' + I18N_PACKAGE + '"' ]
         if sys.platform != 'darwin' and bld.env['build_target'] != 'mingw':
-            testobj.lib      = ['rt']
+            testobj.lib      = ['rt', 'dl']

@@ -99,6 +99,8 @@ This mode provides many different operations on both regions and control points,
 
 %notes MIDI Note Editing
 
+%rec Recorder Recorder Page
+
 ;; END GROUP DEFINITIONS
 
 ;; punctuation
@@ -143,8 +145,8 @@ This mode provides many different operations on both regions and control points,
 @rop|Region/boost-region-gain|<@SECONDARY@>6|increase region gain
 @rop|Region/cut-region-gain|<@SECONDARY@>7|reduce region gain
 @rop|Region/pitch-shift-region|<@SECONDARY@>8|transpose
-@rop|Region/lower-region|<@SECONDARY@>9|lower region layer
-@rop|Region/raise-region|<@SECONDARY@>0|raise region layer
+@rop|Region/rename-region|<@SECONDARY@>9|rename
+@rop|Region/toggle-opaque-region|<@SECONDARY@>0|toggle region opacity
 
 ;; letters
 ;; TOP ROW
@@ -229,6 +231,7 @@ This mode provides many different operations on both regions and control points,
 @wvis|Common/toggle-meterbridge|<@SECONDARY@>b|show meter bridge
 @edtrk|Editor/track-record-enable-toggle|<@TERTIARY@>b|toggle track rec-enable 
 @sess|Main/AddTrackBus|<@PRIMARY@><@TERTIARY@>n|add track(s) or bus(ses)
+@rop|Region/add-region-cue-marker|m|add a region/cue marker
 @sess|Main/New|<@PRIMARY@>n|open a new session
 @wvis|Window/toggle-midi-connection-manager|<@SECONDARY@><@TERTIARY@>m|toggle global midi patchbay
 @wvis|Common/show-mixer|<@SECONDARY@>m|show mixer window
@@ -301,6 +304,23 @@ This mode provides many different operations on both regions and control points,
 @gedt|Common/finish-punch-range|<@PRIMARY@>period|set the end of the Punch range
 @gedt|Common/start-loop-range|<@SECONDARY@>comma|set the start of the Loop range
 @gedt|Common/finish-loop-range|<@SECONDARY@>period|set the end of the Loop range
+
+@edit|Editor/copy-playlists-for-selected-tracks|<@TERTIARY@>colon|Copy Playlists for Selected tracks
+@edit|Editor/copy-playlists-for-armed-tracks|<@PRIMARY><@SECONDARY><@TERTIARY@>colon|Copy Playlists for Armed tracks
+@edit|Editor/copy-playlists-for-all-tracks|<@PRIMARY><@TERTIARY@>colon|Copy Playlists for ALL tracks
+
+@edit|Editor/new-playlists-for-selected-tracks|<@TERTIARY@>quotedbl|New Playlists for Selected tracks
+@edit|Editor/new-playlists-for-armed-tracks|<@PRIMARY><@SECONDARY><@TERTIARY@>quotedbl|New Playlists for ALL tracks
+@edit|Editor/new-playlists-for-all-tracks|<@PRIMARY><@TERTIARY@>quotedbl|New Playlists for ALL tracks
+
+@edit|Editor/layer-display-overlaid|<@TERTIARY@>braceleft|Display Region Layers: Overlaid
+@edit|Editor/layer-display-stacked|<@TERTIARY@>braceright|Display Region Layers: Stacked
+@edit|Region/raise-region-to-top|<@TERTIARY@>bar|Raise Selected Region to Top Layer
+
+@trans|Transport/RecordPreroll|<@TERTIARY@>less|Transport: Record with Pre-Roll
+@trans|Transport/RecordCountIn|<@TERTIARY@>greater|Transport: Record with Count-In
+
+@edit|Editor/show-plist-selector|<@TERTIARY@>question|show-plist-selector
 
 @gmark|Common/alternate-add-location-from-playhead|KP_Enter|add mark at playhead
 @gmark|Common/alternate-remove-location-from-playhead|<@PRIMARY@>KP_Enter|add mark at playhead
@@ -426,6 +446,10 @@ This mode provides many different operations on both regions and control points,
 @notes|Notes/move-starts-earlier-fine|<@SECONDARY@>comma|Move Note Starts Earlier (Fine)
 @notes|Notes/move-ends-later|period|Move Note Ends Later
 @notes|Notes/move-ends-later-fine|<@SECONDARY@>period|Move Note Ends Later (Fine)
+@notes|Notes/move-starts-later|<@PRIMARY@>comma|Move Note Starts Later
+@notes|Notes/move-starts-later-fine|<@PRIMARY@><@SECONDARY@>comma|Move Note Starts Later (Fine)
+@notes|Notes/move-ends-earlier|<@PRIMARY@>period|Move Note Ends Earlier
+@notes|Notes/move-ends-earlier-fine|<@PRIMARY@><@SECONDARY@>period|Move Note Ends Earlier (Fine)
 @notes|Notes/nudge-later|Right|Nudge Notes Later
 @notes|Notes/nudge-later-fine|<@SECONDARY@>Right|Nudge Notes Later (fine)
 @notes|Notes/nudge-earlier|Left|Nudge Notes Earlier
@@ -439,8 +463,8 @@ This mode provides many different operations on both regions and control points,
 @notes|Notes/transpose-down-semitone|Down|Transpose down (1 semitone)
 @notes|Notes/transpose-up-octave-smush|<@TERTIARY@>Up|Transpose up (1 octave) allow mushing
 @notes|Notes/transpose-down-octave-smush|<@TERTIARY@>Down|Transpose down (1 octave) allow mushing
-@notes|Notes/transpose-up-semitone-smush|<@TERTIARY@><@SECONDARY@>Up|Transpose up (1 semitone) allow mushing
-@notes|Notes/transpose-down-semitone-smush|<@TERTIARY@><@SECONDARY>Down|Transpose down (1 tone) allow mushing
+@notes|Notes/transpose-up-semitone-smush|<@SECONDARY@><@TERTIARY@>Up|Transpose up (1 semitone) allow mushing
+@notes|Notes/transpose-down-semitone-smush|<@SECONDARY@><@TERTIARY@>Down|Transpose down (1 tone) allow mushing
 
 @notes|Notes/increase-velocity|<@PRIMARY@>Up|Increase Note Velocity (+8)
 @notes|Notes/decrease-velocity|<@PRIMARY@>Down|Increase Note Velocity (+8)
@@ -453,13 +477,16 @@ This mode provides many different operations on both regions and control points,
 
 @notes|Notes/delete|Backspace|Delete Note Selection
 @notes|Notes/alt-delete|Delete|Delete Note Selection
-@notes|Notes/clear-selection|Escape|Clear selection
+@notes|Main/Escape|Clear selection
 
 @notes|Notes/select-next|Tab|Select next note
 @notes|Notes/select-previous|<@PRIMARY@>Tab|Select previous note
 @notes|Notes/add-select-next|<@TERTIARY@>Tab|Select next note
-@notes|Notes/add-select-previous|<@PRIMARY@><@TERTIARY@>Tab|Select previous note
-@notes|Notes/alt-add-select-next|<@TERTIARY@>ISO_Left_Tab|Select next note
-@notes|Notes/alt-add-select-previous|<@PRIMARY@><@TERTIARY@>ISO_Left_Tab|Select previous note
+@notes|Notes/add-select-previous|<@PRIMARY@><@TERTIARY@>Tab|Add previous note to selection
+@notes|Notes/alt-add-select-next|<@TERTIARY@>ISO_Left_Tab|Add next note to selection
+@notes|Notes/alt-add-select-previous|<@PRIMARY@><@TERTIARY@>ISO_Left_Tab|Add previous note to selection
+@notes|Notes/extend-selection|<@PRIMARY@>e|Extend selection to end of region
+@notes|Notes/invert-selection|<@PRIMARY@>i|Invert note selection
 
-
+@rec|Recorder/arm-all|<@PRIMARY@>r|record arm all tracks
+@rec|Recorder/arm-none|<@PRIMARY@><@TERTIARY@>r|disable record arm of all tracks

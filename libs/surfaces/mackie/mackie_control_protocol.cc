@@ -121,6 +121,7 @@ MackieControlProtocol::MackieControlProtocol (Session& session)
 	: ControlProtocol (session, X_("Mackie"))
 	, AbstractUI<MackieControlUIRequest> (name())
 	, _current_initial_bank (0)
+	, _timecode_last (10, '\0')
 	, _sample_last (0)
 	, _timecode_type (ARDOUR::AnyTime::BBT)
 	, _gui (0)
@@ -210,8 +211,11 @@ MackieControlProtocol::ping_devices ()
 	 * malfunction if it is.
 	 */
 
-	for (Surfaces::const_iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
-		(*si)->connected ();
+	{
+		Glib::Threads::Mutex::Lock lm (surfaces_lock);
+		for (Surfaces::const_iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
+			(*si)->connected ();
+		}
 	}
 }
 
@@ -237,9 +241,12 @@ MackieControlProtocol::next_track()
 bool
 MackieControlProtocol::stripable_is_locked_to_strip (boost::shared_ptr<Stripable> r) const
 {
-	for (Surfaces::const_iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
-		if ((*si)->stripable_is_locked_to_strip (r)) {
-			return true;
+	{
+		Glib::Threads::Mutex::Lock lm (surfaces_lock);
+		for (Surfaces::const_iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
+			if ((*si)->stripable_is_locked_to_strip (r)) {
+				return true;
+			}
 		}
 	}
 	return false;
@@ -361,8 +368,11 @@ MackieControlProtocol::n_strips (bool with_locked_strips) const
 {
 	uint32_t strip_count = 0;
 
-	for (Surfaces::const_iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
-		strip_count += (*si)->n_strips (with_locked_strips);
+	{
+		Glib::Threads::Mutex::Lock lm (surfaces_lock);
+		for (Surfaces::const_iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
+			strip_count += (*si)->n_strips (with_locked_strips);
+		}
 	}
 
 	return strip_count;
@@ -413,29 +423,35 @@ MackieControlProtocol::switch_banks (uint32_t initial, bool force)
 
 		Sorted::iterator r = sorted.begin() + _current_initial_bank;
 
-		for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
-			vector<boost::shared_ptr<Stripable> > stripables;
-			uint32_t added = 0;
+		{
+			Glib::Threads::Mutex::Lock lm (surfaces_lock);
+			for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
+				vector<boost::shared_ptr<Stripable> > stripables;
+				uint32_t added = 0;
 
-			DEBUG_TRACE (DEBUG::MackieControl, string_compose ("surface has %1 unlocked strips\n", (*si)->n_strips (false)));
+				DEBUG_TRACE (DEBUG::MackieControl, string_compose ("surface has %1 unlocked strips\n", (*si)->n_strips (false)));
 
-			for (; r != sorted.end() && added < (*si)->n_strips (false); ++r, ++added) {
-				stripables.push_back (*r);
+				for (; r != sorted.end() && added < (*si)->n_strips (false); ++r, ++added) {
+					stripables.push_back (*r);
+				}
+
+				DEBUG_TRACE (DEBUG::MackieControl, string_compose ("give surface %1 stripables\n", stripables.size()));
+
+				(*si)->map_stripables (stripables);
 			}
-
-			DEBUG_TRACE (DEBUG::MackieControl, string_compose ("give surface %1 stripables\n", stripables.size()));
-
-			(*si)->map_stripables (stripables);
 		}
 
 	} else {
 		/* all strips need to be reset */
 		DEBUG_TRACE (DEBUG::MackieControl, string_compose ("clear all strips, bank target %1  is outside route range %2\n",
 		                                                   _current_initial_bank, sorted.size()));
-		for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
-			vector<boost::shared_ptr<Stripable> > stripables;
-			/* pass in an empty stripables list, so that all strips will be reset */
-			(*si)->map_stripables (stripables);
+		{
+			Glib::Threads::Mutex::Lock lm (surfaces_lock);
+			for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
+				vector<boost::shared_ptr<Stripable> > stripables;
+				/* pass in an empty stripables list, so that all strips will be reset */
+				(*si)->map_stripables (stripables);
+			}
 		}
 		return -1;
 	}
@@ -536,7 +552,7 @@ MackieControlProtocol::periodic ()
 
 	update_timecode_display ();
 
-	ARDOUR::microseconds_t now_usecs = ARDOUR::get_microseconds ();
+	PBD::microseconds_t now_usecs = PBD::get_microseconds ();
 
 	{
 		Glib::Threads::Mutex::Lock lm (surfaces_lock);
@@ -565,7 +581,7 @@ MackieControlProtocol::redisplay ()
 		initialize();
 	}
 
-	ARDOUR::microseconds_t now = ARDOUR::get_microseconds ();
+	PBD::microseconds_t now = PBD::get_microseconds ();
 
 	{
 		Glib::Threads::Mutex::Lock lm (surfaces_lock);
@@ -610,7 +626,7 @@ MackieControlProtocol::update_global_button (int id, LedState ls)
 	{
 		Glib::Threads::Mutex::Lock lm (surfaces_lock);
 
-		if (surfaces.empty()) {
+		if (!_master_surface) {
 			return;
 		}
 
@@ -659,6 +675,13 @@ void
 MackieControlProtocol::device_ready ()
 {
 	DEBUG_TRACE (DEBUG::MackieControl, string_compose ("device ready init (active=%1)\n", active()));
+	// Clear the surface so that any left over control from other programs are reset.
+	{
+		Glib::Threads::Mutex::Lock lm (surfaces_lock);
+		for (Surfaces::iterator s = surfaces.begin(); s != surfaces.end(); ++s) {
+			(*s)->zero_all ();
+		}
+	}
 	update_surfaces ();
 	set_subview_mode (Mackie::Subview::None, boost::shared_ptr<Stripable>());
 	set_flip_mode (Normal);
@@ -687,6 +710,10 @@ MackieControlProtocol::initialize()
 		Glib::Threads::Mutex::Lock lm (surfaces_lock);
 
 		if (surfaces.empty()) {
+			return;
+		}
+
+		if (!_master_surface) {
 			return;
 		}
 
@@ -727,6 +754,8 @@ MackieControlProtocol::connect_session_signals()
 	session->config.ParameterChanged.connect (session_connections, MISSING_INVALIDATOR, boost::bind (&MackieControlProtocol::notify_parameter_changed, this, _1), this);
 	// receive rude solo changed
 	session->SoloActive.connect(session_connections, MISSING_INVALIDATOR, boost::bind (&MackieControlProtocol::notify_solo_active_changed, this, _1), this);
+
+	session->MonitorBusAddedOrRemoved.connect (session_connections, MISSING_INVALIDATOR, boost::bind (&MackieControlProtocol::notify_monitor_added_or_removed, this), this);
 
 	// make sure remote id changed signals reach here
 	// see also notify_stripable_added
@@ -867,10 +896,6 @@ MackieControlProtocol::create_surfaces ()
 			return -1;
 		}
 
-		if (is_master) {
-			_master_surface = surface;
-		}
-
 		if (configuration_state) {
 			XMLNode* this_device = 0;
 			XMLNodeList const& devices = configuration_state->children();
@@ -891,19 +916,22 @@ MackieControlProtocol::create_surfaces ()
 
 		{
 			Glib::Threads::Mutex::Lock lm (surfaces_lock);
+			if (is_master) {
+				_master_surface = surface;
+			}
 			surfaces.push_back (surface);
 		}
 
 		if (!_device_info.uses_ipmidi()) {
 
 			_input_bundle->add_channel (
-				surface->port().input_port().name(),
+				"",
 				ARDOUR::DataType::MIDI,
 				session->engine().make_port_name_non_relative (surface->port().input_port().name())
 				);
 
 			_output_bundle->add_channel (
-				surface->port().output_port().name(),
+				"",
 				ARDOUR::DataType::MIDI,
 				session->engine().make_port_name_non_relative (surface->port().output_port().name())
 				);
@@ -1125,9 +1153,9 @@ MackieControlProtocol::set_state (const XMLNode & node, int version)
 string
 MackieControlProtocol::format_bbt_timecode (samplepos_t now_sample)
 {
-	Timecode::BBT_Time bbt_time;
+	Temporal::BBT_Time bbt_time;
 
-	session->bbt_time (now_sample, bbt_time);
+	session->bbt_time (timepos_t (now_sample), bbt_time);
 
 	// The Mackie protocol spec is built around a BBT time display of
 	//
@@ -1184,14 +1212,15 @@ MackieControlProtocol::update_timecode_display()
 		return;
 	}
 
+	string timecode;
+
 	// do assignment here so current_sample is fixed
 	samplepos_t current_sample = session->transport_sample();
-	string timecode;
 	// For large jumps in play head possition do full reset
 	int moved = (current_sample - _sample_last) / session->sample_rate ();
 	if (moved) {
 		DEBUG_TRACE (DEBUG::MackieControl, "Timecode reset\n");
-		_timecode_last = string (10, ' ');
+		_timecode_last = string (10, '\0');
 	}
 	_sample_last = current_sample;
 
@@ -1242,15 +1271,6 @@ void MackieControlProtocol::notify_parameter_changed (std::string const & p)
 }
 
 void
-MackieControlProtocol::notify_stripable_removed ()
-{
-	Glib::Threads::Mutex::Lock lm (surfaces_lock);
-	for (Surfaces::iterator s = surfaces.begin(); s != surfaces.end(); ++s) {
-		(*s)->master_monitor_may_have_changed ();
-	}
-}
-
-void
 MackieControlProtocol::notify_vca_added (ARDOUR::VCAList& vl)
 {
 	refresh_current_bank ();
@@ -1268,21 +1288,21 @@ MackieControlProtocol::notify_routes_added (ARDOUR::RouteList & rl)
 		}
 	}
 
-	/* special case: single route, and it is the monitor or master out */
-
-	if (rl.size() == 1 && (rl.front()->is_monitor() || rl.front()->is_master())) {
-		Glib::Threads::Mutex::Lock lm (surfaces_lock);
-		for (Surfaces::iterator s = surfaces.begin(); s != surfaces.end(); ++s) {
-			(*s)->master_monitor_may_have_changed ();
-		}
-	}
-
 	// currently assigned banks are less than the full set of
 	// strips, so activate the new strip now.
 
 	refresh_current_bank();
 
 	// otherwise route added, but current bank needs no updating
+}
+
+void
+MackieControlProtocol::notify_monitor_added_or_removed ()
+{
+	Glib::Threads::Mutex::Lock lm (surfaces_lock);
+	for (Surfaces::iterator s = surfaces.begin(); s != surfaces.end(); ++s) {
+		(*s)->master_monitor_may_have_changed ();
+	}
 }
 
 void
@@ -1357,7 +1377,7 @@ MackieControlProtocol::notify_transport_state_changed()
 	update_global_button (Button::Ffwd, ffwd_button_onoff ());
 
 	// sometimes a return to start leaves time code at old time
-	_timecode_last = string (10, ' ');
+	_timecode_last = string (10, '\0');
 
 	notify_metering_state_changed ();
 }
@@ -2308,8 +2328,11 @@ void
 MackieControlProtocol::stripable_selection_changed ()
 {
 	//this function is called after the stripable selection is "stable", so this is the place to check surface selection state
-	for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
-		(*si)->update_strip_selection ();
+	{
+		Glib::Threads::Mutex::Lock lm (surfaces_lock);
+		for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
+			(*si)->update_strip_selection ();
+		}
 	}
 
 	/* if we are following the Gui, find the selected strips and map them here */
@@ -2317,18 +2340,21 @@ MackieControlProtocol::stripable_selection_changed ()
 
 		Sorted sorted = get_sorted_stripables();
 
-		Sorted::iterator r = sorted.begin();
-		for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
-			vector<boost::shared_ptr<Stripable> > stripables;
-			uint32_t added = 0;
+		{
+			Glib::Threads::Mutex::Lock lm (surfaces_lock);
+			Sorted::iterator r = sorted.begin();
+			for (Surfaces::iterator si = surfaces.begin(); si != surfaces.end(); ++si) {
+				vector<boost::shared_ptr<Stripable> > stripables;
+				uint32_t added = 0;
 
-			for (; r != sorted.end() && added < (*si)->n_strips (false); ++r, ++added) {
-				if ((*r)->is_selected()) {
-					stripables.push_back (*r);
+				for (; r != sorted.end() && added < (*si)->n_strips (false); ++r, ++added) {
+					if ((*r)->is_selected()) {
+						stripables.push_back (*r);
+					}
 				}
-			}
 
-			(*si)->map_stripables (stripables);
+				(*si)->map_stripables (stripables);
+			}
 		}
 		return;
 	}

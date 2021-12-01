@@ -36,6 +36,10 @@
 #define AUHAL_INPUT_ELEMENT 1
 
 
+namespace PBD {
+class Timing;
+}
+
 namespace ARDOUR {
 
 class CoreAudioPCM {
@@ -77,8 +81,9 @@ public:
 			uint32_t sample_rate,
 			uint32_t samples_per_period,
 			int (process_callback (void*, const uint32_t, const uint64_t)),
-			void * process_arg
-			);
+			void * process_arg,
+			PBD::TimingStats& dsp_timer
+		);
 
 	void     set_error_callback (
 			void ( error_callback (void*)),
@@ -173,6 +178,8 @@ private:
 
 	int (* _process_callback) (void*, const uint32_t, const uint64_t);
 	void * _process_arg;
+
+	PBD::TimingStats* _dsp_timer;
 
 	void (* _error_callback) (void*);
 	void  * _error_arg;

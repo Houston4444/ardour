@@ -39,7 +39,6 @@
 #include "pbd/error.h"
 #include "pbd/pthread_utils.h"
 #include "pbd/timersub.h"
-#include "pbd/stacktrace.h"
 
 #include "temporal/time.h"
 
@@ -52,6 +51,7 @@
 #include "ardour/profile.h"
 #include "ardour/session.h"
 #include "ardour/transport_master.h"
+#include "ardour/transport_fsm.h"
 #include "ardour/ticker.h"
 
 #include "pbd/i18n.h"
@@ -99,7 +99,7 @@ void
 Session::spp_start ()
 {
 	if (Config->get_mmc_control ()) {
-		request_transport_speed (1.0);
+		request_roll (TRS_MIDIClock);
 	}
 }
 
@@ -121,7 +121,7 @@ void
 Session::mmc_deferred_play (MIDI::MachineControl &/*mmc*/)
 {
 	if (Config->get_mmc_control ()) {
-		request_transport_speed (1.0);
+		request_roll (TRS_MMC);
 	}
 }
 
@@ -142,7 +142,7 @@ Session::mmc_record_strobe (MIDI::MachineControl &/*mmc*/)
 
 	/* record strobe does an implicit "Play" command */
 
-	if (_transport_speed != 1.0) {
+	if (_transport_fsm->transport_speed() != 1.0) {
 
 		/* start_transport() will move from Enabled->Recording, so we
 		   don't need to do anything here except enable recording.
@@ -154,7 +154,7 @@ Session::mmc_record_strobe (MIDI::MachineControl &/*mmc*/)
 		g_atomic_int_set (&_record_status, Enabled);
 		RecordStateChanged (); /* EMIT SIGNAL */
 
-		request_transport_speed (1.0);
+		request_roll (TRS_MMC);
 
 	} else {
 
@@ -222,7 +222,7 @@ Session::mmc_step (MIDI::MachineControl &/*mmc*/, int steps)
 	double diff_secs = diff.tv_sec + (diff.tv_usec / 1000000.0);
 	double cur_speed = (((steps * 0.5) * timecode_frames_per_second()) / diff_secs) / timecode_frames_per_second();
 
-	if (_transport_speed == 0 || cur_speed * _transport_speed < 0) {
+	if (_transport_fsm->transport_speed() == 0 || cur_speed * _transport_fsm->transport_speed() < 0) {
 		/* change direction */
 		step_speed = cur_speed;
 	} else {
@@ -233,7 +233,7 @@ Session::mmc_step (MIDI::MachineControl &/*mmc*/, int steps)
 
 #if 0
 	cerr << "delta = " << diff_secs
-	     << " ct = " << _transport_speed
+	     << " ct = " << _transport_fsm->transport_speed()
 	     << " steps = " << steps
 	     << " new speed = " << cur_speed
 	     << " speed = " << step_speed
@@ -493,7 +493,7 @@ Session::send_midi_time_code_for_cycle (samplepos_t start_sample, samplepos_t en
 		return 0;
 	}
 
-	if (_transport_speed < 0) {
+	if (_transport_fsm->transport_speed() < 0) {
 		// we don't support rolling backwards
 		return 0;
 	}
@@ -565,7 +565,7 @@ Session::send_midi_time_code_for_cycle (samplepos_t start_sample, samplepos_t en
 		assert (msg_time < end_sample);
 
 		/* convert from session samples back to JACK samples using the transport speed */
-		ARDOUR::pframes_t const out_stamp = (msg_time - start_sample) / _transport_speed;
+		ARDOUR::pframes_t const out_stamp = (msg_time - start_sample) / _transport_fsm->transport_speed();
 		assert (out_stamp < nframes);
 
 		MidiBuffer& mb (_midi_ports->mtc_output_port()->get_midi_buffer(nframes));
@@ -623,9 +623,9 @@ Session::mmc_step_timeout ()
 	timersub (&now, &last_mmc_step, &diff);
 	diff_usecs = diff.tv_sec * 1000000 + diff.tv_usec;
 
-	if (diff_usecs > 1000000.0 || fabs (_transport_speed) < 0.0000001) {
+	if (diff_usecs > 1000000.0 || fabs (_transport_fsm->transport_speed()) < 0.0000001) {
 		/* too long or too slow, stop transport */
-		request_transport_speed (0.0);
+		request_stop ();
 		step_queued = false;
 		return false;
 	}
@@ -637,7 +637,7 @@ Session::mmc_step_timeout ()
 
 	/* slow it down */
 
-	request_transport_speed_nonzero (_transport_speed * 0.75);
+	request_transport_speed_nonzero (actual_speed() * 0.75);
 	return true;
 }
 
@@ -722,6 +722,36 @@ Session::midi_track_presentation_info_changed (PropertyChange const& what_change
 	}
 }
 
+
+void
+Session::disconnect_port_for_rewire (std::string const& port) const
+{
+	MidiPortFlags mpf = AudioEngine::instance()->midi_port_metadata (port);
+
+	/* if a port is marked for control data, do not
+	 * disconnect it from everything since it may also be
+	 * used via a control surface or some other
+	 * functionality.
+	 */
+	bool keep_ctrl = mpf & MidiPortControl;
+
+	vector<string> port_connections;
+	AudioEngine::instance()->get_connections (port, port_connections);
+	for (vector<string>::iterator i = port_connections.begin(); i != port_connections.end(); ++i) {
+
+		/* test if (*i) is a control-surface input port */
+		if (keep_ctrl && AudioEngine::instance()->port_is_control_only (*i)) {
+			continue;
+		}
+		/* retain connection to "physical_midi_input_monitor_enable" */
+		if (AudioEngine::instance()->port_is_physical_input_monitor_enable (*i)) {
+			continue;
+		}
+
+		AudioEngine::instance()->disconnect (port, *i);
+	}
+}
+
 void
 Session::rewire_selected_midi (boost::shared_ptr<MidiTrack> new_midi_target)
 {
@@ -739,31 +769,9 @@ Session::rewire_selected_midi (boost::shared_ptr<MidiTrack> new_midi_target)
 	AudioEngine::instance()->get_midi_selection_ports (msp);
 
 	if (!msp.empty()) {
-
 		for (vector<string>::const_iterator p = msp.begin(); p != msp.end(); ++p) {
-			MidiPortFlags mpf = AudioEngine::instance()->midi_port_metadata (*p);
-
-			/* if a port is marked for control data, do not
-			 * disconnect it from everything since it may also be
-			 * used via a control surface or some other
-			 * functionality.
-			 */
-
-			if (0 == (mpf & MidiPortControl)) {
-				/* disconnect the port from everything */
-				AudioEngine::instance()->disconnect (*p);
-			} else {
-				/* only disconnect from non-control ports */
-				vector<string> port_connections;
-				AudioEngine::instance()->get_connections (*p, port_connections);
-				for (vector<string>::iterator i = port_connections.begin(); i != port_connections.end(); ++i) {
-					/* test if (*i) is a control-surface input port */
-					if (AudioEngine::instance()->port_is_control_only (*i)) {
-						continue;
-					}
-					AudioEngine::instance()->disconnect (*p, *i);
-				}
-			}
+			/* disconnect port */
+			disconnect_port_for_rewire (*p);
 			/* connect it to the new target */
 			new_midi_target->input()->connect (new_midi_target->input()->nth(0), (*p), this);
 		}
@@ -795,7 +803,7 @@ Session::rewire_midi_selection_ports ()
 	target->input()->disconnect (this);
 
 	for (vector<string>::const_iterator p = msp.begin(); p != msp.end(); ++p) {
-		AudioEngine::instance()->disconnect (*p);
+		disconnect_port_for_rewire (*p);
 		target->input()->connect (target->input()->nth (0), (*p), this);
 	}
 }

@@ -216,6 +216,26 @@ US2400Protocol::stripable_is_locked_to_strip (boost::shared_ptr<Stripable> r) co
 	return false;
 }
 
+#ifdef MIXBUS
+struct StripableByMixbusOrder
+{
+	bool operator () (const boost::shared_ptr<Stripable> & a, const boost::shared_ptr<Stripable> & b) const
+	{
+		return a->mixbus() < b->mixbus();
+	}
+
+	bool operator () (const Stripable & a, const Stripable & b) const
+	{
+		return a.mixbus() < b.mixbus();
+	}
+
+	bool operator () (const Stripable * a, const Stripable * b) const
+	{
+		return a->mixbus() < b->mixbus();
+	}
+};
+#endif
+
 // predicate for sort call in get_sorted_stripables
 struct StripableByPresentationOrder
 {
@@ -267,7 +287,7 @@ US2400Protocol::get_sorted_stripables()
 #ifdef MIXBUS
 			if (!s->presentation_info().hidden() && !s->mixbus()) {
 #else
-			if (!s->presentation_info().hidden()) {
+			if (is_track(s) && !s->presentation_info().hidden()) {
 #endif
 				sorted.push_back (s);
 			}
@@ -287,7 +307,15 @@ US2400Protocol::get_sorted_stripables()
 		}
 	}
 
+#ifdef MIXBUS
+	if (_view_mode == Busses) {
+		sort (sorted.begin(), sorted.end(), StripableByMixbusOrder());
+	} else {
+		sort (sorted.begin(), sorted.end(), StripableByPresentationOrder());
+	}
+#else
 	sort (sorted.begin(), sorted.end(), StripableByPresentationOrder());
+#endif
 	return sorted;
 }
 
@@ -457,7 +485,7 @@ US2400Protocol::periodic ()
 		initialize();
 	}
 
-	ARDOUR::microseconds_t now_usecs = ARDOUR::get_microseconds ();
+	PBD::microseconds_t now_usecs = PBD::get_microseconds ();
 
 	{
 		Glib::Threads::Mutex::Lock lm (surfaces_lock);

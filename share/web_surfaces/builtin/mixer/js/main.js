@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,8 +22,8 @@ import { createRootContainer, Container, Dialog, Label, Button, Toggle,
             AudioStripGainFader, MidiStripGainFader,
             AudioStripMeter, MidiStripMeter  } from './tkwidget.js';
 
-(() => {
-    
+{
+
     const ardour = new ArdourClient();
 
     async function main () {
@@ -223,4 +223,4 @@ import { createRootContainer, Container, Dialog, Label, Button, Toggle,
 
     main();
 
-})();
+}

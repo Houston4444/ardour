@@ -8,7 +8,7 @@
  * Copyright (C) 2015-2018 John Emmas <john@creativepost.co.uk>
  * Copyright (C) 2015 Johannes Mueller <github@johannes-mueller.org>
  * Copyright (C) 2016-2018 Len Ovens <len@ovenwerks.net>
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,8 +39,8 @@ ArdourWebsockets::ArdourWebsockets (Session& s)
     , AbstractUI<ArdourWebsocketsUIRequest> (name ())
     , _mixer (*this)
     , _transport (*this)
-    , _feedback (*this)
     , _server (*this)
+    , _feedback (*this)
     , _dispatcher (*this)
 {
 	_components.push_back (&_mixer);

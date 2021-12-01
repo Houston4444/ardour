@@ -187,7 +187,7 @@ style "mixer_strip_entry" = "small_text"
 
 	base[NORMAL] = @bases
 	base[ACTIVE] = @bases
-	base[SELECTED] = @bases
+	base[SELECTED] = shade (0.4, @texts)
 }
 
 style "peak_display_peaked_entry" = "mixer_strip_entry"
@@ -239,7 +239,7 @@ style "treeview_display" = "small_bold_text"
 	text[ACTIVE] = { 1.0, 1.0, 1.0 }
 }
 
-style "track_header_inactive"  = "larger_text"
+style "track_header_inactive"  = "large_text"
 {
         bg[NORMAL] =      @track_header_inactive
 	bg[ACTIVE] =      @track_header_inactive
@@ -343,9 +343,14 @@ style "bigger_clock"
 	font_name = "@CLOCKFONT@ @FONT_BIGGER@"
 }
 
-style "larger_text"
+style "large_text"
 {
 	font_name = "@FONTFAMILY@ @FONT_LARGE@"
+}
+
+style "large_bold_text"
+{
+	font_name = "bold @FONT_LARGE@"
 }
 
 style "massive_clock"
@@ -442,7 +447,7 @@ style "gain_fader"
 	bg[ACTIVE] = shade (0.705, @background)
 	bg[INSENSITIVE] = shade (0.705, @background)
 
-	fg[INSENSITIVE] = shade(1.4, @background)
+	fg[INSENSITIVE] = shade(1.7, @background)
 	fg[NORMAL] = shade(1.4, @background)
 	fg[ACTIVE] = shade(1.4, @background)
 }
@@ -609,7 +614,7 @@ style "bright_when_active" = "medium_text"
 	bg[PRELIGHT] = @bright_indicator
 }
 
-style "xrun_warn"  = "larger_bold_text"
+style "xrun_warn"  = "large_bold_text"
 {
 	fg[NORMAL] = @foreground
 	fg[ACTIVE] = @foreground
@@ -763,11 +768,12 @@ style "send_strip_base" = "default"
 	# ACTIVE is used for MIDI in the presence of multiple data type
 	fg[NORMAL] = @send_fg
 	fg[ACTIVE] = darker(@foreground)
+	fg[INSENSITIVE] = darker(@send_fg)
 
 	bg[NORMAL] = @send_bg
 	bg[ACTIVE] = @send_bg
 	bg[PRELIGHT] = @send_bg
-	bg[INSENSITIVE] = @send_bg
+	bg[INSENSITIVE] = shade(0.705, @send_bg)
 	bg[SELECTED] = @send_bg
 }
 
@@ -1261,3 +1267,5 @@ widget "*Pane" style:highest "pane"
 widget "*Pane.Divider" style:highest "pane"
 widget "*VCALabelBar*" style:highest "vca_label_bar"
 widget "*TextOnBackground" style:highest "text_on_bg"
+widget "*LargeTextEntry" style:highest "large_text"
+widget "*LargeTextEntry*" style:highest "large_text"

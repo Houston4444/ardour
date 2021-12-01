@@ -32,13 +32,13 @@
 
 #include <sigc++/signal.h>
 #include "ardour/region.h"
-#include "ardour/beats_samples_converter.h"
 
 #include "canvas/fwd.h"
 
 #include "time_axis_view_item.h"
 #include "automation_line.h"
 #include "enums.h"
+#include "marker.h"
 
 class TimeAxisView;
 class RegionEditor;
@@ -78,14 +78,14 @@ public:
 
 	virtual void set_height (double);
 	virtual void set_samples_per_pixel (double);
-	virtual bool set_duration (samplecnt_t, void*);
+	virtual bool set_duration (Temporal::timecnt_t const &, void*);
 
 	void move (double xdelta, double ydelta);
 
 	void raise_to_top ();
 	void lower_to_bottom ();
 
-	bool set_position(samplepos_t pos, void* src, double* delta = 0);
+	bool set_position(Temporal::timepos_t const & pos, void* src, double* delta = 0);
 
 	virtual void show_region_editor ();
 	void hide_region_editor ();
@@ -109,13 +109,13 @@ public:
 	/** Called when a front trim is about to begin */
 	virtual void trim_front_starting () {}
 
-	bool trim_front (samplepos_t, bool, const int32_t sub_num);
+	bool trim_front (Temporal::timepos_t const &, bool);
 
 	/** Called when a start trim has finished */
 	virtual void trim_front_ending () {}
 
-	bool trim_end (samplepos_t, bool, const int32_t sub_num);
-	void move_contents (ARDOUR::sampleoffset_t);
+	bool trim_end (Temporal::timepos_t const &, bool);
+	void move_contents (Temporal::timecnt_t const &);
 	virtual void thaw_after_trim ();
 
 	void set_silent_frames (const ARDOUR::AudioIntervalResult&, double threshold);
@@ -128,9 +128,12 @@ public:
 		}
 	};
 
-	ARDOUR::MusicSample snap_sample_to_sample (ARDOUR::sampleoffset_t, bool ensure_snap = false) const;
+	Temporal::timepos_t snap_region_time_to_region_time (Temporal::timepos_t const &, bool ensure_snap = false) const;
 
 	void update_visibility ();
+
+	ARDOUR::CueMarker find_model_cue_marker (ArdourMarker*);
+	void drop_cue_marker (ArdourMarker*);
 
 protected:
 
@@ -164,6 +167,12 @@ protected:
 	virtual void reset_width_dependent_items (double pixel_width);
 
 	virtual void color_handler () {}
+	virtual void parameter_changed (std::string const&);
+
+	void maybe_raise_cue_markers ();
+
+	Temporal::timecnt_t region_relative_distance (Temporal::timecnt_t const &, Temporal::TimeDomain desired_time_domain);
+	Temporal::timecnt_t source_relative_distance (Temporal::timecnt_t const &, Temporal::TimeDomain desired_time_domain);
 
 	boost::shared_ptr<ARDOUR::Region> _region;
 
@@ -198,6 +207,25 @@ protected:
 	std::list<ArdourCanvas::Rectangle*> _silent_threshold_samples;
 	/** a text item to display strip silence statistics */
 	ArdourCanvas::Text* _silence_text;
+
+private:
+	void update_xrun_markers ();
+	std::list<std::pair<samplepos_t, ArdourCanvas::Arrow*> > _xrun_markers;
+	bool _xrun_markers_visible;
+
+	void update_cue_markers ();
+
+	struct ViewCueMarker {
+		ArdourMarker* view_marker;
+		ARDOUR::CueMarker     model_marker;
+
+		ViewCueMarker (ArdourMarker* m, ARDOUR::CueMarker const & c) : view_marker (m), model_marker (c) {}
+		~ViewCueMarker();
+	};
+
+	typedef std::list<ViewCueMarker*> ViewCueMarkers;
+	ViewCueMarkers _cue_markers;
+	bool _cue_markers_visible;
 };
 
 #endif /* __gtk_ardour_region_view_h__ */

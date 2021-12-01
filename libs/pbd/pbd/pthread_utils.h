@@ -48,20 +48,15 @@
 #include "pbd/libpbd_visibility.h"
 #include "pbd/signals.h"
 
-#ifdef __APPLE__
-# define PBD_RT_STACKSIZE_PROC 0x80000 // 512kB
-#else
-# define PBD_RT_STACKSIZE_PROC 0x20000 // 128kB
-#endif
-
+#define PBD_RT_STACKSIZE_PROC 0x80000 // 512kB
 #define PBD_RT_STACKSIZE_HELP 0x08000 // 32kB
 
 /* these are relative to sched_get_priority_max()
  * see pbd_absolute_rt_priority()
  */
-#define PBD_RT_PRI_MAIN -20
-#define PBD_RT_PRI_MIDI -21
-#define PBD_RT_PRI_PROC -22
+# define PBD_RT_PRI_MAIN pbd_pthread_priority (THREAD_MAIN)
+# define PBD_RT_PRI_MIDI pbd_pthread_priority (THREAD_MIDI)
+# define PBD_RT_PRI_PROC pbd_pthread_priority (THREAD_PROC)
 
 LIBPBD_API int  pthread_create_and_store (std::string name, pthread_t  *thread, void * (*start_routine)(void *), void * arg);
 LIBPBD_API void pthread_cancel_one (pthread_t thread);
@@ -69,6 +64,14 @@ LIBPBD_API void pthread_cancel_all ();
 LIBPBD_API void pthread_kill_all (int signum);
 LIBPBD_API const char* pthread_name ();
 LIBPBD_API void pthread_set_name (const char* name);
+
+enum PBDThreadClass {
+	THREAD_MAIN, // main audio I/O thread
+	THREAD_MIDI, // MIDI I/O threads
+	THREAD_PROC // realtime worker
+};
+
+LIBPBD_API int pbd_pthread_priority (PBDThreadClass);
 
 LIBPBD_API int pbd_pthread_create (
 		const size_t stacksize,
@@ -85,7 +88,7 @@ LIBPBD_API int pbd_realtime_pthread_create (
 
 LIBPBD_API int  pbd_absolute_rt_priority (int policy, int priority);
 LIBPBD_API int  pbd_set_thread_priority (pthread_t, const int policy, int priority);
-LIBPBD_API bool pbd_mach_set_realtime_policy (pthread_t thread_id, double period_ns);
+LIBPBD_API bool pbd_mach_set_realtime_policy (pthread_t thread_id, double period_ns, bool main);
 
 namespace PBD {
 	LIBPBD_API extern void notify_event_loops_about_thread_creation (pthread_t, const std::string&, int requests = 256);

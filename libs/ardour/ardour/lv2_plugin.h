@@ -31,6 +31,7 @@
 #include <boost/enable_shared_from_this.hpp>
 
 #include "ardour/plugin.h"
+#include "ardour/plugin_scan_result.h"
 #include "ardour/uri_map.h"
 #include "ardour/worker.h"
 #include "pbd/ringbuffer.h"
@@ -85,7 +86,6 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	std::string get_parameter_docs(uint32_t which) const;
 	int         get_parameter_descriptor (uint32_t which, ParameterDescriptor&) const;
 	uint32_t    nth_parameter (uint32_t port, bool& ok) const;
-	bool        get_layout (uint32_t which, UILayoutHint&) const;
 
 	IOPortDescription describe_io_port (DataType dt, bool input, uint32_t id) const;
 
@@ -138,8 +138,6 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	void set_state_dir (const std::string& d = "");
 
 	int      set_state (const XMLNode& node, int version);
-	bool     save_preset (std::string uri);
-	void     remove_preset (std::string uri);
 	bool     load_preset (PresetRecord);
 	std::string current_preset () const;
 
@@ -188,10 +186,10 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 		_ui_scale_factor = s;
 	}
 	static void set_global_ui_style_boxy (bool yn) {
-		_ui_style_boxy = yn;
+		_ui_style_boxy = yn ? 1 : 0;
 	}
 	static void set_global_ui_style_flat (bool yn) {
-		_ui_style_flat = yn;
+		_ui_style_flat = yn ? 1 : 0;
 	}
 	static void set_main_window_id (unsigned long id) {
 		_ui_transient_win_id = id;
@@ -343,8 +341,8 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 
 	// Options passed to plugin
 	int32_t              _seq_size;
-	static bool          _ui_style_flat;
-	static bool          _ui_style_boxy;
+	static int32_t       _ui_style_flat;
+	static int32_t       _ui_style_boxy;
 	static uint32_t      _ui_background_color;
 	static uint32_t      _ui_foreground_color;
 	static uint32_t      _ui_contrasting_color;
@@ -396,7 +394,7 @@ public:
 	LV2PluginInfo (const char* plugin_uri);
 	~LV2PluginInfo ();
 
-	static PluginInfoList* discover ();
+	static PluginInfoList* discover (boost::function <void (std::string const&, PluginScanLogEntry::PluginScanResult, std::string const&, bool)> cb);
 
 	PluginPtr load (Session& session);
 	std::vector<Plugin::PresetRecord> get_presets (bool user_only) const;

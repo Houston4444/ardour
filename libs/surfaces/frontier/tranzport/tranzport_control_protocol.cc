@@ -560,7 +560,7 @@ TranzportControlProtocol::show_bbt (samplepos_t where)
 {
 	if ((where != last_where) || lcd_isdamaged(1,9,8)) {
 		char buf[16];
-		Timecode::BBT_Time bbt;
+		Temporal::BBT_Time bbt;
 		session->tempo_map().bbt_time (where, bbt);
 		sprintf (buf, "%03" PRIu32 "|%02" PRIu32 "|%04" PRIu32, bbt.bars,bbt.beats,bbt.ticks);
 		last_bars = bbt.bars;
@@ -1718,6 +1718,7 @@ TranzportControlProtocol::shuttle ()
 			session->request_transport_speed_nonzero (get_transport_speed() - 0.1);
 		}
 	}
+	session->request_roll ();
 }
 
 void

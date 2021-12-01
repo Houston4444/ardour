@@ -583,16 +583,19 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 
 	if (ports.size () > 0) {
 
-		for (vector<string>::const_iterator s = ports.begin(); s != ports.end(); ) {
+		for (vector<string>::const_iterator s = ports.begin(); s != ports.end(); ++s) {
 
 			std::string const p = *s;
 
-			if (!system->has_port(p) &&
-			    !bus->has_port(p) &&
-			    !track->has_port(p) &&
-			    !sidechain->has_port(p) &&
-			    !program->has_port(p) &&
-			    !other->has_port(p)) {
+			if (allow_dups || (
+			        !system->has_port(p)
+			     && !bus->has_port(p)
+			     && !track->has_port(p)
+			     && !sidechain->has_port(p)
+			     && !program->has_port(p)
+			     && !other->has_port(p)
+			    )
+			   ) {
 
 				/* special hack: ignore MIDI ports labelled Midi-Through. these
 				   are basically useless and mess things up for default
@@ -600,7 +603,6 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 				*/
 
 				if (p.find ("Midi-Through") != string::npos || p.find ("Midi Through") != string::npos) {
-					++s;
 					continue;
 				}
 
@@ -616,7 +618,6 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 
 				if ((lp.find (monitor) != string::npos) &&
 				    (lp.find (lpn) != string::npos)) {
-					++s;
 					continue;
 				}
 
@@ -638,13 +639,14 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 
 					PortFlags flags (AudioEngine::instance()->port_engine().get_port_flags (ph));
 
-					if (port_has_prefix (p, lpnc)) {
+					if (flags & Hidden ) {
+						continue;
+					} else if (port_has_prefix (p, lpnc)) {
 
 						/* we own this port (named after the program) */
 
 						/* Hide scene ports for now */
 						if (p.find (_("Scene ")) != string::npos) {
-							++s;
 							continue;
 						}
 
@@ -659,15 +661,13 @@ PortGroupList::gather (ARDOUR::Session* session, ARDOUR::DataType type, bool inp
 					}
 				}
 			}
-
-			++s;
 		}
 	}
 
 	for (DataType::iterator i = DataType::begin(); i != DataType::end(); ++i) {
 		if (!extra_system[*i].empty()) {
 			boost::shared_ptr<Bundle> b = make_bundle_from_ports (extra_system[*i], *i, inputs);
-			system->add_bundle (b);
+			system->add_bundle (b, allow_dups);
 		}
 	}
 

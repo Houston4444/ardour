@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2020 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2018-2021 Robin Gareus <robin@gareus.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,7 +39,7 @@ public:
 	bool add_impdata (
 	    uint32_t                    c_in,
 	    uint32_t                    c_out,
-	    boost::shared_ptr<Readable> r,
+	    boost::shared_ptr<AudioReadable> r,
 	    float                       gain      = 1.0,
 	    uint32_t                    pre_delay = 0,
 	    sampleoffset_t              offset    = 0,
@@ -61,12 +61,13 @@ protected:
 	uint32_t _max_size;
 	uint32_t _offset;
 	bool     _configured;
+	bool     _threaded;
 
 private:
-	class ImpData : public Readable
+	class ImpData : public AudioReadable
 	{
 	public:
-		ImpData (uint32_t ci, uint32_t co, boost::shared_ptr<Readable> r, float g, float d, sampleoffset_t s = 0, samplecnt_t l = 0, uint32_t c = 0)
+		ImpData (uint32_t ci, uint32_t co, boost::shared_ptr<AudioReadable> r, float g, float d, sampleoffset_t s = 0, samplecnt_t l = 0, uint32_t c = 0)
 		    : c_in (ci)
 		    , c_out (co)
 		    , gain (g)
@@ -86,8 +87,8 @@ private:
 			return _readable->read (s, pos + _offset, cnt, _channel);
 		}
 
-		samplecnt_t readable_length () const {
-			samplecnt_t rl = _readable->readable_length ();
+		samplecnt_t readable_length_samples () const {
+			samplecnt_t rl = _readable->readable_length_samples ();
 			if (rl < _offset) {
 				return 0;
 			} else if (_length > 0) {
@@ -102,7 +103,7 @@ private:
 		}
 
 	private:
-		boost::shared_ptr<Readable> _readable;
+		boost::shared_ptr<AudioReadable> _readable;
 
 		sampleoffset_t _offset;
 		samplecnt_t    _length;
@@ -164,11 +165,14 @@ public:
 
 	Convolver (Session&, std::string const&, IRChannelConfig irc = Mono, IRSettings irs = IRSettings ());
 
-	void run_mono (float*, uint32_t);
-	void run_stereo (float* L, float* R, uint32_t);
+	void run_mono_buffered (float*, uint32_t);
+	void run_stereo_buffered (float* L, float* R, uint32_t);
+
+	void run_mono_no_latency (float*, uint32_t);
+	void run_stereo_no_latency (float* L, float* R, uint32_t);
 
 private:
-	std::vector<boost::shared_ptr<Readable> > _readables;
+	std::vector<boost::shared_ptr<AudioReadable> > _readables;
 
 	IRChannelConfig _irc;
 	IRSettings      _ir_settings;

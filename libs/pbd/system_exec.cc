@@ -34,6 +34,7 @@
 #ifdef PLATFORM_WINDOWS
 #include <windows.h>
 #else
+#include <poll.h>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -835,17 +836,46 @@ SystemExec::output_interposer ()
 	for (;fcntl (rfd, F_GETFL) != -1;) {
 		r = read (rfd, buf, BUFSIZ - 1);
 		if (r < 0 && (errno == EINTR || errno == EAGAIN)) {
-			fd_set rfds;
-			struct timeval tv;
-			FD_ZERO (&rfds);
-			FD_SET (rfd, &rfds);
-			tv.tv_sec = 0;
-			tv.tv_usec = 10000;
-			int rv = select (1, &rfds, NULL, NULL, &tv);
+
+#ifdef __APPLE__
+again:
+#endif
+
+			/* wait till ready to read */
+			struct pollfd pfd;
+
+			pfd.fd = rfd;
+			pfd.events = POLLIN|POLLERR|POLLHUP|POLLNVAL;
+
+#ifdef __APPLE__
+			/* on macOS poll() will not return when the pipe
+			 * is closed in an EOF state.
+			 * Work around with a timeout and fail next time
+			 * when with POLLNVAL.
+			 */
+			int rv = poll (&pfd, 1, 1000);
+#else
+			int rv = poll (&pfd, 1, -1);
+#endif
+
 			if (rv == -1) {
 				break;
 			}
-			continue;
+
+			if (pfd.revents & (POLLERR|POLLHUP|POLLNVAL)) {
+				break;
+			}
+
+			if (rv == 1 && pfd.revents & POLLIN) {
+				/* back to read(2) call */
+				continue;
+			}
+#ifdef __APPLE__
+			if (rv == 0) {
+				/* Timeout, poll again */
+				goto again;
+			}
+#endif
 		}
 		if (r <= 0) {
 			break;

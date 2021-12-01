@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "pbd/fastlog.h"
+#include "pbd/g_atomic_compat.h"
 
 #include "ardour/libardour_visibility.h"
 #include "ardour/processor.h"
@@ -99,14 +100,13 @@ private:
 	 */
 	ChanCount current_meters;
 
-	volatile gint _reset_dpm;
-	volatile gint _reset_max;
+	GATOMIC_QUAL gint _reset_dpm;
+	GATOMIC_QUAL gint _reset_max;
 
 	uint32_t           _bufcnt;
 	std::vector<float> _peak_buffer;     // internal, integrate
 	std::vector<float> _peak_power;      // includes accurate falloff, hence dB
 	std::vector<float> _max_peak_signal; // dB calculation is done on demand
-	float              _combined_peak;   // Mackie surfaces expect the highest peak of all track channels
 
 	std::vector<Kmeterdsp*>  _kmeter;
 	std::vector<Iec1ppmdsp*> _iec1meter;

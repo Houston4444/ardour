@@ -197,7 +197,7 @@ TransportMasterManager::pre_process_transport_masters (pframes_t nframes, sample
 
 	if (!_current_master->ok()) {
 		/* stop */
-		_session->request_transport_speed (0.0, false, _current_master->request_type());
+		_session->request_stop (false, false, _current_master->request_type());
 		DEBUG_TRACE (DEBUG::Slave, "no roll2 - master has failed\n");
 		_master_invalid_this_cycle = true;
 		return 1.0;
@@ -677,6 +677,21 @@ TransportMasterManager::master_by_type (SyncSource src) const
 	return boost::shared_ptr<TransportMaster> ();
 }
 
+boost::shared_ptr<TransportMaster>
+TransportMasterManager::master_by_port (boost::shared_ptr<Port> const &p) const
+{
+	Glib::Threads::RWLock::ReaderLock lm (lock);
+
+	for (TransportMasters::const_iterator tm = _transport_masters.begin(); tm != _transport_masters.end(); ++tm) {
+		if ((*tm)->port() == p) {
+			return *tm;
+		}
+	}
+
+	return boost::shared_ptr<TransportMaster> ();
+
+}
+
 void
 TransportMasterManager::engine_stopped ()
 {
@@ -721,19 +736,6 @@ TransportMasterManager::restart ()
 		if (TransportMasterManager::instance().set_default_configuration ()) {
 			error << _("Cannot initialize transport master manager") << endmsg;
 			/* XXX now what? */
-		}
-	}
-}
-
-void
-TransportMasterManager::reconnect_ports ()
-{
-	DEBUG_TRACE (DEBUG::Slave, "reconnecting all transport master ports\n");
-	{
-		Glib::Threads::RWLock::ReaderLock lm (lock);
-
-		for (TransportMasters::const_iterator tm = _transport_masters.begin(); tm != _transport_masters.end(); ++tm) {
-			(*tm)->connect_port_using_state ();
 		}
 	}
 }

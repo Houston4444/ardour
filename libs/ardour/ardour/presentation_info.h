@@ -29,6 +29,7 @@
 #include "pbd/signals.h"
 #include "pbd/stateful.h"
 #include "pbd/properties.h"
+#include "pbd/g_atomic_compat.h"
 
 #include "ardour/libardour_visibility.h"
 
@@ -140,6 +141,7 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 	static const Flag Route;     /* mask for any route (bus or track */
 	static const Flag Track;     /* mask to use for any track */
 	static const Flag Bus;       /* mask to use for any bus */
+	static const Flag MidiIndicatingFlags; /* MidiTrack or MidiBus */
 
 	typedef uint32_t order_t;
 	typedef uint32_t color_t;
@@ -274,7 +276,7 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 
 	static PBD::PropertyChange _pending_static_changes;
 	static Glib::Threads::Mutex static_signal_lock;
-	static int _change_signal_suspended;
+	static GATOMIC_QUAL gint   _change_signal_suspended;
 
 	static int selection_counter;
 };

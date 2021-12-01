@@ -25,8 +25,6 @@
 
 #include "pbd/compose.h"
 #include "pbd/error.h"
-#include "pbd/i18n.h"
-#include "pbd/abstract_ui.cc" // instantiate template
 
 #include "ardour/async_midi_port.h"
 #include "ardour/audioengine.h"
@@ -43,6 +41,8 @@
 #include "m2_map_mikro.h"
 
 #include "canvas.h"
+
+#include "pbd/abstract_ui.cc" // instantiate template, includes i18n
 
 using namespace ARDOUR;
 using namespace PBD;
@@ -83,7 +83,7 @@ class TestLayout : public Maschine2Layout
 
 			std::vector<std::string> strs;
 			strs.push_back("T|sg1");
-			strs.push_back("Test2asdjasdlkjasldkjasd");
+			strs.push_back("Test2");
 			strs.push_back("Test3");
 			strs.push_back("Test4");
 			strs.push_back("Test5");

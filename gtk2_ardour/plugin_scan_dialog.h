@@ -19,30 +19,43 @@
 #ifndef __gtk2_ardour_plugin_scan_dialog_h__
 #define __gtk2_ardour_plugin_scan_dialog_h__
 
-#include <gtkmm/label.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
+#include <gtkmm/label.h>
 #include <gtkmm/progressbar.h>
+#include <gtkmm/sizegroup.h>
+
+#include "widgets/ardour_button.h"
 
 #include "ardour_dialog.h"
 
 class PluginScanDialog : public ArdourDialog
 {
-  public:
-	PluginScanDialog (bool cache_only, bool verbose);
+public:
+	PluginScanDialog (bool cache_only, bool verbose, Gtk::Window* parent = NULL);
 	void start ();
 
-  private:
-	Gtk::Label       message;
-	Gtk::ProgressBar pbar;
-	Gtk::HBox        tbox;
-	Gtk::Button      timeout_button;
-	Gtk::Button      cancel_button;
-	bool             cache_only;
-	bool             verbose;
+private:
+	Gtk::Frame                   format_frame;
+	Gtk::Label                   message;
+	Gtk::Label                   timeout_info;
+	Gtk::ProgressBar             pbar;
+	ArdourWidgets::ArdourButton  btn_timeout_enable;
+	ArdourWidgets::ArdourButton  btn_cancel_all;
+	ArdourWidgets::ArdourButton  btn_cancel_one;
+	Glib::RefPtr<Gtk::SizeGroup> btn_size_group;
 
-	void cancel_plugin_scan ();
-	void cancel_plugin_timeout ();
+	bool cache_only;
+	bool verbose;
+	bool delayed_close;
+
+	void on_hide ();
+
+	void cancel_scan_all ();
+	void cancel_scan_one ();
+	void enable_scan_timeout ();
+	void disable_per_plugin_interaction ();
+
 	void plugin_scan_timeout (int timeout);
 	void message_handler (std::string type, std::string plugin, bool can_cancel);
 

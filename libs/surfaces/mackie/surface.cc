@@ -30,19 +30,20 @@
 
 #include <glibmm/convert.h>
 
-#include "pbd/stacktrace.h"
-
 #include "midi++/port.h"
 
 #include "ardour/audioengine.h"
 #include "ardour/automation_control.h"
+#include "ardour/chan_count.h"
 #include "ardour/debug.h"
 #include "ardour/route.h"
+#include "ardour/meter.h"
 #include "ardour/panner.h"
 #include "ardour/panner_shell.h"
 #include "ardour/profile.h"
 #include "ardour/rc_configuration.h"
 #include "ardour/session.h"
+#include "ardour/types.h"
 #include "ardour/utils.h"
 
 #include <gtkmm2ext/gui_thread.h>
@@ -74,6 +75,7 @@ using ARDOUR::Stripable;
 using ARDOUR::Panner;
 using ARDOUR::Profile;
 using ARDOUR::AutomationControl;
+using ARDOUR::ChanCount;
 using namespace ArdourSurface;
 using namespace Mackie;
 
@@ -91,9 +93,9 @@ static MidiByteArray mackie_sysex_hdr_xt  (5, MIDI::sysex, 0x0, 0x0, 0x66, 0x15)
 
 //QCON
 // The MCU sysex header for QCon Control surface
-static MidiByteArray mackie_sysex_hdr_qcon  (5, MIDI::sysex, 0x0, 0x0, 0x66, 0x14); 
+static MidiByteArray mackie_sysex_hdr_qcon  (5, MIDI::sysex, 0x0, 0x0, 0x66, 0x14);
 
-// The MCU sysex header for QCon Control - extender 
+// The MCU sysex header for QCon Control - extender
 // The extender differs from Mackie by 4th bit - it's same like for main control surface (for display)
 static MidiByteArray mackie_sysex_hdr_xt_qcon  (5, MIDI::sysex, 0x0, 0x0, 0x66, 0x14);
 
@@ -110,6 +112,8 @@ Surface::Surface (MackieControlProtocol& mcp, const std::string& device_name, ui
 	, _jog_wheel (0)
 	, _master_fader (0)
 	, _last_master_gain_written (-0.0f)
+	, _has_master_display (false)
+	, _has_master_meter (false)
 	, connection_state (0)
 	, is_qcon (false)
 	, input_source (0)
@@ -125,6 +129,8 @@ Surface::Surface (MackieControlProtocol& mcp, const std::string& device_name, ui
 	//Store Qcon flag
 	if( mcp.device_info().is_qcon() ) {
 		is_qcon = true;
+		_has_master_display = (mcp.device_info().has_master_fader() && mcp.device_info().has_qcon_second_lcd());
+		_has_master_meter = mcp.device_info().has_qcon_master_meters();
 	} else {
 		is_qcon = false;
 	}
@@ -309,14 +315,14 @@ const MidiByteArray&
 Surface::sysex_hdr() const
 {
 	switch  (_stype) {
-	case mcu: 
+	case mcu:
 		if (_mcp.device_info().is_qcon()) {
 			return mackie_sysex_hdr_qcon;
 		} else {
 			return mackie_sysex_hdr;
 		}
 	case ext:
-		if(_mcp.device_info().is_qcon()) {		
+		if(_mcp.device_info().is_qcon()) {
 			return mackie_sysex_hdr_xt_qcon;
 		} else {
 			return mackie_sysex_hdr_xt;
@@ -407,13 +413,11 @@ Surface::master_monitor_may_have_changed ()
 void
 Surface::setup_master ()
 {
-	boost::shared_ptr<Stripable> m;
-
-	if ((m = _mcp.get_session().monitor_out()) == 0) {
-		m = _mcp.get_session().master_out();
+	if ((_master_stripable = _mcp.get_session().monitor_out()) == 0) {
+		_master_stripable = _mcp.get_session().master_out();
 	}
 
-	if (!m) {
+	if (!_master_stripable) {
 		if (_master_fader) {
 			_master_fader->set_control (boost::shared_ptr<AutomationControl>());
 		}
@@ -425,6 +429,7 @@ Surface::setup_master ()
 		Groups::iterator group_it;
 		Group* master_group;
 		group_it = groups.find("master");
+		DeviceInfo device_info = _mcp.device_info();
 
 		if (group_it == groups.end()) {
 			groups["master"] = master_group = new Group ("master");
@@ -432,9 +437,8 @@ Surface::setup_master ()
 			master_group = group_it->second;
 		}
 
-		_master_fader = dynamic_cast<Fader*> (Fader::factory (*this, _mcp.device_info().strip_cnt(), "master", *master_group));
+		_master_fader = dynamic_cast<Fader*> (Fader::factory (*this, device_info.strip_cnt(), "master", *master_group));
 
-		DeviceInfo device_info = _mcp.device_info();
 		GlobalButtonInfo master_button = device_info.get_global_button(Button::MasterFaderTouch);
 		Button* bb = dynamic_cast<Button*> (Button::factory (
 			                                    *this,
@@ -450,10 +454,15 @@ Surface::setup_master ()
 		master_connection.disconnect ();
 	}
 
-	_master_fader->set_control (m->gain_control());
-	m->gain_control()->Changed.connect (master_connection, MISSING_INVALIDATOR, boost::bind (&Surface::master_gain_changed, this), ui_context());
+	_master_fader->set_control (_master_stripable->gain_control());
+	_master_stripable->gain_control()->Changed.connect (master_connection, MISSING_INVALIDATOR, boost::bind (&Surface::master_gain_changed, this), ui_context());
 	_last_master_gain_written = FLT_MAX; /* some essentially impossible value */
 	master_gain_changed ();
+
+	if (_has_master_display) {
+		_master_stripable->PropertyChanged.connect (master_connection, MISSING_INVALIDATOR, boost::bind (&Surface::master_property_changed, this, _1), ui_context());
+		show_master_name();
+	}
 }
 
 void
@@ -473,10 +482,137 @@ Surface::master_gain_changed ()
 		return;
 	}
 
-	DEBUG_TRACE (DEBUG::MackieControl, "Surface::master_gain_changed: updating surface master fader\n");
+	DEBUG_TRACE (DEBUG::MackieControl, string_compose("Surface::master_gain_changed: val %1, pos %2\n", ac->get_value(), normalized_position));
 
-	_port->write (_master_fader->set_position (normalized_position));
+	write (_master_fader->set_position (normalized_position));
 	_last_master_gain_written = normalized_position;
+}
+
+void
+Surface::master_property_changed (const PropertyChange& what_changed)
+{
+	if (what_changed.contains (ARDOUR::Properties::name)) {
+		DEBUG_TRACE (DEBUG::MackieControl, "master_property_changed\n");
+
+		string fullname = string();
+		if (!_master_stripable) {
+			fullname = string();
+		} else {
+			fullname = _master_stripable->name();
+		}
+
+		if (fullname.length() <= 6) {
+			pending_display[0] = fullname;
+		} else {
+			pending_display[0] = PBD::short_version (fullname, 6);
+		}
+	}
+}
+
+void
+Surface::master_meter_changed ()
+{
+	if (!_has_master_meter) {
+		return;
+	}
+
+	if (!_master_stripable) {
+		return;
+	}
+
+	ChanCount count = _master_stripable->peak_meter()->output_streams();
+
+	for (unsigned i = 0; i < 2 && i < count.n_audio(); ++i) {
+		int segment;
+		float dB = _master_stripable->peak_meter()->meter_level (i, ARDOUR::MeterPeak);
+		std::pair<bool,float> result = Meter::calculate_meter_over_and_deflection(dB);
+
+		MidiByteArray msg;
+
+		/* we can use up to 13 segments */
+
+		segment = lrintf ((result.second/115.0) * 13.0);
+		write (MidiByteArray (2, 0xd1, (i<<4) | segment));
+	}
+}
+
+void
+Surface::show_master_name ()
+{
+	string fullname = string();
+	if (!_master_stripable) {
+		fullname = string();
+	} else {
+		fullname = _master_stripable->name();
+	}
+
+	DEBUG_TRACE (DEBUG::MackieControl, string_compose ("show_master_name: name %1\n", fullname));
+
+	if (fullname.length() <= 6) {
+		pending_display[0] = fullname;
+	} else {
+		pending_display[0] = PBD::short_version (fullname, 6);
+	}
+}
+
+MidiByteArray
+Surface::master_display (uint32_t line_number, const std::string& line)
+{
+	/* The second lcd on the Qcon Pro X master unit uses a 6 character label instead of 7.
+	*  That allows a 9th label for the master fader and since there is a space at the end
+	*  use all 6 characters for text.
+	*
+	*  Format: _6Char#1_6Char#2_6Char#3_6Char#4_6Char#5_6Char#6_6Char#7_6Char#8_6Char#9_
+	*
+	*  The _ in the format is a space that is inserted as label display seperators
+	*
+	*  The second LCD is an extention to the MCP with a different sys ex header.
+	*/
+
+	MidiByteArray retval;
+
+	DEBUG_TRACE (DEBUG::MackieControl, string_compose ("master display: line %1 = %2\n", line_number, line));
+
+	retval <<  MidiByteArray (5, MIDI::sysex, 0x0, 0x0, 0x67, 0x15);
+	// code for display
+	retval << 0x13;
+
+	// offset (0 to 0x37 first line, 0x38 to 0x6f for second line)
+	retval << (49 + (line_number * 0x38));	// 9th position
+
+	// ascii data to display. @param line is UTF-8
+	string ascii = Glib::convert_with_fallback (line, "UTF-8", "ISO-8859-1", "_");
+	string::size_type len = ascii.length();
+	if (len > 6) {
+		ascii = ascii.substr (0, 6);
+		len = 5;
+	}
+	retval << ascii;
+	// pad with " " out to N chars
+	for (unsigned i = len; i < 6; ++i) {
+		retval << ' ';
+	}
+
+	// Space as the last character
+	retval << ' ';
+
+	// sysex trailer
+	retval << MIDI::eox;
+
+	return retval;
+}
+
+MidiByteArray
+Surface::blank_master_display (uint32_t line_number)
+{
+	if (line_number == 0) {
+		return MidiByteArray (15, MIDI::sysex, 0x0, 0x0, 0x67, 0x15, 0x13, 0x31
+                      , 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, MIDI::eox);
+	}
+	else {
+		return MidiByteArray (15, MIDI::sysex, 0x0, 0x0, 0x67, 0x15, 0x13, 0x69
+                      , 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, MIDI::eox);
+	}
 }
 
 float
@@ -562,7 +698,7 @@ Surface::handle_midi_pitchbend_message (MIDI::Parser&, MIDI::pitchbend_t pb, uin
 	 */
 
 	DEBUG_TRACE (DEBUG::MackieControl, string_compose ("Surface::handle_midi_pitchbend_message on port %3, fader = %1 value = %2 (%4)\n",
-							   fader_id, pb, _number, pb/16384.0));
+							   fader_id, pb, _number, pb/16383.0));
 
 	if (_mcp.device_info().no_handshake()) {
 		turn_it_on ();
@@ -572,14 +708,14 @@ Surface::handle_midi_pitchbend_message (MIDI::Parser&, MIDI::pitchbend_t pb, uin
 
 	if (fader) {
 		Strip* strip = dynamic_cast<Strip*> (&fader->group());
-		float pos = pb / 16384.0;
+		float pos = pb / 16383.0;
 		if (strip) {
 			strip->handle_fader (*fader, pos);
 		} else {
 			DEBUG_TRACE (DEBUG::MackieControl, "Handling master fader\n");
 			/* master fader */
 			fader->set_value (pos); // alter master gain
-			_port->write (fader->set_position (pos)); // write back value (required for servo)
+			write (fader->set_position (pos)); // write back value (required for servo)
 		}
 	} else {
 		DEBUG_TRACE (DEBUG::MackieControl, "fader not found\n");
@@ -717,9 +853,9 @@ Surface::handle_midi_sysex (MIDI::Parser &, MIDI::byte * raw_bytes, size_t count
 		if (_mcp.device_info().is_qcon()) {
 			mackie_sysex_hdr_qcon[4] = bytes[4];
 		} else {
-			mackie_sysex_hdr[4] = bytes[4]; 
+			mackie_sysex_hdr[4] = bytes[4];
 		}
-		
+
 	} else {
 		if (_mcp.device_info().is_qcon()) {
 			mackie_sysex_hdr_xt_qcon[4] = bytes[4];
@@ -920,6 +1056,21 @@ Surface::zero_all ()
 
 	if (_mcp.device_info().has_master_fader () && _master_fader) {
 		_port->write (_master_fader->zero ());
+
+		if (_has_master_display) {
+			DEBUG_TRACE (DEBUG::MackieControl, "Surface::zero_all: Clearing Master display\n");
+			_port->write (blank_master_display(0));
+			_port->write (blank_master_display(1));
+			pending_display[0] = string();
+			pending_display[1] = string();
+			current_display[0] = string();
+			current_display[1] = string();
+		}
+		if (_has_master_meter) {
+			_port->write (MidiByteArray (2, 0xd1, 0x00));
+			_port->write (MidiByteArray (2, 0xd1, 0x10));
+		}
+
 	}
 
 	// zero all strips
@@ -953,17 +1104,32 @@ Surface::zero_controls ()
 }
 
 void
-Surface::periodic (uint64_t now_usecs)
+Surface::periodic (PBD::microseconds_t now_usecs)
 {
 	master_gain_changed();
+	master_meter_changed();
 	for (Strips::iterator s = strips.begin(); s != strips.end(); ++s) {
 		(*s)->periodic (now_usecs);
 	}
 }
 
 void
-Surface::redisplay (ARDOUR::microseconds_t now, bool force)
+Surface::redisplay (PBD::microseconds_t now, bool force)
 {
+	if (_has_master_display) {
+		if (force || (current_display[0] != pending_display[0])) {
+			DEBUG_TRACE (DEBUG::MackieControl, "Surface::redisplay: Updating master display line 0\n");
+			write (master_display (0, pending_display[0]));
+			current_display[0] = pending_display[0];
+		}
+
+		if (force || (current_display[1] != pending_display[1])) {
+			DEBUG_TRACE (DEBUG::MackieControl, "Surface::redisplay: Updating master display line 1\n");
+			write (master_display (1, pending_display[1]));
+			current_display[1] = pending_display[1];
+		}
+	}
+
 	for (Strips::iterator s = strips.begin(); s != strips.end(); ++s) {
 		(*s)->redisplay (now, force);
 	}
@@ -1020,12 +1186,12 @@ translate_seven_segment (char achar)
 {
 	achar = toupper (achar);
 
-	if  (achar >= 0x40 && achar <= 0x60) {
+	if  (achar >= 0x40 && achar <= 0x5f) {
 		return achar - 0x40;
-	} else if  (achar >= 0x21 && achar <= 0x3f) {
+	} else if  (achar >= 0x20 && achar <= 0x3f) {
 		return achar;
 	} else {
-		return 0x00;
+		return 0x20;
 	}
 }
 
@@ -1104,6 +1270,7 @@ Surface::update_flip_mode_display ()
 void
 Surface::subview_mode_changed ()
 {
+	show_master_name();
 	for (Strips::iterator s = strips.begin(); s != strips.end(); ++s) {
 		(*s)->subview_mode_changed ();
 	}
@@ -1217,11 +1384,21 @@ Surface::say_hello ()
 void
 Surface::next_jog_mode ()
 {
+	if (_jog_wheel) {
+		if (_jog_wheel->mode() == JogWheel::scroll) {
+			_jog_wheel->set_mode (JogWheel::shuttle);
+		} else {
+			_jog_wheel->set_mode (JogWheel::scroll);
+		}
+	}
 }
 
 void
-Surface::set_jog_mode (JogWheel::Mode)
+Surface::set_jog_mode (JogWheel::Mode m)
 {
+	if (_jog_wheel) {
+		_jog_wheel->set_mode (m);
+	}
 }
 
 bool

@@ -109,9 +109,9 @@
     <ColorAlias name="ghost track wave clip" alias="neutral:background"/>
     <ColorAlias name="ghost track wave fill" alias="neutral:foregroundest"/>
     <ColorAlias name="ghost track zero line" alias="neutral:foreground2"/>
-    <ColorAlias name="grid line major" alias="neutral:foregroundest"/>
+    <ColorAlias name="grid line major" alias="neutral:backgroundest"/>
     <ColorAlias name="grid line micro" alias="neutral:midground"/>
-    <ColorAlias name="grid line minor" alias="neutral:foreground2"/>
+    <ColorAlias name="grid line minor" alias="neutral:background2"/>
     <ColorAlias name="gtk_arm" alias="alert:red"/>
     <ColorAlias name="gtk_audio_bus" alias="widget:blue darker"/>
     <ColorAlias name="gtk_audio_track" alias="theme:bg1"/>
@@ -300,7 +300,7 @@
     <ColorAlias name="plugin automation state button: fill active" alias="alert:orange"/>
     <ColorAlias name="plugin bypass button: led active" alias="alert:red"/>
     <ColorAlias name="pluginlist filter button: fill active" alias="widget:bg"/>
-    <ColorAlias name="pluginlist hide button: led active" alias="alert:cyan"/>
+    <ColorAlias name="pluginlist radio button: led active" alias="alert:cyan"/>
     <ColorAlias name="pluginui toggle: fill" alias="widget:bg"/>
     <ColorAlias name="pluginui toggle: fill active" alias="widget:blue"/>
     <ColorAlias name="processor automation line" alias="theme:bg1"/>
@@ -386,7 +386,6 @@
     <ColorAlias name="send pan" alias="theme:contrasting alt"/>
     <ColorAlias name="shuttle" alias="widget:bg"/>
     <ColorAlias name="shuttle bg" alias="neutral:backgroundest"/>
-    <ColorAlias name="shuttle text" alias="neutral:foregroundest"/>
     <ColorAlias name="silence" alias="theme:contrasting alt"/>
     <ColorAlias name="silence text" alias="neutral:foreground"/>
     <ColorAlias name="solo button: fill" alias="widget:bg"/>
@@ -416,6 +415,7 @@
     <ColorAlias name="stretch clock: edited text" alias="theme:contrasting alt"/>
     <ColorAlias name="stretch clock: text" alias="theme:contrasting clock"/>
     <ColorAlias name="sync mark" alias="theme:contrasting clock"/>
+    <ColorAlias name="region mark" alias="theme:contrasting alt"/>
     <ColorAlias name="tempo bar" alias="neutral:backgroundest"/>
     <ColorAlias name="tempo curve" alias="widget:blue"/>
     <ColorAlias name="tempo marker" alias="widget:orange"/>
@@ -503,5 +503,6 @@
     <Modifier name="transparent region base" modifier="= alpha:0.6"/>
    <Modifier name="time stretch fill" modifier="= alpha:0.5"/>
     <Modifier name="verbose canvas cursor" modifier="= alpha:0.4666"/>
+    <Modifier name="region mark" modifier="= alpha:1.0"/>
   </Modifiers>
 </Ardour>

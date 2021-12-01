@@ -47,12 +47,14 @@
 #include "luainstance.h"
 #include "luawindow.h"
 #include "mixer_ui.h"
+#include "recorder_ui.h"
 #include "keyboard.h"
 #include "keyeditor.h"
 #include "splash.h"
 #include "rc_option_editor.h"
 #include "route_params_ui.h"
 #include "time_info_box.h"
+#include "triggerbox_ui.h"
 #include "step_entry.h"
 #include "opts.h"
 #include "utils.h"
@@ -88,6 +90,7 @@ ARDOUR_UI::we_have_dependents ()
 	 */
 	ProcessorBox::register_actions ();
 	StepEntry::setup_actions_and_bindings ();
+	TriggerBoxUI::setup_actions_and_bindings ();
 
 	/* Global, editor, mixer, processor box actions are defined now. Link
 	   them with any bindings, so that GTK does not get a chance to define
@@ -108,16 +111,7 @@ ARDOUR_UI::we_have_dependents ()
 
 	Gtkmm2ext::Bindings::associate_all ();
 
-	editor->setup_tooltips ();
 	editor->UpdateAllTransportClocks.connect (sigc::mem_fun (*this, &ARDOUR_UI::update_transport_clocks));
-
-	/* catch up on tabbable state, in the right order to leave the editor
-	 * selected by default
-	 */
-
-	tabbable_state_change (*rc_option_editor);
-	tabbable_state_change (*mixer);
-	tabbable_state_change (*editor);
 
 	/* all actions are defined */
 
@@ -139,8 +133,8 @@ ARDOUR_UI::connect_dependents_to_session (ARDOUR::Session *s)
 	editor->set_session (s);
 	BootMessage (_("Setup Mixer"));
 	mixer->set_session (s);
+	recorder->set_session (s);
 	meterbridge->set_session (s);
-	luawindow->set_session (s);
 
 	/* its safe to do this now */
 
@@ -182,6 +176,8 @@ ARDOUR_UI::tab_window_root_drop (GtkNotebook* src,
 		tabbable = mixer;
 	} else if (w == GTK_WIDGET(rc_option_editor->contents().gobj())) {
 		tabbable = rc_option_editor;
+	} else if (w == GTK_WIDGET(recorder->contents().gobj())) {
+		tabbable = recorder;
 	} else {
 		return 0;
 	}
@@ -268,13 +264,13 @@ ARDOUR_UI::setup_windows ()
 		return -1;
 	}
 
-	if (create_meterbridge ()) {
-		error << _("UI: cannot setup meterbridge") << endmsg;
+	if (create_recorder ()) {
+		error << _("UI: cannot setup recorder") << endmsg;
 		return -1;
 	}
 
-	if (create_luawindow ()) {
-		error << _("UI: cannot setup luawindow") << endmsg;
+	if (create_meterbridge ()) {
+		error << _("UI: cannot setup meterbridge") << endmsg;
 		return -1;
 	}
 
@@ -285,9 +281,10 @@ ARDOUR_UI::setup_windows ()
 
 	/* order of addition affects order seen in initial window display */
 
-	rc_option_editor->add_to_notebook (_tabs, _("Preferences"));
-	mixer->add_to_notebook (_tabs, _("Mixer"));
-	editor->add_to_notebook (_tabs, _("Editor"));
+	rc_option_editor->add_to_notebook (_tabs);
+	mixer->add_to_notebook (_tabs);
+	editor->add_to_notebook (_tabs);
+	recorder->add_to_notebook (_tabs);
 
 	top_packer.pack_start (menu_bar_base, false, false);
 
@@ -382,6 +379,8 @@ ARDOUR_UI::setup_windows ()
 			_tabs.set_current_page (_tabs.page_num (mixer->contents()));
 		} else if (rc_option_editor && current_tab == "preferences") {
 			_tabs.set_current_page (_tabs.page_num (rc_option_editor->contents()));
+		} else if (recorder && current_tab == "recorder") {
+			_tabs.set_current_page (_tabs.page_num (recorder->contents()));
 		} else if (editor) {
 			_tabs.set_current_page (_tabs.page_num (editor->contents()));
 		}

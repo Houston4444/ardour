@@ -202,7 +202,6 @@ private:
 	bool color_picked;
 
 	void do_request (UIRequest*);
-
 };
 
 } /* namespace */

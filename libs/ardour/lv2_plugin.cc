@@ -127,10 +127,11 @@ static const size_t NBUFS = 4;
 using namespace std;
 using namespace ARDOUR;
 using namespace PBD;
+using namespace Temporal;
 
 bool          LV2Plugin::force_state_save      = false;
-bool          LV2Plugin::_ui_style_flat        = false;
-bool          LV2Plugin::_ui_style_boxy        = false;
+int32_t       LV2Plugin::_ui_style_flat        = 0;
+int32_t       LV2Plugin::_ui_style_boxy        = 0;
 uint32_t      LV2Plugin::_ui_background_color  = 0x000000ff; // RGBA
 uint32_t      LV2Plugin::_ui_foreground_color  = 0xffffffff; // RGBA
 uint32_t      LV2Plugin::_ui_contrasting_color = 0x33ff33ff; // RGBA
@@ -545,7 +546,7 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	static const int32_t _min_block_length = 1;   // may happen during split-cycles
 	static const int32_t _max_block_length = 8192; // max possible (with all engines and during export)
 	static const int32_t rt_policy = PBD_SCHED_FIFO;
-	static const int32_t rt_priority = pbd_absolute_rt_priority (PBD_SCHED_FIFO, AudioEngine::instance()->client_real_time_priority () - 2);
+	static const int32_t rt_priority = pbd_absolute_rt_priority (PBD_SCHED_FIFO, AudioEngine::instance()->client_real_time_priority () - 1);
 	/* Consider updating max-block-size whenever the buffersize changes.
 	 * It requires re-instantiating the plugin (which is a non-realtime operation),
 	 * so it should be done lightly and only for plugins that require it.
@@ -577,9 +578,9 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://lv2plug.in/ns/extensions/ui#scaleFactor"),
 		  sizeof(float), atom_Float, &_ui_scale_factor },
 		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/theme/#styleBoxy"),
-		  sizeof(bool), atom_Bool, &_ui_style_boxy },
+		  sizeof(int32_t), atom_Bool, &_ui_style_boxy },
 		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/theme/#styleFlat"),
-		  sizeof(bool), atom_Bool, &_ui_style_flat },
+		  sizeof(int32_t), atom_Bool, &_ui_style_flat },
 		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://kxstudio.sf.net/ns/lv2ext/props#TransientWindowId"),
 		  sizeof(int32_t), atom_Long, &_ui_transient_win_id },
 		{ LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, NULL }
@@ -1288,51 +1289,6 @@ LV2Plugin::get_parameter_docs(uint32_t which) const
 	return "";
 }
 
-bool
-LV2Plugin::get_layout (uint32_t which, UILayoutHint& h) const
-{
-	/// TODO lookup port-properties
-	if (unique_id () != "urn:ardour:a-eq") {
-		return false;
-	}
-	h.knob = true;
-	switch (which) {
-		case  0: h.x0 = 0; h.x1 = 1; h.y0 = 2; h.y1 = 3; break; // Frequency L
-		case  1: h.x0 = 0; h.x1 = 1; h.y0 = 0; h.y1 = 1; break; // Gain L
-		case 17: h.x0 = 0; h.x1 = 1; h.y0 = 5; h.y1 = 6; break; // enable L
-
-		case  2: h.x0 = 1; h.x1 = 3; h.y0 = 2; h.y1 = 3; break; // Frequency 1
-		case  3: h.x0 = 1; h.x1 = 3; h.y0 = 0; h.y1 = 1; break; // Gain 1
-		case  4: h.x0 = 1; h.x1 = 3; h.y0 = 1; h.y1 = 2; break; // Bandwidth 1
-		case 18: h.x0 = 1; h.x1 = 4; h.y0 = 5; h.y1 = 6; break; // enable 1
-
-		case  5: h.x0 = 4; h.x1 = 6; h.y0 = 2; h.y1 = 3; break; // Frequency 2
-		case  6: h.x0 = 4; h.x1 = 6; h.y0 = 0; h.y1 = 1; break; // Gain 2
-		case  7: h.x0 = 4; h.x1 = 6; h.y0 = 1; h.y1 = 2; break; // Bandwidth 2
-		case 19: h.x0 = 4; h.x1 = 7; h.y0 = 5; h.y1 = 6; break; // enable 2
-
-		case  8: h.x0 = 7; h.x1 =  9; h.y0 = 2; h.y1 = 3; break; // Frequency 3
-		case  9: h.x0 = 7; h.x1 =  9; h.y0 = 0; h.y1 = 1; break; // Gain 3
-		case 10: h.x0 = 7; h.x1 =  9; h.y0 = 1; h.y1 = 2; break; // Bandwidth 3
-		case 20: h.x0 = 7; h.x1 = 10; h.y0 = 5; h.y1 = 6; break; // enable 3
-
-		case 11: h.x0 = 10; h.x1 = 12; h.y0 = 2; h.y1 = 3; break; // Frequency 4
-		case 12: h.x0 = 10; h.x1 = 12; h.y0 = 0; h.y1 = 1; break; // Gain 4
-		case 13: h.x0 = 10; h.x1 = 12; h.y0 = 1; h.y1 = 2; break; // Bandwidth 4
-		case 21: h.x0 = 10; h.x1 = 13; h.y0 = 5; h.y1 = 6; break; // enable 4
-
-		case 14: h.x0 = 13; h.x1 = 14; h.y0 = 2; h.y1 = 3; break; // Frequency H
-		case 15: h.x0 = 13; h.x1 = 14; h.y0 = 0; h.y1 = 1; break; // Gain H
-		case 22: h.x0 = 13; h.x1 = 14; h.y0 = 5; h.y1 = 6; break; // enable H
-
-		case 16: h.x0 = 14; h.x1 = 15; h.y0 = 1; h.y1 = 3; break; // Master Gain
-		case 23: h.x0 = 14; h.x1 = 15; h.y0 = 5; h.y1 = 6; break; // Master Enable
-		default:
-			return false;
-	}
-	return true;
-}
-
 uint32_t
 LV2Plugin::nth_parameter(uint32_t n, bool& ok) const
 {
@@ -1830,7 +1786,7 @@ forge_variant(LV2_Atom_Forge* forge, const Variant& value)
 		break;
 	case Variant::BEATS:
 		// No atom type for this, just forge a double
-		lv2_atom_forge_double(forge, value.get_beats().to_double());
+		lv2_atom_forge_double(forge, DoubleableBeats(value.get_beats()).to_double());
 		break;
 	case Variant::BOOL:
 		lv2_atom_forge_bool(forge, value.get_bool());
@@ -1892,10 +1848,10 @@ void
 LV2Plugin::set_property(uint32_t key, const Variant& value)
 {
 	if (_patch_port_in_index == (uint32_t)-1) {
-		error << string_compose (_("LV2<1>: set_property called with unset patch_port_in_index"), name ()) << endmsg;
+		error << string_compose (_("LV2<%1>: set_property called with unset patch_port_in_index"), name ()) << endmsg;
 		return;
 	} else if (value.type() == Variant::NOTHING) {
-		error << string_compose (_("LV2<1>: set_property called with void value"), name ()) << endmsg;
+		error << string_compose (_("LV2<%1>: set_property called with void value"), name ()) << endmsg;
 		return;
 	}
 
@@ -2291,7 +2247,7 @@ LV2Plugin::get_parameter_descriptor(uint32_t which, ParameterDescriptor& desc) c
 	desc.toggled      = lilv_port_has_property(_impl->plugin, port, _world.lv2_toggled);
 	desc.logarithmic  = lilv_port_has_property(_impl->plugin, port, _world.ext_logarithmic);
 	desc.sr_dependent = lilv_port_has_property(_impl->plugin, port, _world.lv2_sampleRate);
-	desc.label        = lilv_node_as_string(lilv_port_get_name(_impl->plugin, port));
+	desc.label        = lilv_node_as_string(lilv_port_get_name(_impl->plugin, port)); // XXX leaks
 	desc.normal       = def ? lilv_node_as_float(def) : 0.0f;
 	desc.lower        = min ? lilv_node_as_float(min) : 0.0f;
 	desc.upper        = max ? lilv_node_as_float(max) : 1.0f;
@@ -2563,10 +2519,7 @@ LV2Plugin::allocate_atom_event_buffers()
 	for (uint32_t i = 0; i < lilv_plugin_get_num_ports(p); ++i) {
 		const LilvPort* port  = lilv_plugin_get_port_by_index(p, i);
 		if (lilv_port_is_a(p, port, _world.atom_AtomPort)) {
-			LilvNodes* buffer_types = lilv_port_get_value(
-				p, port, _world.atom_bufferType);
-			LilvNodes* atom_supports = lilv_port_get_value(
-				p, port, _world.atom_supports);
+			LilvNodes* buffer_types = lilv_port_get_value (p, port, _world.atom_bufferType);
 
 			if (lilv_nodes_contains(buffer_types, _world.atom_Sequence)) {
 				if (lilv_port_is_a(p, port, _world.lv2_InputPort)) {
@@ -2583,7 +2536,6 @@ LV2Plugin::allocate_atom_event_buffers()
 				lilv_nodes_free(min_size_v);
 			}
 			lilv_nodes_free(buffer_types);
-			lilv_nodes_free(atom_supports);
 		}
 	}
 
@@ -2612,8 +2564,8 @@ LV2Plugin::allocate_atom_event_buffers()
 static bool
 write_position(LV2_Atom_Forge*     forge,
                LV2_Evbuf*          buf,
-               const TempoMetric&  t,
-               Timecode::BBT_Time& bbt,
+               TempoMetric const & t,
+               BBT_Time const &    bbt,
                double              speed,
                double              time_scale,
                double              bpm,
@@ -2632,12 +2584,11 @@ write_position(LV2_Atom_Forge*     forge,
 	lv2_atom_forge_key(forge, urids.time_speed);
 	lv2_atom_forge_float(forge, speed);
 	lv2_atom_forge_key(forge, urids.time_barBeat);
-	lv2_atom_forge_float(forge, bbt.beats - 1 +
-	                     (bbt.ticks / Timecode::BBT_Time::ticks_per_beat));
+	lv2_atom_forge_float(forge, bbt.beats - 1 + (bbt.ticks / (float) Temporal::ticks_per_beat));
 	lv2_atom_forge_key(forge, urids.time_bar);
 	lv2_atom_forge_long(forge, bbt.bars - 1);
 	lv2_atom_forge_key(forge, urids.time_beatUnit);
-	lv2_atom_forge_int(forge, t.meter().note_divisor());
+	lv2_atom_forge_int(forge, t.meter().note_value());
 	lv2_atom_forge_key(forge, urids.time_beatsPerBar);
 	lv2_atom_forge_float(forge, t.meter().divisions_per_bar());
 	lv2_atom_forge_key(forge, urids.time_beatsPerMinute);
@@ -2651,8 +2602,7 @@ write_position(LV2_Atom_Forge*     forge,
 	lv2_atom_forge_property_head(forge, urids.time_speed, 0);
 	lv2_atom_forge_float(forge, speed);
 	lv2_atom_forge_property_head(forge, urids.time_barBeat, 0);
-	lv2_atom_forge_float(forge, bbt.beats - 1 +
-	                     (bbt.ticks / Timecode::BBT_Time::ticks_per_beat));
+	lv2_atom_forge_float(forge, bbt.beats - 1 + (bbt.ticks / (float) Temporal::ticks_per_beat));
 	lv2_atom_forge_property_head(forge, urids.time_bar, 0);
 	lv2_atom_forge_long(forge, bbt.bars - 1);
 	lv2_atom_forge_property_head(forge, urids.time_beatUnit, 0);
@@ -2686,16 +2636,23 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 	speed = end > 0 ? speed : 0;
 	samplepos_t start0 = std::max (samplepos_t (0), start);
 
-	TempoMap&               tmap     = _session.tempo_map();
-	Metrics::const_iterator metric_i = tmap.metrics_end();
-	TempoMetric             tmetric  = tmap.metric_at(start0, &metric_i);
+	TempoMap::SharedPtr tmap (TempoMap::use());
+	TempoMetric metric (tmap->metric_at (samples_to_superclock (start0, AudioEngine::instance()->sample_rate())));
+
+	TempoMapPoints tempo_map_points;
+	tmap->get_grid (tempo_map_points,
+	                samples_to_superclock (start0, AudioEngine::instance()->sample_rate()),
+	                samples_to_superclock (end, AudioEngine::instance()->sample_rate()), 0);
 
 	if (_freewheel_control_port) {
 		*_freewheel_control_port = _session.engine().freewheeling() ? 1.f : 0.f;
 	}
 
 	if (_bpm_control_port) {
-		float bpm = tmap.tempo_at_sample (start0).note_types_per_minute();
+
+		/* note that this is not necessarily quarter notes */
+		const double bpm = tmap->tempo_at (timepos_t (start0)).note_types_per_minute();
+
 		if (*_bpm_control_port != bpm) {
 			AutomationCtrlPtr c = get_automation_control (_bpm_control_port_index);
 			if (c && c->ac) {
@@ -2703,6 +2660,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 				c->ac->Changed (false, Controllable::NoGroup); /* EMIT SIGNAL */
 			}
 		}
+
 		*_bpm_control_port = bpm;
 	}
 
@@ -2728,6 +2686,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 	uint32_t midi_in_index   = 0;
 	uint32_t midi_out_index  = 0;
 	uint32_t atom_port_index = 0;
+
 	for (uint32_t port_index = 0; port_index < num_ports; ++port_index) {
 		void*     buf   = NULL;
 		uint32_t  index = nil_index;
@@ -2765,6 +2724,9 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 					bufs.ensure_lv2_bufsize((flags & PORT_INPUT), index, _port_minimumSize[port_index]);
 					_ev_buffers[port_index] = bufs.get_lv2_midi(
 						(flags & PORT_INPUT), index);
+				} else {
+					/* Valid pin mapping, but no corresponding port-buffers */
+					valid = false;
 				}
 			} else if ((flags & PORT_POSITION) && (flags & PORT_INPUT)) {
 				lv2_evbuf_reset(_atom_ev_buffers[atom_port_index], true);
@@ -2774,13 +2736,13 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 			if (valid && (flags & PORT_INPUT)) {
 				if ((flags & PORT_POSITION)) {
-					Timecode::BBT_Time bbt (tmap.bbt_at_sample (start0));
+					Temporal::BBT_Time bbt (metric.bbt_at (timepos_t (start0)));
+					double bpm = metric.tempo().note_types_per_minute();
 					double time_scale = Port::speed_ratio ();
-					double bpm = tmap.tempo_at_sample (start0).note_types_per_minute();
-					double beatpos = (bbt.bars - 1) * tmetric.meter().divisions_per_bar()
-					               + (bbt.beats - 1)
-					               + (bbt.ticks / Timecode::BBT_Time::ticks_per_beat);
-					beatpos *= tmetric.meter().note_divisor() / 4.0;
+					double beatpos = (bbt.bars - 1) * metric.meter().divisions_per_bar()
+						+ (bbt.beats - 1)
+						+ (bbt.ticks / Temporal::ticks_per_beat);
+					beatpos *= metric.tempo().note_type() / 4.0;
 					if (start != _next_cycle_start ||
 							speed != _next_cycle_speed ||
 							time_scale != _prev_time_scale ||
@@ -2788,7 +2750,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 							bpm != _current_bpm) {
 						// Transport or Tempo has changed, write position at cycle start
 						write_position(&_impl->forge, _ev_buffers[port_index],
-								tmetric, bbt, speed, time_scale, bpm, start, 0);
+						               metric, bbt, speed, time_scale,  bpm, start, 0);
 					}
 				}
 
@@ -2803,38 +2765,68 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 				// Now merge MIDI and any transport events into the buffer
 				const uint32_t     type = _uri_map.urids.midi_MidiEvent;
 				const samplepos_t  tend = end;
-				++metric_i;
-				while (m != m_end || (metric_i != tmap.metrics_end() &&
-				                      (*metric_i)->sample() < tend)) {
-					MetricSection* metric = (metric_i != tmap.metrics_end())
-						? *metric_i : NULL;
-					if (m != m_end && (!metric || metric->sample() > (*m).time())) {
-						const Evoral::Event<samplepos_t> ev(*m, false);
+
+				/* move to next explicit point
+				 * (if any)
+				 */
+
+				TempoMapPoints::const_iterator tempo_map_point (tempo_map_points.begin());
+
+				while (tempo_map_point != tempo_map_points.end()) {
+					tempo_map_point++;
+					if (tempo_map_point != tempo_map_points.end()) {
+						if (tempo_map_point->is_explicit()) {
+							break;
+						}
+					}
+				}
+
+				while (m != m_end || ((tempo_map_point != tempo_map_points.end()) && ((*tempo_map_point).sample(AudioEngine::instance()->sample_rate()) < tend))) {
+
+					if (m != m_end && ((tempo_map_point == tempo_map_points.end()) || (*tempo_map_point).sample(AudioEngine::instance()->sample_rate()) > (*m).time())) {
+
+						const Evoral::Event<samplepos_t> ev (*m, false);
+
 						if (ev.time() < nframes) {
 							LV2_Evbuf_Iterator eend = lv2_evbuf_end(_ev_buffers[port_index]);
 							lv2_evbuf_write(&eend, ev.time(), 0, type, ev.size(), ev.buffer());
 						}
+
 						++m;
+
 					} else {
-						assert (metric);
-						tmetric.set_metric(metric);
-						Timecode::BBT_Time bbt;
-						bbt = tmap.bbt_at_sample (metric->sample());
-						double bpm = tmap.tempo_at_sample (start0 /*XXX metric->sample() */).note_types_per_minute();
+						assert (tempo_map_point != tempo_map_points.end());
+						const samplepos_t sample = tempo_map_point->sample (AudioEngine::instance()->sample_rate());
+						const Temporal::BBT_Time bbt = tempo_map_point->bbt();
+						double bpm = tempo_map_point->tempo().quarter_notes_per_minute ();
+
 						write_position(&_impl->forge, _ev_buffers[port_index],
-						               tmetric, bbt, speed, Port::speed_ratio (),
-						               bpm, metric->sample(),
-						               metric->sample() - start0);
-						++metric_i;
+						               *tempo_map_point, bbt, speed, Port::speed_ratio (),
+						               bpm, sample, sample - start);
+
+						/* move to next explicit point
+						 * (if any)
+						 */
+
+						while (tempo_map_point != tempo_map_points.end()) {
+							tempo_map_point++;
+							if (tempo_map_point != tempo_map_points.end()) {
+								if (tempo_map_point->is_explicit()) {
+									break;
+								}
+							}
+						}
 					}
+
 				}
+
 			} else if (!valid) {
-				// Nothing we understand or care about, connect to scratch
-				// see note for midi-buffer size above
-				scratch_bufs.ensure_lv2_bufsize((flags & PORT_INPUT),
-						0, _port_minimumSize[port_index]);
-				_ev_buffers[port_index] = scratch_bufs.get_lv2_midi(
-					(flags & PORT_INPUT), 0);
+				/* Nothing we understand or care about, but we have
+				 * to provide valid buffers for DSP/UI communication.
+				 * Note that Atom buffers scratch buffers must not be shared.
+				 */
+				lv2_evbuf_reset (_atom_ev_buffers[atom_port_index], (flags & PORT_INPUT));
+				_ev_buffers[port_index] = _atom_ev_buffers[atom_port_index++];
 			}
 
 			buf = lv2_evbuf_get_buffer(_ev_buffers[port_index]);
@@ -2972,9 +2964,9 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 									assert (start + samples - _current_latency >= 0);
 									if (c->guard) {
 										c->guard = false;
-										c->ac->list()->add (when, v, true, true);
+										c->ac->list()->add (timepos_t (when), v, true, true);
 									} else {
-										c->ac->set_double (v, when, true);
+										c->ac->set_double (v, timepos_t (when), true);
 									}
 								}
 							}
@@ -3031,7 +3023,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 								AutomationCtrlPtr c = get_automation_control (p);
 								DEBUG_TRACE(DEBUG::LV2Automate, string_compose ("Start Touch p: %1\n", p));
 								if (c) {
-									c->ac->start_touch (std::max ((samplepos_t)0, start - _current_latency));
+									c->ac->start_touch (timepos_t (std::max ((samplepos_t)0, start - _current_latency)));
 									c->guard = true;
 								}
 							}
@@ -3046,7 +3038,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 								AutomationCtrlPtr c = get_automation_control (p);
 								DEBUG_TRACE(DEBUG::LV2Automate, string_compose ("End Touch p: %1\n", p));
 								if (c) {
-									c->ac->stop_touch (std::max ((samplepos_t)0, start - _current_latency));
+									c->ac->stop_touch (timepos_t (std::max ((samplepos_t)0, start - _current_latency)));
 								}
 							}
 						}
@@ -3125,13 +3117,12 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 		 * Note: for no-midi plugins, we only ever send information at cycle-start,
 		 * so it needs to be realative to that.
 		 */
-		TempoMetric t = tmap.metric_at (start0);
-		_current_bpm = tmap.tempo_at_sample (start0).note_types_per_minute();
-		Timecode::BBT_Time bbt (tmap.bbt_at_sample (start0));
-		double beatpos = (bbt.bars - 1) * t.meter().divisions_per_bar()
+		_current_bpm = metric.tempo().note_types_per_minute();
+		Temporal::BBT_Time bbt (metric.bbt_at (timepos_t (start0)));
+		double beatpos = (bbt.bars - 1) * metric.divisions_per_bar()
 		               + (bbt.beats - 1)
-		               + (bbt.ticks / Timecode::BBT_Time::ticks_per_beat);
-		beatpos *= tmetric.meter().note_divisor() / 4.0;
+		               + (bbt.ticks / Temporal::ticks_per_beat);
+		beatpos *= metric.note_value() / 4.0;
 		_next_cycle_beat = beatpos + nframes * speed * _current_bpm / (60.f * _session.sample_rate());
 	}
 
@@ -3581,7 +3572,7 @@ LV2PluginInfo::get_presets (bool /*user_only*/) const
 }
 
 PluginInfoList*
-LV2PluginInfo::discover()
+LV2PluginInfo::discover (boost::function <void (std::string const&, PluginScanLogEntry::PluginScanResult, std::string const&, bool)> cb)
 {
 	LV2World world;
 	world.load_bundled_plugins();
@@ -3594,20 +3585,21 @@ LV2PluginInfo::discover()
 		const LilvPlugin* p = lilv_plugins_get(plugins, i);
 		const LilvNode* pun = lilv_plugin_get_uri(p);
 		if (!pun) continue;
+		std::string const uri (lilv_node_as_string(pun));
+		cb (uri, PluginScanLogEntry::OK, string_compose (_("URI: %1"), uri), true);
+		cb (uri, PluginScanLogEntry::OK, string_compose (_("Bundle: %1"), lilv_node_as_uri (lilv_plugin_get_bundle_uri (p))), false);
+
 		LV2PluginInfoPtr info(new LV2PluginInfo(lilv_node_as_string(pun)));
 
 		LilvNode* name = lilv_plugin_get_name(p);
 		if (!name || !lilv_plugin_get_port_by_index(p, 0)) {
-			warning << "Ignoring invalid LV2 plugin "
-			        << lilv_node_as_string(lilv_plugin_get_uri(p))
-			        << endmsg;
+			cb (uri, PluginScanLogEntry::Error, _("Ignoring invalid LV2 plugin (missing name, no ports)"), false);
+			lilv_node_free(name);
 			continue;
 		}
 
 		if (lilv_plugin_has_feature(p, world.lv2_inPlaceBroken)) {
-			warning << string_compose(
-			    _("Ignoring LV2 plugin \"%1\" since it cannot do inplace processing."),
-			    lilv_node_as_string(name)) << endmsg;
+			cb (uri, PluginScanLogEntry::Error, _("Ignoring LV2 plugin since it cannot do inplace processing."), false);
 			lilv_node_free(name);
 			continue;
 		}
@@ -3637,9 +3629,7 @@ LV2PluginInfo::discover()
 				if (!strcmp (rf, LV2_BANKPATCH__notify)) { ok = true; }
 #endif
 				if (!ok) {
-					warning << string_compose (
-							_("Unsupported required LV2 feature: '%1' in '%2'."),
-							rf, lilv_node_as_string(name)) << endmsg;
+					cb (uri, PluginScanLogEntry::Error, string_compose (_("Unsupported required LV2 feature: '%1'."), rf), false);
 					err = 1;
 				}
 		}
@@ -3660,9 +3650,7 @@ LV2PluginInfo::discover()
 				if (!strcmp (ro, LV2_BUF_SIZE__maxBlockLength)) { ok = true; }
 				if (!strcmp (ro, LV2_BUF_SIZE__sequenceSize)) { ok = true; }
 				if (!ok) {
-					warning << string_compose (
-							_("Unsupported required LV2 option: '%1' in '%2'."),
-							ro, lilv_node_as_string(name)) << endmsg;
+					cb (uri, PluginScanLogEntry::Error, string_compose (_("Unsupported required LV2 option: '%1'."), ro), false);
 					err = 1;
 				}
 			}
@@ -3681,7 +3669,10 @@ LV2PluginInfo::discover()
 
 		const LilvPluginClass* pclass = lilv_plugin_get_class(p);
 		const LilvNode*        label  = lilv_plugin_class_get_label(pclass);
+
 		info->category = lilv_node_as_string(label);
+
+		cb (uri, PluginScanLogEntry::OK, string_compose (_("LV2 Category: '%1'"), info->category), false);
 
 		/* check main category */
 		const char* pcat = lilv_node_as_uri (lilv_plugin_class_get_uri (pclass));
@@ -3690,16 +3681,31 @@ LV2PluginInfo::discover()
 		info->_is_utility    = 0 == strcmp (pcat, LV2_CORE__UtilityPlugin);
 		info->_is_analyzer   = 0 == strcmp (pcat, LV2_CORE__AnalyserPlugin);
 
-		/* iterate over additional classes */
+		/* check parent category, if any */
+		const LilvNode* lpc = lilv_plugin_class_get_parent_uri (pclass);
+		if (lpc) {
+			const char* pcu = lilv_node_as_uri (lpc);
+			info->_is_instrument |= 0 == strcmp (pcu, LV2_CORE__InstrumentPlugin);
+			info->_is_utility    |= 0 == strcmp (pcu, LV2_CORE__UtilityPlugin);
+			info->_is_analyzer   |= 0 == strcmp (pcu, LV2_CORE__AnalyserPlugin);
+			cb (uri, PluginScanLogEntry::OK, string_compose (_("LV2 Parent Class URI: '%1'"), pcu), false);
+		}
+
+#if 0
+		/* iterate over child classes */
 		LilvPluginClasses* classes  = lilv_plugin_class_get_children (pclass);
 		LILV_FOREACH(plugin_classes, i, classes) {
-			const char* pc = lilv_node_as_uri (lilv_plugin_class_get_uri (lilv_plugin_classes_get (classes, i)));
-			assert (pc);
-			info->_is_instrument |= 0 == strcmp (pc, LV2_CORE__InstrumentPlugin);
-			info->_is_utility    |= 0 == strcmp (pc, LV2_CORE__UtilityPlugin);
-			info->_is_analyzer   |= 0 == strcmp (pc, LV2_CORE__AnalyserPlugin);
+			const LilvPluginClass* lclass = lilv_plugin_classes_get (classes, i);
+			const LilvNode*        lcnode = lilv_plugin_class_get_uri (lclass);
+			const LilvNode*        lclbl  = lilv_plugin_class_get_label (lclass);
+			const char*            lcuri  = lilv_node_as_uri (lcnode);
+			info->_is_instrument |= 0 == strcmp (lcuri, LV2_CORE__InstrumentPlugin);
+			info->_is_utility    |= 0 == strcmp (lcuri, LV2_CORE__UtilityPlugin);
+			info->_is_analyzer   |= 0 == strcmp (lcuri, LV2_CORE__AnalyserPlugin);
+			cb (uri, PluginScanLogEntry::OK, string_compose (_("LV2 Class: '%1'"), lilv_node_as_string (lclbl)), false);
 		}
 		lilv_plugin_classes_free (classes);
+#endif
 
 		LilvNode* author_name = lilv_plugin_get_author_name(p);
 		info->creator = author_name ? string(lilv_node_as_string(author_name)) : "Unknown";
@@ -3707,23 +3713,34 @@ LV2PluginInfo::discover()
 
 		info->path = "/NOPATH"; // Meaningless for LV2
 
-		/* count atom-event-ports that feature
-		 * atom:supports <http://lv2plug.in/ns/ext/midi#MidiEvent>
-		 *
-		 * TODO: nicely ask drobilla to make a lilv_ call for that
-		 */
 		int count_midi_out = 0;
-		int count_midi_in = 0;
+		int count_midi_in  = 0;
+		int count_atom_out = 0;
+		int count_atom_in  = 0;
+		int count_ctrl_out = 0;
+		int count_ctrl_in  = 0;
+
 		for (uint32_t i = 0; i < lilv_plugin_get_num_ports(p); ++i) {
 			const LilvPort* port  = lilv_plugin_get_port_by_index(p, i);
 			if (lilv_port_is_a(p, port, world.atom_AtomPort)) {
-				LilvNodes* buffer_types = lilv_port_get_value(
-					p, port, world.atom_bufferType);
-				LilvNodes* atom_supports = lilv_port_get_value(
-					p, port, world.atom_supports);
+				LilvNodes* buffer_types  = lilv_port_get_value (p, port, world.atom_bufferType);
+				LilvNodes* atom_supports = lilv_port_get_value (p, port, world.atom_supports);
 
-				if (lilv_nodes_contains(buffer_types, world.atom_Sequence)
-						&& lilv_nodes_contains(atom_supports, world.midi_MidiEvent)) {
+				if (lilv_port_is_a(p, port, world.lv2_InputPort)) {
+					count_atom_in++;
+				} else if (lilv_port_is_a(p, port, world.lv2_OutputPort)) {
+					count_atom_out++;
+				} else {
+					cb (uri, PluginScanLogEntry::Error, _("Found Atom port not marked for input or output."), false);
+					err = 1;
+				}
+
+				if (!lilv_nodes_contains(buffer_types, world.atom_Sequence)) {
+					cb (uri, PluginScanLogEntry::Error, _("Found Atom port without sequence support, ignored"), false);
+					/* ignore non-sequence Atom ports */
+					err = 1;
+				}
+				else if (lilv_nodes_contains(atom_supports, world.midi_MidiEvent)) {
 					if (lilv_port_is_a(p, port, world.lv2_InputPort)) {
 						count_midi_in++;
 					}
@@ -3731,9 +3748,28 @@ LV2PluginInfo::discover()
 						count_midi_out++;
 					}
 				}
+
 				lilv_nodes_free(buffer_types);
 				lilv_nodes_free(atom_supports);
 			}
+			else if (lilv_port_is_a(p, port, world.lv2_ControlPort)) {
+				if (lilv_port_is_a(p, port, world.lv2_InputPort)) {
+					count_ctrl_in++;
+				}
+				if (lilv_port_is_a(p, port, world.lv2_OutputPort)) {
+					count_ctrl_out++;
+				}
+			}
+			else if (!lilv_port_is_a (p, port, world.lv2_AudioPort)) {
+				err = 1;
+				LilvNode* name = lilv_port_get_name(p, port);
+				cb (uri, PluginScanLogEntry::Error, string_compose (_("Port %1 ('%2') has no known data type"), i, lilv_node_as_string (name)), false);
+				lilv_node_free(name);
+			}
+		}
+
+		if (err) {
+			continue;
 		}
 
 		info->n_inputs.set_audio(
@@ -3755,6 +3791,12 @@ LV2PluginInfo::discover()
 		info->unique_id = lilv_node_as_uri(lilv_plugin_get_uri(p));
 		info->index     = 0; // Meaningless for LV2
 
+		cb (uri, PluginScanLogEntry::OK, string_compose (
+					_("LV2 Ports: Atom-in: %1, Atom-out: %2, Audio-in: %3 Audio-out: %4 MIDI-in: %5  MIDI-out: %6 Ctrl-in: %7 Ctrl-out: %8"),
+					count_atom_in, count_atom_out,
+					info->n_inputs.n_audio (), info->n_outputs.n_audio (),
+					count_midi_in, count_midi_out,
+					count_ctrl_in, count_ctrl_out), false);
 		plugs->push_back(info);
 	}
 

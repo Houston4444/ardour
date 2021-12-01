@@ -65,7 +65,7 @@ public:
 
 	static bool test(const std::string& path);
 	int  open(const std::string& path, int track=1);
-	// XXX 19200 = 10 * Timecode::BBT_Time::ticks_per_beat
+	// XXX 19200 = 10 * Temporal::ticks_per_beat
 	int  create(const std::string& path, int track=1, uint16_t ppqn=19200);
 	void close();
 
@@ -86,8 +86,8 @@ public:
 
 	double round_to_file_precision (double val) const;
 
-	bool is_type0 () const { return _type0; }
-	std::set<uint8_t> channels () const { return _type0channels; }
+	int smf_format () const;
+	int num_channels () const { return _num_channels; }
 	void track_names (std::vector<std::string>&) const;
 	void instrument_names (std::vector<std::string>&) const;
 
@@ -118,14 +118,26 @@ public:
 
 	Tempo* nth_tempo (size_t n) const;
 
+	struct MarkerAt {
+		std::string text;
+		size_t time_pulses; /* type matches libsmf smf_event_struct.time_pulses */
+
+		MarkerAt (std::string const & txt, size_t tp) : text (txt), time_pulses (tp) {}
+	};
+
+	typedef std::vector<MarkerAt> Markers;
+	Markers const & markers() const { return _markers; }
+	void load_markers ();
+
   private:
 	smf_t*       _smf;
 	smf_track_t* _smf_track;
 	bool         _empty; ///< true iff file contains(non-empty) events
 	mutable Glib::Threads::Mutex _smf_lock;
 
-	bool              _type0;
-	std::set<uint8_t> _type0channels;
+	int _num_channels;
+
+	mutable Markers _markers;
 };
 
 }; /* namespace Evoral */

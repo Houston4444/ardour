@@ -42,17 +42,12 @@
 
 #include "midi_byte_array.h"
 
-namespace Pango {
-	class Layout;
-}
-
 namespace MIDI {
 	class Parser;
 	class Port;
 }
 
 namespace ARDOUR {
-	class AsyncMIDIPort;
 	class Port;
 	class MidiBuffer;
 	class MidiTrack;
@@ -67,7 +62,6 @@ public:
 };
 
 class P2GUI;
-class Push2Menu;
 class Push2Layout;
 class Push2Canvas;
 
@@ -528,7 +522,7 @@ class Push2 : public ARDOUR::ControlProtocol
 	bool vblank ();
 
 	void splash ();
-	ARDOUR::microseconds_t splash_start;
+	PBD::microseconds_t splash_start;
 
 	/* the canvas */
 

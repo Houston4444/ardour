@@ -30,7 +30,6 @@
 #endif
 
 #include "pbd/convert.h"
-#include "pbd/stacktrace.h"
 #include "pbd/unwind.h"
 
 #include "ardour/lv2_plugin.h"
@@ -140,37 +139,35 @@ void
 ARDOUR_UI::toggle_session_monitoring_in ()
 {
 	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Transport"), X_("SessionMonitorIn"));
+	MonitorChoice mc = _session->config.get_session_monitoring ();
 
-	if (tact->get_active() && _session->config.get_session_monitoring () == MonitorInput) {
-		return;
-	}
-	if (!tact->get_active() && _session->config.get_session_monitoring () != MonitorInput) {
+	if (tact->get_active() == (0 != (mc & MonitorInput))) {
 		return;
 	}
 
 	if (tact->get_active()) {
-		_session->config.set_session_monitoring (MonitorInput);
+		mc = MonitorChoice (mc | MonitorInput);
 	} else {
-		_session->config.set_session_monitoring (MonitorAuto);
+		mc = MonitorChoice (mc & ~MonitorInput);
 	}
+	_session->config.set_session_monitoring (mc);
 }
 
 void
 ARDOUR_UI::toggle_session_monitoring_disk ()
 {
 	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Transport"), X_("SessionMonitorDisk"));
-	if (tact->get_active() && _session->config.get_session_monitoring () == MonitorDisk) {
-		return;
-	}
-	if (!tact->get_active() && _session->config.get_session_monitoring () != MonitorDisk) {
+	MonitorChoice mc = _session->config.get_session_monitoring ();
+	if (tact->get_active() == (0 != (mc & MonitorDisk))) {
 		return;
 	}
 
 	if (tact->get_active()) {
-		_session->config.set_session_monitoring (MonitorDisk);
+		mc = MonitorChoice (mc | MonitorDisk);
 	} else {
-		_session->config.set_session_monitoring (MonitorAuto);
+		mc = MonitorChoice (mc & ~MonitorDisk);
 	}
+	_session->config.set_session_monitoring (mc);
 }
 
 void
@@ -357,20 +354,9 @@ ARDOUR_UI::parameter_changed (std::string p)
 	} else if (p == "session-monitoring") {
 		Glib::RefPtr<ToggleAction> tiact = ActionManager::get_toggle_action (X_("Transport"), X_("SessionMonitorIn"));
 		Glib::RefPtr<ToggleAction> tdact = ActionManager::get_toggle_action (X_("Transport"), X_("SessionMonitorDisk"));
-		switch (_session->config.get_session_monitoring ()) {
-			case MonitorDisk:
-				tdact->set_active (true);
-				tiact->set_active (false);
-				break;
-			case MonitorInput:
-				tiact->set_active (true);
-				tdact->set_active (false);
-				break;
-			default:
-				tdact->set_active (false);
-				tiact->set_active (false);
-				break;
-		}
+		MonitorChoice mc = _session->config.get_session_monitoring ();
+		tiact->set_active (0 != (mc & MonitorInput));
+		tdact->set_active (0 != (mc & MonitorDisk));
 	} else if (p == "punch-out") {
 		ActionManager::map_some_state ("Transport", "TogglePunchOut", sigc::mem_fun (_session->config, &SessionConfiguration::get_punch_out));
 		if (!_session->config.get_punch_out()) {
@@ -394,21 +380,21 @@ ARDOUR_UI::parameter_changed (std::string p)
 		if (editor) editor->toggle_meter_updating();
 	} else if (p == "primary-clock-delta-mode") {
 		if (UIConfiguration::instance().get_primary_clock_delta_mode() != NoDelta) {
-			primary_clock->set_is_duration (true);
+			primary_clock->set_is_duration (true, timepos_t());
 			primary_clock->set_editable (false);
 			primary_clock->set_widget_name ("transport delta");
 		} else {
-			primary_clock->set_is_duration (false);
+			primary_clock->set_is_duration (false, timepos_t());
 			primary_clock->set_editable (true);
 			primary_clock->set_widget_name ("transport");
 		}
 	} else if (p == "secondary-clock-delta-mode") {
 		if (UIConfiguration::instance().get_secondary_clock_delta_mode() != NoDelta) {
-			secondary_clock->set_is_duration (true);
+			secondary_clock->set_is_duration (true, timepos_t());
 			secondary_clock->set_editable (false);
 			secondary_clock->set_widget_name ("secondary delta");
 		} else {
-			secondary_clock->set_is_duration (false);
+			secondary_clock->set_is_duration (false, timepos_t());
 			secondary_clock->set_editable (true);
 			secondary_clock->set_widget_name ("secondary");
 		}
@@ -470,6 +456,11 @@ ARDOUR_UI::parameter_changed (std::string p)
 				action_script_call_btn[i].hide();
 			}
 		}
+		if (cols == 0) {
+			scripts_spacer.hide ();
+		} else {
+			scripts_spacer.show ();
+		}
 	} else if (p == "layered-record-mode") {
 		layered_button.set_active (_session->config.get_layered_record_mode ());
 	} else if (p == "flat-buttons") {
@@ -503,6 +494,14 @@ ARDOUR_UI::parameter_changed (std::string p)
 				inhibit_screensaver (false);
 				break;
 		}
+	} else if (p == "clock-display-limit") {
+		/* limit upper value to 99:59:59 (HH:MM:SS) */
+		using namespace Temporal;
+		const samplecnt_t limit = (99*60*60) + (59*60) + (59); /* seconds */
+
+		if (UIConfiguration::instance().get_clock_display_limit() > limit) {
+			UIConfiguration::instance().set_clock_display_limit (limit);
+		}
 	}
 }
 
@@ -535,11 +534,11 @@ ARDOUR_UI::reset_main_clocks ()
 	ENSURE_GUI_THREAD (*this, &ARDOUR_UI::reset_main_clocks)
 
 	if (_session) {
-		primary_clock->set (_session->audible_sample(), true);
-		secondary_clock->set (_session->audible_sample(), true);
+		primary_clock->set (timepos_t (_session->audible_sample()), true);
+		secondary_clock->set (timepos_t (_session->audible_sample()), true);
 	} else {
-		primary_clock->set (0, true);
-		secondary_clock->set (0, true);
+		primary_clock->set (timepos_t(), true);
+		secondary_clock->set (timepos_t(), true);
 	}
 }
 

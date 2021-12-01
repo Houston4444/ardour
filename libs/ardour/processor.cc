@@ -58,9 +58,9 @@ namespace ARDOUR { class Session; }
 // Always saved as Processor, but may be IOProcessor or Send in legacy sessions
 const string Processor::state_node_name = "Processor";
 
-Processor::Processor(Session& session, const string& name)
+Processor::Processor(Session& session, const string& name, Temporal::TimeDomain td)
 	: SessionObject(session, name)
-	, Automatable (session)
+	, Automatable (session, td)
 	, _pending_active(false)
 	, _active(false)
 	, _next_ab_is_active(false)
@@ -82,7 +82,7 @@ Processor::Processor(Session& session, const string& name)
 Processor::Processor (const Processor& other)
 	: Evoral::ControlSet (other)
 	, SessionObject (other.session(), other.name())
-	, Automatable (other.session())
+	, Automatable (other.session(), other.time_domain())
 	, Latent (other)
 	, _pending_active(other._pending_active)
 	, _active(other._active)
@@ -292,12 +292,12 @@ Processor::map_loop_range (samplepos_t& start, samplepos_t& end) const
 		return false;
 	}
 
-	const samplepos_t loop_end = _loop_location->end ();
+	const samplepos_t loop_end = _loop_location->end().samples ();
 	if (start < loop_end) {
 		return false;
 	}
 
-	const samplepos_t loop_start   = _loop_location->start ();
+	const samplepos_t loop_start   = _loop_location->start().samples ();
 	const samplecnt_t looplen      = loop_end - loop_start;
 	const sampleoffset_t start_off = (start - loop_start) % looplen;
 	const samplepos_t start_pos    = loop_start + start_off;
@@ -331,4 +331,19 @@ SessionObject*
 Processor::owner() const
 {
 	return _owner;
+}
+
+bool
+Processor::check_active ()
+{
+	if (_active) {
+		if (!_pending_active) {
+			_active = false;
+		}
+	} else {
+		if (_pending_active) {
+			_active = true;
+		}
+	}
+	return _active;
 }

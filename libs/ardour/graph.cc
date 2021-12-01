@@ -27,6 +27,9 @@
 #include "pbd/debug_rt_alloc.h"
 #include "pbd/pthread_utils.h"
 
+#include "temporal/superclock.h"
+#include "temporal/tempo.h"
+
 #include "ardour/audioengine.h"
 #include "ardour/debug.h"
 #include "ardour/graph.h"
@@ -224,9 +227,37 @@ Graph::clear_other_chain ()
 }
 
 void
-Graph::prep ()
+Graph::swap_process_chain ()
 {
+	/* Intended to be called Session::process_audition.
+	 * Must not be called while the graph is processing.
+	 */
+	bool need_prep = false;
 	if (_swap_mutex.trylock ()) {
+		/* swap mutex acquired */
+		if (_current_chain != _pending_chain) {
+			/* use new chain */
+			_setup_chain   = _current_chain;
+			_current_chain = _pending_chain;
+			_trigger_queue.clear ();
+			/* ensure that all nodes can be queued */
+			_trigger_queue.reserve (_nodes_rt[_current_chain].size ());
+			g_atomic_int_set (&_trigger_queue_size, 0);
+			_cleanup_cond.signal ();
+			need_prep = true;
+		}
+		_swap_mutex.unlock ();
+	}
+
+	if (need_prep) {
+		prep (false);
+	}
+}
+
+void
+Graph::prep (bool check_pending_chain)
+{
+	if (check_pending_chain && _swap_mutex.trylock ()) {
 		/* swap mutex acquired */
 		if (_current_chain != _pending_chain) {
 			/* use new chain */
@@ -420,7 +451,7 @@ Graph::run_one ()
 	while (!to_run) {
 		/* Wait for work, fall asleep */
 		g_atomic_int_inc (&_idle_thread_cnt);
-		assert (g_atomic_uint_get (&_idle_thread_cnt) <= _n_workers);
+		assert (g_atomic_uint_get (&_idle_thread_cnt) <= g_atomic_uint_get (&_n_workers));
 
 		DEBUG_TRACE (DEBUG::ProcessThreads, string_compose ("%1 goes to sleep\n", pthread_name ()));
 		_execution_sem.wait ();
@@ -467,6 +498,7 @@ Graph::helper_thread ()
 	pt->get_buffers ();
 
 	while (!g_atomic_int_get (&_terminate)) {
+		setup_thread_local_variables ();
 		run_one ();
 	}
 
@@ -520,11 +552,18 @@ again:
 
 	/* After setup, the main-thread just becomes a normal worker */
 	while (!g_atomic_int_get (&_terminate)) {
+		setup_thread_local_variables ();
 		run_one ();
 	}
 
 	pt->drop_buffers ();
 	delete (pt);
+}
+
+void
+Graph::setup_thread_local_variables ()
+{
+	Temporal::TempoMap::fetch ();
 }
 
 void

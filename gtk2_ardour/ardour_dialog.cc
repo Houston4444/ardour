@@ -29,6 +29,7 @@
 #include "ardour_ui.h"
 #include "keyboard.h"
 #include "splash.h"
+#include "ui_config.h"
 #include "utils.h"
 #include "window_manager.h"
 
@@ -92,7 +93,7 @@ ArdourDialog::pop_splash ()
 		Splash* spl = Splash::exists () ? Splash::instance() : NULL;
 
 		if (spl) {
-			spl->pop_front();
+			spl->pop_front_for (*this);
 		}
 		_splash_pushed = false;
 	}
@@ -118,6 +119,7 @@ void
 ArdourDialog::on_unmap ()
 {
 	Keyboard::the_keyboard().leave_window (0, this);
+	pop_splash ();
 	Dialog::on_unmap ();
 }
 
@@ -131,10 +133,8 @@ ArdourDialog::on_show ()
 	if (Splash::exists()) {
 		Splash* spl = Splash::instance();
 
-		if (spl->is_visible()) {
-			spl->pop_back_for (*this);
-			_splash_pushed = true;
-		}
+		spl->pop_back_for (*this);
+		_splash_pushed = true;
 	}
 
 	_sensitive = true;
@@ -152,7 +152,16 @@ ArdourDialog::init ()
 {
 	set_border_width (10);
 	add_events (Gdk::FOCUS_CHANGE_MASK);
+
+#ifdef __APPLE__
 	set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
+#else
+	if (UIConfiguration::instance().get_all_floating_windows_are_dialogs () || get_modal ()) {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
+	} else {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_UTILITY);
+	}
+#endif
 
 	Gtk::Window* parent = WM::Manager::instance().transient_parent();
 

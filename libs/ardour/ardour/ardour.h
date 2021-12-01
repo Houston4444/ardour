@@ -49,6 +49,7 @@ namespace MIDI {
 namespace ARDOUR {
 
 	class AudioEngine;
+	class Session;
 
 	extern LIBARDOUR_API PBD::Signal1<void,std::string> BootMessage;
 	extern LIBARDOUR_API PBD::Signal3<void,std::string,std::string,bool> PluginScanMessage;
@@ -58,7 +59,6 @@ namespace ARDOUR {
 	extern LIBARDOUR_API std::map<std::string, bool> reserved_io_names;
 
 	/**
-	 * @param with_vst true to enable VST Support
 	 * @param try_optimization true to enable hardware optimized routines
 	 * for mixing, finding peak values etc.
 	 * @param localedir Directory to look for localisation files
@@ -67,7 +67,7 @@ namespace ARDOUR {
 	 *
 	 * @return true if Ardour library was successfully initialized
 	 */
-	LIBARDOUR_API bool init (bool with_vst, bool try_optimization, const char* localedir, bool with_gui = false);
+	LIBARDOUR_API bool init (bool try_optimization, const char* localedir, bool with_gui = false);
 	LIBARDOUR_API void init_post_engine (uint32_t);
 	LIBARDOUR_API void cleanup ();
 	LIBARDOUR_API bool no_auto_connect ();
@@ -82,8 +82,6 @@ namespace ARDOUR {
 	LIBARDOUR_API bool translations_are_enabled ();
 	LIBARDOUR_API bool set_translations_enabled (bool);
 
-	LIBARDOUR_API microseconds_t get_microseconds ();
-
 	LIBARDOUR_API void setup_fpu ();
 	LIBARDOUR_API std::vector<SyncSource> get_available_sync_options();
 
@@ -94,6 +92,8 @@ namespace ARDOUR {
 	 */
 	LIBARDOUR_API void check_for_old_configuration_files ();
 	LIBARDOUR_API int handle_old_configuration_files (boost::function<bool (std::string const&, std::string const&, int)> ui_handler);
+
+	LIBARDOUR_API void reset_performance_meters (Session*);
 }
 
 #endif /* __ardour_ardour_h__ */

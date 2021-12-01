@@ -33,7 +33,6 @@
 #include <gtkmm/stock.h>
 
 #include "pbd/memento_command.h"
-#include "pbd/stacktrace.h"
 #include "pbd/controllable.h"
 #include "pbd/enumwriter.h"
 
@@ -57,6 +56,7 @@
 #include "ardour/route.h"
 #include "ardour/session.h"
 #include "ardour/session_playlists.h"
+#include "ardour/solo_mute_release.h"
 #include "ardour/template_utils.h"
 
 #include "gtkmm2ext/gtk_ui.h"
@@ -105,18 +105,33 @@ PBD::Signal1<void, boost::shared_ptr<Route> > RouteUI::BusSendDisplayChanged;
 boost::weak_ptr<Route> RouteUI::_showing_sends_to;
 std::string RouteUI::program_port_prefix;
 
+RouteUI::IOSelectorMap RouteUI::input_selectors;
+RouteUI::IOSelectorMap RouteUI::output_selectors;
+
+void
+RouteUI::delete_ioselector (IOSelectorMap& m, boost::shared_ptr<ARDOUR::Route> r)
+{
+	if (!r) {
+		return;
+	}
+	IOSelectorMap::iterator i = m.find (r->id ());
+	if (i != m.end ()) {
+		delete i->second;
+		m.erase (i);
+	}
+}
+
 RouteUI::RouteUI (ARDOUR::Session* sess)
 	: monitor_input_button (0)
 	, monitor_disk_button (0)
 	, mute_menu(0)
 	, solo_menu(0)
 	, sends_menu(0)
-	, record_menu(0)
-	, comment_window(0)
-	, comment_area(0)
-	, input_selector (0)
-	, output_selector (0)
 	, playlist_action_menu (0)
+	, _playlist_selector(0)
+	, _record_menu(0)
+	, _comment_window(0)
+	, _comment_area(0)
 	, _invert_menu(0)
 {
 	if (program_port_prefix.empty()) {
@@ -127,6 +142,7 @@ RouteUI::RouteUI (ARDOUR::Session* sess)
 	}
 
 	if (sess) {
+		assert (_session);
 		init ();
 	}
 }
@@ -139,20 +155,22 @@ RouteUI::~RouteUI()
 
 	delete_patch_change_dialog ();
 
+	delete_ioselector (input_selectors, _route);
+	delete_ioselector (output_selectors, _route);
+
 	_route.reset (); /* drop reference to route, so that it can be cleaned up */
 	route_connections.drop_connections ();
 
 	delete solo_menu;
 	delete mute_menu;
 	delete sends_menu;
-	delete record_menu;
-	delete comment_window;
-	delete input_selector;
-	delete output_selector;
 	delete monitor_input_button;
 	delete monitor_disk_button;
 	delete playlist_action_menu;
+	delete _record_menu;
+	delete _comment_window;
 	delete _invert_menu;
+	delete _playlist_selector;
 
 	send_blink_connection.disconnect ();
 	rec_blink_connection.disconnect ();
@@ -162,10 +180,11 @@ void
 RouteUI::init ()
 {
 	self_destruct = true;
+	_playlist_selector = 0;
 	mute_menu = 0;
 	solo_menu = 0;
 	sends_menu = 0;
-	record_menu = 0;
+	_record_menu = 0;
 	_invert_menu = 0;
 	pre_fader_mute_check = 0;
 	post_fader_mute_check = 0;
@@ -178,15 +197,11 @@ RouteUI::init ()
 	_solo_release = 0;
 	_mute_release = 0;
 	denormal_menu_item = 0;
-	step_edit_item = 0;
-	rec_safe_item = 0;
-	multiple_mute_change = false;
-	multiple_solo_change = false;
+	_step_edit_item = 0;
+	_rec_safe_item = 0;
+	_ignore_comment_edit = false;
 	_i_am_the_modifier = 0;
 	_n_polarity_invert = 0;
-
-	input_selector = 0;
-	output_selector = 0;
 
 	setup_invert_buttons ();
 
@@ -196,7 +211,6 @@ RouteUI::init ()
 
 	solo_button = manage (new ArdourButton);
 	solo_button->set_name ("solo button");
-	UI::instance()->set_tip (solo_button, _("Mute other (non-soloed) tracks"), "");
 	solo_button->set_no_show_all (true);
 
 	rec_enable_button = manage (new ArdourButton);
@@ -227,7 +241,7 @@ RouteUI::init ()
 	_session->SoloChanged.connect (_session_connections, invalidator (*this), boost::bind (&RouteUI::solo_changed_so_update_mute, this), gui_context());
 	_session->TransportStateChange.connect (_session_connections, invalidator (*this), boost::bind (&RouteUI::check_rec_enable_sensitivity, this), gui_context());
 	_session->RecordStateChanged.connect (_session_connections, invalidator (*this), boost::bind (&RouteUI::session_rec_enable_changed, this), gui_context());
-	_session->MonitorBusAddedOrRemoved.connect (_session_connections, invalidator (*this), boost::bind (&RouteUI::set_button_names, this), gui_context());
+	_session->MonitorBusAddedOrRemoved.connect (_session_connections, invalidator (*this), boost::bind (&RouteUI::update_solo_button, this), gui_context());
 
 	_session->config.ParameterChanged.connect (*this, invalidator (*this), boost::bind (&RouteUI::parameter_changed, this, _1), gui_context());
 	Config->ParameterChanged.connect (*this, invalidator (*this), boost::bind (&RouteUI::parameter_changed, this, _1), gui_context());
@@ -280,13 +294,35 @@ RouteUI::self_delete ()
 }
 
 void
+RouteUI::set_session (ARDOUR::Session*s)
+{
+	SessionHandlePtr::set_session (s);
+
+	if (!s) {
+		/* This is needed to clean out IDs of sends, when using output selector
+		 * with MixerStrip::_current_delivery.
+		 * It's also prudent to hide/destroy input-selectors early, before delayed
+		 * self_delete() can do that in the ~RouteUI.
+		 */
+		for (IOSelectorMap::const_iterator i = input_selectors.begin(); i != input_selectors.end() ; ++i) {
+			delete i->second;
+		}
+		for (IOSelectorMap::const_iterator i = output_selectors.begin(); i != output_selectors.end() ; ++i) {
+			delete i->second;
+		}
+		input_selectors.clear ();
+		output_selectors.clear ();
+	}
+}
+
+void
 RouteUI::set_route (boost::shared_ptr<Route> rp)
 {
 	reset ();
 
 	_route = rp;
 
-	if ( !_route->presentation_info().color_set() ) {
+	if (!_route->presentation_info().color_set()) {
 		/* deal with older 4.x color, which was stored in the GUI object state */
 
 		string p = ARDOUR_UI::instance()->gui_object_state->get_string (route_state_id(), X_("color"));
@@ -328,12 +364,6 @@ RouteUI::set_route (boost::shared_ptr<Route> rp)
 	if (self_destruct) {
 		rp->DropReferences.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::self_delete, this), gui_context());
 	}
-
-	delete input_selector;
-	input_selector = 0;
-
-	delete output_selector;
-	output_selector = 0;
 
 	mute_button->set_controllable (_route->mute_control());
 	solo_button->set_controllable (_route->solo_control());
@@ -406,6 +436,7 @@ RouteUI::set_route (boost::shared_ptr<Route> rp)
 
 	update_mute_display ();
 	update_solo_display ();
+	update_solo_button ();
 
 	if (!UIConfiguration::instance().get_blink_rec_arm()) {
 		blink_rec_display(true); // set initial rec-en button state
@@ -427,8 +458,6 @@ RouteUI::mute_press (GdkEventButton* ev)
 	//if this is a binding action, let the ArdourButton handle it
 	if (BindingProxy::is_bind_action(ev) )
 		return false;
-
-	multiple_mute_change = false;
 
 	if (Keyboard::is_context_menu_event (ev)) {
 
@@ -473,7 +502,7 @@ RouteUI::mute_press (GdkEventButton* ev)
 				}
 
 				if (_mute_release) {
-					_mute_release->routes = copy;
+					_mute_release->set (copy);
 				}
 
 				_session->set_controls (route_list_to_control_list (copy, &Stripable::mute_control), _route->muted_by_self() ? 0.0 : 1.0, Controllable::UseGroup);
@@ -501,11 +530,11 @@ RouteUI::mute_press (GdkEventButton* ev)
 					rl->push_back (_route);
 
 					if (_mute_release) {
-						_mute_release->routes = rl;
+						_mute_release->set (rl);
 					}
 
 					boost::shared_ptr<MuteControl> mc = _route->mute_control();
-					mc->start_touch (_session->audible_sample ());
+					mc->start_touch (timepos_t (_session->audible_sample ()));
 					_session->set_controls (route_list_to_control_list (rl, &Stripable::mute_control), _route->muted_by_self() ? 0.0 : 1.0, Controllable::InverseGroup);
 				}
 
@@ -517,11 +546,11 @@ RouteUI::mute_press (GdkEventButton* ev)
 				rl->push_back (_route);
 
 				if (_mute_release) {
-					_mute_release->routes = rl;
+					_mute_release->set (rl);
 				}
 
 				boost::shared_ptr<MuteControl> mc = _route->mute_control();
-				mc->start_touch (_session->audible_sample ());
+				mc->start_touch (timepos_t (_session->audible_sample ()));
 				mc->set_value (!_route->muted_by_self(), Controllable::UseGroup);
 			}
 		}
@@ -533,13 +562,13 @@ RouteUI::mute_press (GdkEventButton* ev)
 bool
 RouteUI::mute_release (GdkEventButton* /*ev*/)
 {
-	if (_mute_release){
-		_session->set_controls (route_list_to_control_list (_mute_release->routes, &Stripable::mute_control), _mute_release->active, Controllable::UseGroup);
+	if (_mute_release) {
+		_mute_release->release (_session, true);
 		delete _mute_release;
 		_mute_release = 0;
 	}
 
-	_route->mute_control()->stop_touch (_session->audible_sample ());
+	_route->mute_control()->stop_touch (timepos_t (_session->audible_sample ()));
 
 	return false;
 }
@@ -547,47 +576,44 @@ RouteUI::mute_release (GdkEventButton* /*ev*/)
 void
 RouteUI::edit_output_configuration ()
 {
-	if (output_selector == 0) {
-
-		boost::shared_ptr<Send> send;
-		boost::shared_ptr<IO> output;
-
-		if ((send = boost::dynamic_pointer_cast<Send>(_current_delivery)) != 0) {
-			if (!boost::dynamic_pointer_cast<InternalSend>(send)) {
-				output = send->output();
-			} else {
-				output = _route->output ();
-			}
-		} else {
-			output = _route->output ();
-		}
-
-		output_selector = new IOSelectorWindow (_session, output);
+	boost::shared_ptr<Send> send = boost::dynamic_pointer_cast<Send>(_current_delivery);
+	if (send && !boost::dynamic_pointer_cast<InternalSend>(send)) {
+		send.reset ();
 	}
 
-	if (output_selector->is_visible()) {
-		output_selector->get_toplevel()->get_window()->raise();
+	PBD::ID id = send ? send->id () : _route->id ();
+
+	if (output_selectors.find (id) == output_selectors.end ()) {
+		output_selectors[_route->id ()] =  new IOSelectorWindow (_session, send ? send->output () : _route->output ());
+	}
+
+	IOSelectorWindow* w = output_selectors[id];
+
+	if (w->is_visible()) {
+		w->get_toplevel()->get_window()->raise();
 	} else {
-		output_selector->present ();
+		w->present ();
 	}
 
-	//output_selector->set_keep_above (true);
+	//w->set_keep_above (true);
 }
 
 void
 RouteUI::edit_input_configuration ()
 {
-	if (input_selector == 0) {
-		input_selector = new IOSelectorWindow (_session, _route->input());
+	if (input_selectors.find (_route->id ()) == input_selectors.end ()) {
+		input_selectors[_route->id ()] = new IOSelectorWindow (_session, _route->input());
 	}
 
-	if (input_selector->is_visible()) {
-		input_selector->get_toplevel()->get_window()->raise();
+	IOSelectorWindow* w = input_selectors[_route->id ()];
+
+	if (w->is_visible()) {
+		w->get_toplevel()->get_window()->raise();
 	} else {
-		input_selector->present ();
+		w->present ();
 	}
 
-	//input_selector->set_keep_above (true);
+	//w->set_keep_above (true);
 }
 
 bool
@@ -602,8 +628,6 @@ RouteUI::solo_press(GdkEventButton* ev)
 	//if this is a binding action, let the ArdourButton handle it
 	if (BindingProxy::is_bind_action(ev) )
 		return false;
-
-	multiple_solo_change = false;
 
 	if (Keyboard::is_context_menu_event (ev)) {
 
@@ -632,56 +656,24 @@ RouteUI::solo_press(GdkEventButton* ev)
 				/* Primary-Tertiary-click applies change to all routes */
 
 				if (_solo_release) {
-					_solo_release->routes = _session->get_routes ();
+					_solo_release->set (_session->get_routes ());
 				}
 
 				_session->set_controls (route_list_to_control_list (_session->get_routes(), &Stripable::solo_control), !_route->solo_control()->get_value(), Controllable::UseGroup);
 
-			} else if (Keyboard::modifier_state_contains (ev->state, Keyboard::ModifierMask (Keyboard::PrimaryModifier|Keyboard::SecondaryModifier))) {
+			} else if (Keyboard::modifier_state_contains (ev->state, Keyboard::ModifierMask (Keyboard::PrimaryModifier|Keyboard::SecondaryModifier)) || (!_route->self_soloed() && Config->get_exclusive_solo ())) {
 
 				/* Primary-Secondary-click: exclusively solo this track */
 
 				if (_solo_release) {
-					_solo_release->exclusive = true;
-
-					_solo_release->routes_on.reset (new RouteList);
-					_solo_release->routes_off.reset (new RouteList);
-
-					boost::shared_ptr<RouteList> routes = _session->get_routes();
-					for (RouteList::const_iterator i = routes->begin(); i != routes->end(); ++i) {
-#ifdef MIXBUS
-						if ((0 == _route->mixbus()) != (0 == (*i)->mixbus ())) {
-							continue;
-						}
-#endif
-						if ((*i)->soloed ()) {
-							_solo_release->routes_on->push_back (*i);
-						} else {
-							_solo_release->routes_off->push_back (*i);
-						}
-					}
-				}
-
-				boost::shared_ptr<RouteList> rl (new RouteList);
-				boost::shared_ptr<RouteList> routes = _session->get_routes();
-				for (RouteList::const_iterator i = routes->begin(); i != routes->end(); ++i) {
-#ifdef MIXBUS
-					if ((0 == _route->mixbus()) != (0 == (*i)->mixbus ())) {
-						continue;
-					}
-#endif
-					if ((*i)->soloed ()) {
-						rl->push_back (*i);
-					}
-				}
-				_session->set_controls (route_list_to_control_list (rl, &Stripable::solo_control), false, Controllable::UseGroup);
-
-				if (Config->get_solo_control_is_listen_control()) {
-					/* ??? we need a just_one_listen() method */
+					_session->prepare_momentary_solo (_solo_release, true, _route);
 				} else {
-					DisplaySuspender ds;
-					_route->solo_control()->set_value (1.0, Controllable::NoGroup);
+					/* clear solo state */
+					_session->prepare_momentary_solo (0, true, _route);
 				}
+
+				DisplaySuspender ds;
+				_route->solo_control()->set_value (1.0, Controllable::NoGroup);
 
 			} else if (Keyboard::modifier_state_equals (ev->state, Keyboard::TertiaryModifier)) {
 
@@ -721,9 +713,11 @@ RouteUI::solo_press(GdkEventButton* ev)
 					rl.reset (new RouteList);
 					rl->push_back (_route);
 
+#if 0 // XX why? _solo_release is deleted below
 					if (_solo_release) {
-						_solo_release->routes = rl;
+						_solo_release->set (rl);
 					}
+#endif
 
 					_session->set_controls (route_list_to_control_list (rl, &Stripable::solo_control), !_route->self_soloed(), Controllable::InverseGroup);
 				}
@@ -739,7 +733,7 @@ RouteUI::solo_press(GdkEventButton* ev)
 				rl->push_back (route());
 
 				if (_solo_release) {
-					_solo_release->routes = rl;
+					_solo_release->set (rl);
 				}
 
 				_session->set_controls (route_list_to_control_list (rl, &Stripable::solo_control), !_route->self_soloed(), Controllable::UseGroup);
@@ -754,13 +748,7 @@ bool
 RouteUI::solo_release (GdkEventButton* /*ev*/)
 {
 	if (_solo_release) {
-		if (_solo_release->exclusive) {
-			_session->set_controls (route_list_to_control_list (_solo_release->routes_off, &Stripable::solo_control), 0.0, Controllable::NoGroup);
-			_session->set_controls (route_list_to_control_list (_solo_release->routes_on, &Stripable::solo_control), 1.0, Controllable::NoGroup);
-		} else {
-			_session->set_controls (route_list_to_control_list (_solo_release->routes, &Stripable::solo_control), _solo_release->active ? 1.0 : 0.0, Controllable::UseGroup);
-		}
-
+		_solo_release->release (_session, false);
 		delete _solo_release;
 		_solo_release = 0;
 	}
@@ -937,31 +925,31 @@ RouteUI::monitor_release (GdkEventButton* ev, MonitorChoice monitor_choice)
 void
 RouteUI::build_record_menu ()
 {
-	if (!record_menu) {
-		record_menu = new Menu;
-		record_menu->set_name ("ArdourContextMenu");
+	if (!_record_menu) {
+		_record_menu = new Menu;
+		_record_menu->set_name ("ArdourContextMenu");
 		using namespace Menu_Helpers;
-		MenuList& items = record_menu->items();
+		MenuList& items = _record_menu->items();
 
 		items.push_back (CheckMenuElem (_("Rec-Safe"), sigc::mem_fun (*this, &RouteUI::toggle_rec_safe)));
-		rec_safe_item = dynamic_cast<Gtk::CheckMenuItem*> (&items.back());
+		_rec_safe_item = dynamic_cast<Gtk::CheckMenuItem*> (&items.back());
 
 		if (is_midi_track()) {
 			items.push_back (SeparatorElem());
 			items.push_back (CheckMenuElem (_("Step Entry"), sigc::mem_fun (*this, &RouteUI::toggle_step_edit)));
-			step_edit_item = dynamic_cast<Gtk::CheckMenuItem*> (&items.back());
+			_step_edit_item = dynamic_cast<Gtk::CheckMenuItem*> (&items.back());
 		}
 	}
 
-	if (step_edit_item) {
+	if (_step_edit_item) {
 		if (track()->rec_enable_control()->get_value()) {
-			step_edit_item->set_sensitive (false);
+			_step_edit_item->set_sensitive (false);
 		}
-		step_edit_item->set_active (midi_track()->step_editing());
+		_step_edit_item->set_active (midi_track()->step_editing());
 	}
-	if (rec_safe_item) {
-		rec_safe_item->set_sensitive (!_route->rec_enable_control()->get_value());
-		rec_safe_item->set_active (_route->rec_safe_control()->get_value());
+	if (_rec_safe_item) {
+		_rec_safe_item->set_sensitive (!_route->rec_enable_control()->get_value());
+		_rec_safe_item->set_active (_route->rec_safe_control()->get_value());
 	}
 }
 
@@ -972,7 +960,7 @@ RouteUI::toggle_step_edit ()
 		return;
 	}
 
-	midi_track()->set_step_editing (step_edit_item->get_active());
+	midi_track()->set_step_editing (_step_edit_item->get_active());
 }
 
 void
@@ -992,7 +980,7 @@ RouteUI::toggle_rec_safe ()
 		return;
 	}
 
-	rs->set_value (rec_safe_item->get_active (), Controllable::UseGroup);
+	rs->set_value (_rec_safe_item->get_active (), Controllable::UseGroup);
 }
 
 void
@@ -1005,8 +993,8 @@ RouteUI::step_edit_changed (bool yn)
 
 		start_step_editing ();
 
-		if (step_edit_item) {
-			step_edit_item->set_active (true);
+		if (_step_edit_item) {
+			_step_edit_item->set_active (true);
 		}
 
 	} else {
@@ -1017,8 +1005,8 @@ RouteUI::step_edit_changed (bool yn)
 
 		stop_step_editing ();
 
-		if (step_edit_item) {
-			step_edit_item->set_active (false);
+		if (_step_edit_item) {
+			_step_edit_item->set_active (false);
 		}
 	}
 }
@@ -1028,8 +1016,8 @@ RouteUI::rec_enable_release (GdkEventButton* ev)
 {
 	if (Keyboard::is_context_menu_event (ev)) {
 		build_record_menu ();
-		if (record_menu) {
-			record_menu->popup (1, ev->time);
+		if (_record_menu) {
+			_record_menu->popup (1, ev->time);
 		}
 		return false;
 	}
@@ -1046,36 +1034,44 @@ RouteUI::build_sends_menu ()
 	sends_menu->set_name ("ArdourContextMenu");
 	MenuList& items = sends_menu->items();
 
-	items.push_back (
-		MenuElem(_("Assign all tracks (prefader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PreFader, false))
-		);
+	if (!is_foldbackbus ()) {
+		items.push_back (
+				MenuElem(_("Assign all tracks (prefader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PreFader, false))
+				);
 
-	items.push_back (
-		MenuElem(_("Assign all tracks and busses (prefader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PreFader, true))
-		);
+		items.push_back (
+				MenuElem(_("Assign all tracks and busses (prefader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PreFader, true))
+				);
 
-	items.push_back (
-		MenuElem(_("Assign all tracks (postfader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PostFader, false))
-		);
+		items.push_back (
+				MenuElem(_("Assign all tracks (postfader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PostFader, false))
+				);
 
-	items.push_back (
-		MenuElem(_("Assign all tracks and busses (postfader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PostFader, true))
-		);
+		items.push_back (
+				MenuElem(_("Assign all tracks and busses (postfader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_sends), PostFader, true))
+				);
+	}
 
 	items.push_back (
 		MenuElem(_("Assign selected tracks (prefader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_selected_sends), PreFader, false))
 		);
 
-	items.push_back (
-		MenuElem(_("Assign selected tracks and busses (prefader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_selected_sends), PreFader, true)));
+	if (!is_foldbackbus ()) {
+		items.push_back (
+				MenuElem(_("Assign selected tracks and busses (prefader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_selected_sends), PreFader, true)));
+	}
 
 	items.push_back (
 		MenuElem(_("Assign selected tracks (postfader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_selected_sends), PostFader, false))
 		);
 
-	items.push_back (
-		MenuElem(_("Assign selected tracks and busses (postfader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_selected_sends), PostFader, true))
-		);
+	if (!is_foldbackbus ()) {
+		items.push_back (
+				MenuElem(_("Assign selected tracks and busses (postfader)"), sigc::bind (sigc::mem_fun (*this, &RouteUI::create_selected_sends), PostFader, true))
+				);
+	}
+
+	items.push_back (SeparatorElem());
 
 	items.push_back (MenuElem(_("Copy track/bus gains to sends"), sigc::mem_fun (*this, &RouteUI::set_sends_gain_from_track)));
 	items.push_back (MenuElem(_("Set sends gain to -inf"), sigc::mem_fun (*this, &RouteUI::set_sends_gain_to_zero)));
@@ -1131,7 +1127,7 @@ RouteUI::set_sends_gain_to_unity ()
 bool
 RouteUI::show_sends_press(GdkEventButton* ev)
 {
-	if (ev->type == GDK_2BUTTON_PRESS || ev->type == GDK_3BUTTON_PRESS ) {
+	if (ev->type == GDK_2BUTTON_PRESS || ev->type == GDK_3BUTTON_PRESS) {
 		return true;
 	}
 
@@ -1150,7 +1146,7 @@ RouteUI::show_sends_press(GdkEventButton* ev)
 
 			sends_menu->popup (0, ev->time);
 
-		} else {
+		} else if (ev->button == 1) {
 
 			boost::shared_ptr<Route> s = _showing_sends_to.lock ();
 
@@ -1162,9 +1158,10 @@ RouteUI::show_sends_press(GdkEventButton* ev)
 				Mixer_UI::instance()->show_spill (_route);
 			}
 		}
+		return true;
 	}
 
-	return true;
+	return false;
 }
 
 bool
@@ -1394,15 +1391,15 @@ RouteUI::blink_rec_display (bool blinkOn)
 				break;
 		}
 
-		if (step_edit_item) {
-			step_edit_item->set_sensitive (false);
+		if (_step_edit_item) {
+			_step_edit_item->set_sensitive (false);
 		}
 
 	} else {
 		rec_enable_button->unset_active_state ();
 
-		if (step_edit_item) {
-			step_edit_item->set_sensitive (true);
+		if (_step_edit_item) {
+			_step_edit_item->set_sensitive (true);
 		}
 	}
 
@@ -1750,12 +1747,8 @@ RouteUI::route_rename ()
 void
 RouteUI::toggle_comment_editor ()
 {
-//	if (ignore_toggle) {
-//		return;
-//	}
-
-	if (comment_window && comment_window->is_visible ()) {
-		comment_window->hide ();
+	if (_comment_window && _comment_window->is_visible ()) {
+		_comment_window->hide ();
 	} else {
 		open_comment_editor ();
 	}
@@ -1765,7 +1758,7 @@ RouteUI::toggle_comment_editor ()
 void
 RouteUI::open_comment_editor ()
 {
-	if (comment_window == 0) {
+	if (_comment_window == 0) {
 		setup_comment_editor ();
 	}
 
@@ -1773,36 +1766,36 @@ RouteUI::open_comment_editor ()
 	title = _route->name();
 	title += _(": comment editor");
 
-	comment_window->set_title (title);
-	comment_window->present();
+	_comment_window->set_title (title);
+	_comment_window->present();
 }
 
 void
 RouteUI::setup_comment_editor ()
 {
-	comment_window = new ArdourWindow (""); // title will be reset to show route
-	comment_window->set_skip_taskbar_hint (true);
-	comment_window->signal_hide().connect (sigc::mem_fun(*this, &MixerStrip::comment_editor_done_editing));
-	comment_window->set_default_size (400, 200);
+	_comment_window = new ArdourWindow (""); // title will be reset to show route
+	_comment_window->set_skip_taskbar_hint (true);
+	_comment_window->signal_hide().connect (sigc::mem_fun(*this, &MixerStrip::comment_editor_done_editing));
+	_comment_window->set_default_size (400, 200);
 
-	comment_area = manage (new TextView());
-	comment_area->set_name ("MixerTrackCommentArea");
-	comment_area->set_wrap_mode (WRAP_WORD);
-	comment_area->set_editable (true);
-	comment_area->get_buffer()->set_text (_route->comment());
-	comment_area->show ();
+	_comment_area = manage (new TextView());
+	_comment_area->set_name ("MixerTrackCommentArea");
+	_comment_area->set_wrap_mode (WRAP_WORD);
+	_comment_area->set_editable (true);
+	_comment_area->get_buffer()->set_text (_route->comment());
+	_comment_area->show ();
 
-	comment_window->add (*comment_area);
+	_comment_window->add (*_comment_area);
 }
 
 void
 RouteUI::comment_changed ()
 {
-	ignore_comment_edit = true;
-	if (comment_area) {
-		comment_area->get_buffer()->set_text (_route->comment());
+	_ignore_comment_edit = true;
+	if (_comment_area) {
+		_comment_area->get_buffer()->set_text (_route->comment());
 	}
-	ignore_comment_edit = false;
+	_ignore_comment_edit = false;
 }
 
 void
@@ -1810,7 +1803,7 @@ RouteUI::comment_editor_done_editing ()
 {
 	ENSURE_GUI_THREAD (*this, &MixerStrip::comment_editor_done_editing, src)
 
-	string const str = comment_area->get_buffer()->get_text();
+	string const str = _comment_area->get_buffer()->get_text();
 	if (str == _route->comment ()) {
 		return;
 	}
@@ -1822,7 +1815,7 @@ void
 RouteUI::set_route_active (bool a, bool apply_to_selection)
 {
 	if (apply_to_selection) {
-		ARDOUR_UI::instance()->the_editor().get_selection().tracks.foreach_route_ui (boost::bind (&RouteTimeAxisView::set_route_active, _1, a, false));
+		ARDOUR_UI::instance()->the_editor().get_selection().tracks.foreach_route_ui (boost::bind (&RouteUI::set_route_active, _1, a, false));
 	} else {
 		_route->set_active (a, this);
 	}
@@ -1879,6 +1872,12 @@ bool
 RouteUI::is_master () const
 {
 	return _route && _route->is_master ();
+}
+
+bool
+RouteUI::is_foldbackbus () const
+{
+	return _route && _route->is_foldbackbus ();
 }
 
 boost::shared_ptr<Track>
@@ -1996,6 +1995,18 @@ RouteUI::check_rec_enable_sensitivity ()
 }
 
 void
+RouteUI::update_solo_button ()
+{
+	set_button_names ();
+
+	if (Config->get_solo_control_is_listen_control()) {
+		UI::instance()->set_tip (solo_button, _("Listen to this track"), "");
+	} else {
+		UI::instance()->set_tip (solo_button, _("Mute other (non-soloed) tracks"), "");
+	}
+}
+
+void
 RouteUI::parameter_changed (string const & p)
 {
 	/* this handles RC and per-session parameter changes */
@@ -2003,7 +2014,7 @@ RouteUI::parameter_changed (string const & p)
 	if (p == "disable-disarm-during-roll") {
 		check_rec_enable_sensitivity ();
 	} else if (p == "solo-control-is-listen-control" || p == "listen-position") {
-		set_button_names ();
+		update_solo_button ();
 	} else if (p == "session-monitoring") {
 		update_monitoring_display ();
 	} else if (p == "auto-input") {
@@ -2037,7 +2048,7 @@ RouteUI::setup_invert_buttons ()
 
 	/* remove old invert buttons */
 	for (vector<ArdourButton*>::iterator i = _invert_buttons.begin(); i != _invert_buttons.end(); ++i) {
-		_invert_button_box.remove (**i);
+		invert_button_box.remove (**i);
 	}
 
 	_invert_buttons.clear ();
@@ -2071,11 +2082,11 @@ RouteUI::setup_invert_buttons ()
 		}
 
 		_invert_buttons.push_back (b);
-		_invert_button_box.pack_start (*b);
+		invert_button_box.pack_start (*b);
 	}
 
-	_invert_button_box.set_spacing (1);
-	_invert_button_box.show_all ();
+	invert_button_box.set_spacing (1);
+	invert_button_box.show_all ();
 
 	update_polarity_display ();
 }
@@ -2428,10 +2439,8 @@ RouteUI::resolve_new_group_playlist_name (std::string const& basename, vector<bo
 }
 
 void
-RouteUI::use_new_playlist (bool prompt, vector<boost::shared_ptr<Playlist> > const& playlists_before_op, bool copy)
+RouteUI::use_new_playlist (std::string name, std::string gid, vector<boost::shared_ptr<Playlist> > const& playlists_before_op, bool copy)
 {
-	string name;
-
 	boost::shared_ptr<Track> tr = track ();
 	if (!tr) {
 		return;
@@ -2442,59 +2451,13 @@ RouteUI::use_new_playlist (bool prompt, vector<boost::shared_ptr<Playlist> > con
 		return;
 	}
 
-	name = pl->name();
-
-	if (route_group() && route_group()->is_active() && route_group()->enabled_property (ARDOUR::Properties::group_select.property_id)) {
-		name = resolve_new_group_playlist_name (name, playlists_before_op);
+	if (copy) {
+		tr->use_copy_playlist ();
+	} else {
+		tr->use_default_new_playlist ();
 	}
-
-	while (_session->playlists()->by_name(name)) {
-		name = Playlist::bump_name (name, *_session);
-	}
-
-	if (prompt) {
-		// TODO: The prompter "new" button should be de-activated if the user
-		// specifies a playlist name which already exists in the session.
-
-		Prompter prompter (true);
-
-		if (copy) {
-			prompter.set_title (_("New Copy Playlist"));
-			prompter.set_prompt (_("Name for playlist copy:"));
-		} else {
-			prompter.set_title (_("New Playlist"));
-			prompter.set_prompt (_("Name for new playlist:"));
-		}
-		prompter.set_initial_text (name);
-		prompter.add_button (Gtk::Stock::NEW, Gtk::RESPONSE_ACCEPT);
-		prompter.set_response_sensitive (Gtk::RESPONSE_ACCEPT, true);
-		prompter.show_all ();
-
-		while (true) {
-			if (prompter.run () != Gtk::RESPONSE_ACCEPT) {
-				return;
-			}
-			prompter.get_result (name);
-			if (name.length()) {
-				if (_session->playlists()->by_name (name)) {
-					MessageDialog msg (_("Given playlist name is not unique."));
-					msg.run ();
-					prompter.set_initial_text (Playlist::bump_name (name, *_session));
-				} else {
-					break;
-				}
-			}
-		}
-	}
-
-	if (name.length()) {
-		if (copy) {
-			tr->use_copy_playlist ();
-		} else {
-			tr->use_default_new_playlist ();
-		}
-		tr->playlist()->set_name (name);
-	}
+	tr->playlist()->set_name (name);
+	tr->playlist()->set_pgroup_id (gid);
 }
 
 void
@@ -2512,13 +2475,6 @@ RouteUI::clear_playlist ()
 
 	ARDOUR_UI::instance()->the_editor().clear_playlist (pl);
 }
-
-
-struct PlaylistSorter {
-	bool operator() (boost::shared_ptr<Playlist> a, boost::shared_ptr<Playlist> b) const {
-		return a->sort_id() < b->sort_id();
-	}
-};
 
 void
 RouteUI::build_playlist_menu ()
@@ -2545,49 +2501,67 @@ RouteUI::build_playlist_menu ()
 	vector<boost::shared_ptr<Playlist> > playlists_tr = _session->playlists()->playlists_for_track (tr);
 
 	/* sort the playlists */
-	PlaylistSorter cmp;
+	PlaylistSorterByID cmp;
 	sort (playlists_tr.begin(), playlists_tr.end(), cmp);
 
 	/* add the playlists to the menu */
 	for (vector<boost::shared_ptr<Playlist> >::iterator i = playlists_tr.begin(); i != playlists_tr.end(); ++i) {
-		playlist_items.push_back (RadioMenuElem (playlist_group, (*i)->name()));
+		string text = (*i)->name();
+		playlist_items.push_back (RadioMenuElem (playlist_group, text));
 		RadioMenuItem *item = static_cast<RadioMenuItem*>(&playlist_items.back());
-		item->signal_toggled().connect(sigc::bind (sigc::mem_fun (*this, &RouteUI::use_playlist), item, boost::weak_ptr<Playlist> (*i)));
-
 		if (tr->playlist()->id() == (*i)->id()) {
 			item->set_active();
 		}
+		item->signal_toggled().connect(sigc::bind (sigc::mem_fun (*this, &RouteUI::use_playlist), item, boost::weak_ptr<Playlist> (*i)));
 	}
+
+	playlist_items.push_back (SeparatorElem());
+	playlist_items.push_back (MenuElem(_("Select ..."), sigc::mem_fun(*this, &RouteUI::show_playlist_selector)));
 
 	playlist_items.push_back (SeparatorElem());
 	playlist_items.push_back (MenuElem (_("Rename..."), sigc::mem_fun(*this, &RouteUI::rename_current_playlist)));
 	playlist_items.push_back (SeparatorElem());
 
 	if (!route_group() || !route_group()->is_active() || !route_group()->enabled_property (ARDOUR::Properties::group_select.property_id)) {
-		playlist_items.push_back (MenuElem (_("New..."), sigc::bind(sigc::mem_fun(editor, &PublicEditor::new_playlists), this)));
-		playlist_items.push_back (MenuElem (_("New Copy..."), sigc::bind(sigc::mem_fun(editor, &PublicEditor::copy_playlists), this)));
-
+		playlist_items.push_back (MenuElem (_("New Playlist..."), sigc::bind(sigc::mem_fun(editor, &PublicEditor::new_playlists_for_grouped_tracks), this, false)));
+		playlist_items.push_back (MenuElem (_("Copy Playlist..."), sigc::bind(sigc::mem_fun(editor, &PublicEditor::new_playlists_for_grouped_tracks), this, true)));
 	} else {
-		// Use a label which tells the user what is happening
-		playlist_items.push_back (MenuElem (_("New Take"), sigc::bind(sigc::mem_fun(editor, &PublicEditor::new_playlists), this)));
-		playlist_items.push_back (MenuElem (_("Copy Take"), sigc::bind(sigc::mem_fun(editor, &PublicEditor::copy_playlists), this)));
-
+		playlist_items.push_back (MenuElem (_("New Playlist (for group)"), sigc::bind(sigc::mem_fun(editor, &PublicEditor::new_playlists_for_grouped_tracks), this, false)));
+		playlist_items.push_back (MenuElem (_("Copy Playlist (for group)"), sigc::bind(sigc::mem_fun(editor, &PublicEditor::new_playlists_for_grouped_tracks), this, true)));
 	}
 
 	playlist_items.push_back (SeparatorElem());
-	playlist_items.push_back (MenuElem (_("Clear Current"), sigc::bind(sigc::mem_fun(editor, &PublicEditor::clear_playlists), this)));
+	if (!route_group() || !route_group()->is_active() || !route_group()->enabled_property (ARDOUR::Properties::group_select.property_id)) {
+		playlist_items.push_back (MenuElem (_("Clear Current"), sigc::bind(sigc::mem_fun(editor, &PublicEditor::clear_grouped_playlists), this)));
+	} else {
+		playlist_items.push_back (MenuElem (_("Clear Current (for group)"), sigc::bind(sigc::mem_fun(editor, &PublicEditor::clear_grouped_playlists), this)));
+	}
 	playlist_items.push_back (SeparatorElem());
 
-	playlist_items.push_back (MenuElem(_("Select from All..."), sigc::mem_fun(*this, &RouteUI::show_playlist_selector)));
+	Menu* advanced_menu = manage (new Menu);
+	MenuList& advanced_items = advanced_menu->items();
+	advanced_items.push_back (MenuElem(_("Copy from ..."), sigc::mem_fun(*this, &RouteUI::show_playlist_copy_selector)));
+	advanced_items.push_back (MenuElem(_("Share with ..."), sigc::mem_fun(*this, &RouteUI::show_playlist_share_selector)));
+	advanced_items.push_back (MenuElem(_("Steal from ..."), sigc::mem_fun(*this, &RouteUI::show_playlist_steal_selector)));
+	playlist_items.push_back (MenuElem (_("Advanced"), *advanced_menu));
 }
 
 void
 RouteUI::use_playlist (RadioMenuItem *item, boost::weak_ptr<Playlist> wpl)
 {
-	assert (is_track());
-
 	// exit if we were triggered by deactivating the old playlist
-	if (!item->get_active()) {
+	if (item && !item->get_active()) {
+		return;
+	}
+
+	PublicEditor::instance().mapover_grouped_routes (sigc::bind (sigc::mem_fun (PublicEditor::instance(), &PublicEditor::mapped_select_playlist_matching), wpl), this, ARDOUR::Properties::group_select.property_id);
+}
+
+
+void
+RouteUI::select_playlist_matching (boost::weak_ptr<Playlist> wpl)
+{
+	if (!is_track()) {
 		return;
 	}
 
@@ -2597,62 +2571,97 @@ RouteUI::use_playlist (RadioMenuItem *item, boost::weak_ptr<Playlist> wpl)
 		return;
 	}
 
-	if (track()->playlist() == pl) {
-		// exit when use_playlist is called by the creation of the playlist menu
-		// or the playlist choice is unchanged
+	if (track()->freeze_state() == Track::Frozen) {
+		/* Don't change playlists of frozen tracks */
 		return;
 	}
 
-	track()->use_playlist (track()->data_type(), pl);
+	if (track()->playlist() == pl) {
+		/* already selected; nothing to do */
+		return;
+	}
 
-	RouteGroup* rg = route_group();
+	if (track()->id() == pl->get_orig_track_id()) {
+		/* this playlist is one of this track's own, no need to match by pgroup-id or name */
+		track()->use_playlist(track()->data_type(), pl);
+		return;
+	}
 
-	if (rg && rg->is_active() && rg->enabled_property (ARDOUR::Properties::group_select.property_id)) {
-		std::string group_string = "." + rg->name() + ".";
+	/* Search for a matching playlist .. either by pgroup_id or name */
+	std::string pgrp_id = pl->pgroup_id();
+	boost::shared_ptr<Playlist> ipl = session()->playlists()->for_pgroup(pgrp_id, track()->id());
+	if (ipl) {
+		//found a playlist that matches the pgroup_id, use it
+		track()->use_playlist (track()->data_type(), ipl);
+	} else {  //fallback to prior behavior ... try to find matching names /*DEPRECATED*/
 
 		std::string take_name = pl->name();
+		std::string group_name;
+		if (track()->route_group()) {
+			group_name = track()->route_group()->name();
+		}
+		std::string group_string = "." + group_name + ".";
+
 		std::string::size_type idx = take_name.find(group_string);
 
-		if (idx == std::string::npos)
-			return;
-
-		take_name = take_name.substr(idx + group_string.length()); // find the bit containing the take number / name
-
-		boost::shared_ptr<RouteList> rl (rg->route_list());
-
-		for (RouteList::const_iterator i = rl->begin(); i != rl->end(); ++i) {
-			if ((*i) == this->route()) {
-				continue;
-			}
-
-			std::string playlist_name = (*i)->name()+group_string+take_name;
-
-			boost::shared_ptr<Track> track = boost::dynamic_pointer_cast<Track>(*i);
-			if (!track) {
-				continue;
-			}
-
-			if (track->freeze_state() == Track::Frozen) {
-				/* Don't change playlists of frozen tracks */
-				continue;
-			}
+		if (idx != std::string::npos) {
+			take_name = take_name.substr(idx + group_string.length()); // find the bit containing the take number / name
+			std::string playlist_name = track()->name()+group_string+take_name;
 
 			boost::shared_ptr<Playlist> ipl = session()->playlists()->by_name(playlist_name);
-			if (!ipl) {
-				// No playlist for this track for this take yet, make it
-				track->use_default_new_playlist();
-				track->playlist()->set_name(playlist_name);
-			} else {
-				track->use_playlist(track->data_type(), ipl);
+			if (ipl) {
+				track()->use_playlist(track()->data_type(), ipl);
 			}
 		}
-	}
+	} //fallback
 }
 
 void
 RouteUI::show_playlist_selector ()
 {
-	ARDOUR_UI::instance()->the_editor().playlist_selector().show_for (this);
+	if (!_playlist_selector) {
+		_playlist_selector = new PlaylistSelector();
+		_playlist_selector->set_session(_session);
+	}
+
+	_playlist_selector->prepare(this, PlaylistSelector::plSelect);
+	_playlist_selector->show ();
+}
+
+void
+RouteUI::show_playlist_copy_selector ()
+{
+	if (!_playlist_selector) {
+		_playlist_selector = new PlaylistSelector();
+		_playlist_selector->set_session(_session);
+	}
+
+	_playlist_selector->prepare(this, PlaylistSelector::plCopy);
+	_playlist_selector->show ();
+}
+
+void
+RouteUI::show_playlist_share_selector ()
+{
+	if (!_playlist_selector) {
+		_playlist_selector = new PlaylistSelector();
+		_playlist_selector->set_session(_session);
+	}
+
+	_playlist_selector->prepare(this, PlaylistSelector::plShare);
+	_playlist_selector->show ();
+}
+
+void
+RouteUI::show_playlist_steal_selector ()
+{
+	if (!_playlist_selector) {
+		_playlist_selector = new PlaylistSelector();
+		_playlist_selector->set_session(_session);
+	}
+
+	_playlist_selector->prepare(this, PlaylistSelector::plSteal);
+	_playlist_selector->show ();
 }
 
 void
@@ -2684,13 +2693,18 @@ RouteUI::rename_current_playlist ()
 		prompter.get_result (name);
 		if (name.length()) {
 			if (_session->playlists()->by_name (name)) {
-				MessageDialog msg (_("Given playlist name is not unique."));
-				msg.run ();
+				prompter.set_prompt (_("That name is already in use.  Use this instead?"));
 				prompter.set_initial_text (Playlist::bump_name (name, *_session));
 			} else {
-				pl->set_name (name);
 				break;
 			}
+		}
+	}
+
+	if (name.length()) {
+		vector<boost::shared_ptr<Playlist> > playlists_gr = _session->playlists()->playlists_for_pgroup (pl->pgroup_id());
+		for (vector<boost::shared_ptr<Playlist> >::iterator i = playlists_gr.begin(); i != playlists_gr.end(); ++i) {
+			(*i)->set_name (name);
 		}
 	}
 }

@@ -363,7 +363,7 @@ ExportProfileManager::set_selection_range (samplepos_t start, samplepos_t end)
 	if (start || end) {
 		selection_range.reset (new Location (session));
 		selection_range->set_name (_("Selection"));
-		selection_range->set (start, end);
+		selection_range->set (timepos_t (start), timepos_t (end));
 	} else {
 		selection_range.reset();
 	}
@@ -380,7 +380,7 @@ ExportProfileManager::set_single_range (samplepos_t start, samplepos_t end, stri
 
 	single_range.reset (new Location (session));
 	single_range->set_name (name);
-	single_range->set (start, end);
+	single_range->set (timepos_t (start), timepos_t (end));
 
 	update_ranges ();
 
@@ -415,7 +415,7 @@ ExportProfileManager::init_timespans (XMLNodeList nodes)
 		ExportTimespanPtr timespan = handler->add_timespan();
 		timespan->set_name (session_range->name());
 		timespan->set_range_id (session_range->id().to_s());
-		timespan->set_range (session_range->start(), session_range->end());
+		timespan->set_range (session_range->start_sample(), session_range->end_sample());
 		state->timespans->push_back (timespan);
 		return false;
 	}
@@ -450,7 +450,7 @@ ExportProfileManager::deserialize_timespan (XMLNode & root)
 		ExportTimespanPtr timespan = handler->add_timespan();
 		timespan->set_name (location->name());
 		timespan->set_range_id (location->id().to_s());
-		timespan->set_range (location->start(), location->end());
+		timespan->set_range (location->start_sample(), location->end_sample());
 		state->timespans->push_back (timespan);
 	}
 
@@ -887,6 +887,46 @@ ExportProfileManager::get_warnings ()
 	}
 
 	/*** Check files ***/
+
+	/* handle_duplicate_format_extensions */
+	for (TimespanList::iterator t1 = timespans->begin(); t1 != timespans->end(); ++t1) {
+
+		typedef std::map<std::string, int> ExtCountMap;
+		ExtCountMap counts;
+
+		FormatStateList::const_iterator format_it;
+		FilenameStateList::const_iterator filename_it;
+
+		for (format_it = formats.begin(), filename_it = filenames.begin();
+		     format_it != formats.end() && filename_it != filenames.end();
+		     ++format_it, ++filename_it) {
+
+			ExportFilenamePtr filename = (*filename_it)->filename;
+			filename->include_channel_config = (_type == StemExport) || (channel_configs.size() > 1);
+
+			for(ChannelConfigStateList::iterator cc_it = channel_configs.begin(); cc_it != channel_configs.end(); ++cc_it) {
+				if (filename->include_channel_config && (*cc_it)->config) {
+					counts[(*cc_it)->config->name() + (*format_it)->format->extension()]++;
+				} else {
+					counts[(*format_it)->format->extension()]++;
+				}
+			}
+		}
+
+		bool duplicates_found = false;
+		for (ExtCountMap::iterator it = counts.begin(); it != counts.end(); ++it) {
+			if (it->second > 1) {
+				duplicates_found = true;
+			}
+		}
+
+		for (format_it = formats.begin(), filename_it = filenames.begin();
+		     format_it != formats.end() && filename_it != filenames.end();
+		     ++format_it, ++filename_it) {
+			ExportFilenamePtr filename = (*filename_it)->filename;
+			filename->include_format_name = duplicates_found;
+		}
+	}
 
 	bool folder_ok = true;
 

@@ -183,7 +183,7 @@ class FaderPort : public ARDOUR::ControlProtocol, public AbstractUI<FaderPortReq
 	void build_gui ();
 
 	bool connection_handler (boost::weak_ptr<ARDOUR::Port>, std::string name1, boost::weak_ptr<ARDOUR::Port>, std::string name2, bool yn);
-	PBD::ScopedConnectionList port_connections;
+	PBD::ScopedConnection _port_connection;
 
 	enum ConnectionState {
 		InputConnected = 0x1,
@@ -197,7 +197,7 @@ class FaderPort : public ARDOUR::ControlProtocol, public AbstractUI<FaderPortReq
 	int fader_lsb;
 	bool fader_is_touched;
 
-	ARDOUR::microseconds_t last_encoder_time;
+	PBD::microseconds_t last_encoder_time;
 	int last_good_encoder_delta;
 	int last_encoder_delta, last_last_encoder_delta;
 

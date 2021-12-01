@@ -34,6 +34,8 @@
 #include "pbd/signals.h"
 #include "pbd/ringbuffer.h"
 #include "pbd/pool.h"
+#include "pbd/g_atomic_compat.h"
+
 #include "midi++/types.h"
 #include "ardour_window.h"
 
@@ -68,7 +70,7 @@ private:
 	 *  equal to 0 when an update is not queued.  May temporarily be negative if a
 	 *  update is handled before it was noted that it had just been queued.
 	 */
-	volatile gint _update_queued;
+	GATOMIC_QUAL gint _update_queued;
 
 	PBD::RingBuffer<char *> fifo;
 	Pool buffer_pool;
@@ -95,7 +97,10 @@ private:
 	PBD::ScopedConnection _manager_connection;
 	MIDI::Parser my_parser;
 
+	boost::shared_ptr<ARDOUR::Port>	tracer_port;
 	boost::shared_ptr<ARDOUR::MidiPort> traced_port;
+
+	static unsigned int window_count;
 };
 
 #endif /* __ardour_gtk_midi_tracer_h__ */

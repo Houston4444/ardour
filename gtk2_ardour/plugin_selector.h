@@ -44,8 +44,6 @@
 #include "ardour/plugin_manager.h"
 #include "ardour/session_handle.h"
 
-#include "widgets/ardour_button.h"
-
 #include "plugin_interest.h"
 #include "ardour_dialog.h"
 
@@ -113,7 +111,6 @@ private:
 	struct PluginColumns : public Gtk::TreeModel::ColumnRecord {
 		PluginColumns () {
 			add (favorite);
-			add (hidden);
 			add (name);
 			add (tags);
 			add (creator);
@@ -123,7 +120,6 @@ private:
 			add (plugin);
 		}
 		Gtk::TreeModelColumn<bool> favorite;
-		Gtk::TreeModelColumn<bool> hidden;
 		Gtk::TreeModelColumn<std::string> name;
 		Gtk::TreeModelColumn<std::string> type_name;
 		Gtk::TreeModelColumn<std::string> creator;
@@ -175,7 +171,6 @@ private:
 	bool show_this_plugin (const ARDOUR::PluginInfoPtr&, const std::string&);
 
 	void favorite_changed (const std::string& path);
-	void hidden_changed (const std::string& path);
 	bool in_row_change;
 
 	void plugin_chosen_from_menu (const ARDOUR::PluginInfoPtr&);
@@ -196,4 +191,3 @@ private:
 };
 
 #endif // __ardour_plugin_selector_h__
-

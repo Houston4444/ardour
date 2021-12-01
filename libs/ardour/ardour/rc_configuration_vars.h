@@ -34,7 +34,7 @@
     DO dump the config using cfgtool to system_config
     after modifying this file.
 
-    ./waf && gtk2_ardour/arcfg system_config
+S    ./waf && gtk2_ardour/arcfg system_config
 *****************************************************/
 
 /* IO connection */
@@ -46,6 +46,12 @@ CONFIG_VARIABLE (bool, auto_connect_standard_busses, "auto-connect-standard-buss
 CONFIG_VARIABLE (AutoConnectOption, output_auto_connect, "output-auto-connect", AutoConnectMaster)
 CONFIG_VARIABLE (AutoConnectOption, input_auto_connect, "input-auto-connect", AutoConnectPhysical)
 CONFIG_VARIABLE (bool, strict_io, "strict-io", true)
+
+/* Connect all physical inputs to a dummy port, this makes raw input data available.
+ * `jack_port_get_buffer (jack_port_by_name (c, "system:capture_1") , n_samples);`
+ * nees to work for input-monitoring (recorder page).
+ */
+CONFIG_VARIABLE (bool, work_around_jack_no_copy_optimization, "work-around-jack-no-copy-optimization", true)
 
 /* Naming */
 CONFIG_VARIABLE (TracksAutoNamingRule, tracks_auto_naming, "tracks-auto-naming", UseDefaultNames)
@@ -70,6 +76,7 @@ CONFIG_VARIABLE (int32_t, initial_program_change, "initial-program-change", -1)
 CONFIG_VARIABLE (bool, first_midi_bank_is_zero, "display-first-midi-bank-as-zero", false)
 CONFIG_VARIABLE (int32_t, inter_scene_gap_samples, "inter-scene-gap-samples", 1)
 CONFIG_VARIABLE (bool, midi_input_follows_selection, "midi-input-follows-selection", 1)
+CONFIG_VARIABLE (std::string, default_trigger_input_port, "default-trigger-input-port", "")
 
 /* Timecode and related */
 
@@ -97,7 +104,7 @@ CONFIG_VARIABLE (float, midi_track_buffer_seconds, "midi-track-buffer-seconds", 
 CONFIG_VARIABLE (uint32_t, disk_choice_space_threshold,  "disk-choice-space-threshold", 57600000)
 CONFIG_VARIABLE (bool, auto_analyse_audio, "auto-analyse-audio", false)
 CONFIG_VARIABLE (float, transient_sensitivity, "transient-sensitivity", 50)
-CONFIG_VARIABLE (float, max_transport_speed, "max-transport-speed", 8.0)
+CONFIG_VARIABLE (float, max_transport_speed, "max-transport-speed", 2.0)
 
 /* OSC */
 
@@ -159,7 +166,7 @@ CONFIG_VARIABLE (bool, skip_playback, "skip-playback", true)
 CONFIG_VARIABLE (bool, plugins_stop_with_transport, "plugins-stop-with-transport", false)
 CONFIG_VARIABLE (bool, recording_resets_xrun_count, "recording-resets-xrun-count,", false)
 CONFIG_VARIABLE (bool, stop_recording_on_xrun, "stop-recording-on-xrun", false)
-CONFIG_VARIABLE (bool, create_xrun_marker, "create-xrun-marker", true)
+CONFIG_VARIABLE (bool, create_xrun_marker, "create-xrun-marker", false)
 CONFIG_VARIABLE (bool, stop_at_session_end, "stop-at-session-end", false)
 CONFIG_VARIABLE (float, preroll_seconds, "preroll-seconds", -2.0f)
 CONFIG_VARIABLE (bool, loop_is_mode, "loop-is-mode", false)
@@ -168,12 +175,14 @@ CONFIG_VARIABLE (samplecnt_t, preroll, "preroll", 0)
 CONFIG_VARIABLE (samplecnt_t, postroll, "postroll", 0)
 CONFIG_VARIABLE (float, shuttle_speed_factor, "shuttle-speed-factor", 1.0f) // used for MMC shuttle
 CONFIG_VARIABLE (float, shuttle_speed_threshold, "shuttle-speed-threshold", 5.0f) // used for MMC shuttle
-CONFIG_VARIABLE (ShuttleBehaviour, shuttle_behaviour, "shuttle-behaviour", Sprung)
 CONFIG_VARIABLE (ShuttleUnits, shuttle_units, "shuttle-units", Percentage)
 CONFIG_VARIABLE (float, shuttle_max_speed, "shuttle-max-speed", 8.0f)
 CONFIG_VARIABLE (bool, locate_while_waiting_for_sync, "locate-while-waiting-for-sync", false)
 CONFIG_VARIABLE (bool, disable_disarm_during_roll, "disable-disarm-during-roll", false)
 CONFIG_VARIABLE (AutoReturnTarget, auto_return_target_list, "auto-return-target-list", AutoReturnTarget(LastLocate|RangeSelectionStart|Loop|RegionSelectionStart))
+CONFIG_VARIABLE (bool, reset_default_speed_on_stop, "reset-default-speed-on-stop", false)
+CONFIG_VARIABLE (bool, rewind_ffwd_like_tape_decks, "rewind-ffwd-like-tape-decks", true)
+CONFIG_VARIABLE (bool, auto_return_after_rewind_ffwd, "auto-return-after-rewind-ffwd", false)
 
 /* metering */
 
@@ -209,6 +218,7 @@ CONFIG_VARIABLE_SPECIAL (std::string, default_session_parent_dir, "default-sessi
 #endif
 CONFIG_VARIABLE (bool, allow_special_bus_removal, "allow-special-bus-removal", false)
 CONFIG_VARIABLE (int32_t, processor_usage, "processor-usage", -1)
+CONFIG_VARIABLE (int32_t, cpu_dma_latency, "cpu-dma-latency", -1) /* >=0 to enable */
 CONFIG_VARIABLE (gain_t, max_gain, "max-gain", 2.0) /* +6.0dB */
 CONFIG_VARIABLE (uint32_t, max_recent_sessions, "max-recent-sessions", 10)
 CONFIG_VARIABLE (uint32_t, max_recent_templates, "max-recent-templates", 10)
@@ -216,6 +226,7 @@ CONFIG_VARIABLE (double, automation_thinning_factor, "automation-thinning-factor
 CONFIG_VARIABLE (std::string, freesound_download_dir, "freesound-download-dir", Glib::get_home_dir() + "/Freesound/snd")
 CONFIG_VARIABLE (samplecnt_t, range_location_minimum, "range-location-minimum", 128) /* samples */
 CONFIG_VARIABLE (EditMode, edit_mode, "edit-mode", Slide)
+CONFIG_VARIABLE (Temporal::TimeDomain, default_automation_time_domain, "default-automation-time-domain", Temporal::BeatTime)
 
 /* plugin related */
 
@@ -224,15 +235,18 @@ CONFIG_VARIABLE (bool, use_plugin_own_gui, "use-plugin-own-gui", true)
 CONFIG_VARIABLE (bool, use_windows_vst, "use-windows-vst", true)
 CONFIG_VARIABLE (bool, use_lxvst, "use-lxvst", true)
 CONFIG_VARIABLE (bool, use_macvst, "use-macvst", true)
-CONFIG_VARIABLE (bool, discover_vst_on_start, "discover-vst-on-start", false)
+CONFIG_VARIABLE (bool, use_audio_units, "use-audio-units", true)
+CONFIG_VARIABLE (bool, use_vst3, "use-vst3", true)
+CONFIG_VARIABLE (bool, discover_plugins_on_start, "discover-plugins-on-start", false)
 CONFIG_VARIABLE (bool, verbose_plugin_scan, "verbose-plugin-scan", false)
 CONFIG_VARIABLE (bool, conceal_lv1_if_lv2_exists, "conceal-lv1-if-lv2-exists", true)
 CONFIG_VARIABLE (bool, conceal_vst2_if_vst3_exists, "conceal-vst2-if-vst3-exists", true)
-CONFIG_VARIABLE (int, vst_scan_timeout, "vst-scan-timeout", 1200) /* deciseconds, per plugin, <= 0 no timeout */
-CONFIG_VARIABLE (bool, discover_audio_units, "discover-audio-units", false)
+CONFIG_VARIABLE (bool, show_vst3_micro_edit_inline, "show-vst3-micro-edit-inline", true)
 CONFIG_VARIABLE (bool, ask_replace_instrument, "ask-replace-instrument", true)
 CONFIG_VARIABLE (bool, ask_setup_instrument, "ask-setup-instrument", true)
+CONFIG_VARIABLE (uint32_t, plugin_scan_timeout, "plugin-scan-timeout", 150) /* deci-seconds */
 CONFIG_VARIABLE (uint32_t, limit_n_automatables, "limit-n-automatables", 512)
+CONFIG_VARIABLE (uint32_t, plugin_cache_version, "plugin-cache-version", 0)
 
 /* custom user plugin paths */
 CONFIG_VARIABLE (std::string, plugin_path_vst, "plugin-path-vst", "@default@")
@@ -243,8 +257,6 @@ CONFIG_VARIABLE (std::string, plugin_path_vst3, "plugin-path-vst3", "@default@")
 
 CONFIG_VARIABLE (bool, denormal_protection, "denormal-protection", false)
 CONFIG_VARIABLE (DenormalModel, denormal_model, "denormal-model", DenormalFTZDAZ)
-
-/* visibility of various things */
 
 
 /* web addresses used in the program */
@@ -269,5 +281,6 @@ CONFIG_VARIABLE (std::string, video_server_docroot, "video-server-docroot", "C:\
 CONFIG_VARIABLE (bool, show_video_export_info, "show-video-export-info", true)
 CONFIG_VARIABLE (bool, show_video_server_dialog, "show-video-server-dialog", false)
 
+/* export */
 CONFIG_VARIABLE (float, export_preroll, "export-preroll", 2.0) // seconds
-CONFIG_VARIABLE (float, export_silence_threshold, "export-silence-threshold", -INFINITY) // dB
+CONFIG_VARIABLE (float, export_silence_threshold, "export-silence-threshold", -90) // dB

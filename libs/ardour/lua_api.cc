@@ -81,6 +81,12 @@ ARDOUR::LuaAPI::nil_processor ()
 boost::shared_ptr<Processor>
 ARDOUR::LuaAPI::new_luaproc (Session *s, const string& name)
 {
+	return new_luaproc_with_time_domain (s, name, Config->get_default_automation_time_domain());
+}
+
+boost::shared_ptr<Processor>
+ARDOUR::LuaAPI::new_luaproc_with_time_domain (Session *s, const string& name, Temporal::TimeDomain td)
+{
 	if (!s) {
 		return boost::shared_ptr<Processor> ();
 	}
@@ -108,7 +114,41 @@ ARDOUR::LuaAPI::new_luaproc (Session *s, const string& name)
 		return boost::shared_ptr<Processor> ();
 	}
 
-	return boost::shared_ptr<Processor> (new PluginInsert (*s, p));
+	return boost::shared_ptr<Processor> (new PluginInsert (*s, td, p));
+}
+
+boost::shared_ptr<Processor>
+ARDOUR::LuaAPI::new_send (Session* s, boost::shared_ptr<Route> r, boost::shared_ptr<Processor> before)
+{
+	if (!s) {
+		return boost::shared_ptr<Processor> ();
+	}
+
+	boost::shared_ptr<Send> send (new Send (*s, r->pannable (), r->mute_master ()));
+
+	/* make an educated guess at the initial number of outputs for the send */
+	ChanCount outs = before ? before->input_streams () : r->n_outputs();
+
+	try {
+		Glib::Threads::Mutex::Lock lm (AudioEngine::instance ()->process_lock ());
+		send->output()->ensure_io (outs, false, r.get());
+	} catch (AudioEngine::PortRegistrationFailure& err) {
+		error << string_compose (_("Cannot set up new send: %1"), err.what ()) << endmsg;
+		return boost::shared_ptr<Processor> ();
+	}
+
+	if (0 == r->add_processor (send, before)) {
+		return send;
+	}
+
+	return boost::shared_ptr<Processor> ();
+}
+
+std::string
+ARDOUR::LuaAPI::dump_untagged_plugins ()
+{
+	PluginManager& manager = PluginManager::instance ();
+	return manager.dump_untagged_plugins();
 }
 
 PluginInfoList
@@ -175,6 +215,12 @@ ARDOUR::LuaAPI::new_plugin_info (const string& name, ARDOUR::PluginType type)
 boost::shared_ptr<Processor>
 ARDOUR::LuaAPI::new_plugin (Session *s, const string& name, ARDOUR::PluginType type, const string& preset)
 {
+	return new_plugin_with_time_domain (s, name, type, Config->get_default_automation_time_domain(), preset);
+}
+
+boost::shared_ptr<Processor>
+ARDOUR::LuaAPI::new_plugin_with_time_domain (Session *s, const string& name, ARDOUR::PluginType type, Temporal::TimeDomain td, const string& preset)
+{
 	if (!s) {
 		return boost::shared_ptr<Processor> ();
 	}
@@ -197,7 +243,7 @@ ARDOUR::LuaAPI::new_plugin (Session *s, const string& name, ARDOUR::PluginType t
 		}
 	}
 
-	return boost::shared_ptr<Processor> (new PluginInsert (*s, p));
+	return boost::shared_ptr<Processor> (new PluginInsert (*s, td, p));
 }
 
 bool
@@ -244,7 +290,7 @@ ARDOUR::LuaAPI::get_processor_param (boost::shared_ptr<Processor> proc, uint32_t
 {
 	ok=false;
 	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (proc);
-	if (!pi) { return false; }
+	if (!pi) { ok = false; return 0;}
 	return get_plugin_insert_param (pi, which, ok);
 }
 
@@ -302,6 +348,28 @@ ARDOUR::LuaAPI::plugin_automation (lua_State *L)
 	luabridge::Stack<boost::shared_ptr<Evoral::ControlList> >::push (L, c->list ());
 	luabridge::Stack<ParameterDescriptor>::push (L, pd);
 	return 3;
+}
+
+int
+ARDOUR::LuaAPI::desc_scale_points (lua_State *L)
+{
+	typedef ParameterDescriptor T;
+
+	int top = lua_gettop (L);
+	if (top < 1) {
+		return luaL_argerror (L, 1, "invalid number of arguments, :plugin_scale_points (ParameterDescriptor)");
+	}
+
+	T* const pd = luabridge::Userdata::get<T> (L, 1, false);
+	luabridge::LuaRef tbl (luabridge::newTable (L));
+
+	if (pd && pd->scale_points) {
+		for (ARDOUR::ScalePoints::const_iterator i = pd->scale_points->begin(); i != pd->scale_points->end(); ++i) {
+			tbl[i->first] = i->second;
+		}
+	}
+	luabridge::push (L, tbl);
+	return 1;
 }
 
 int
@@ -464,6 +532,13 @@ ARDOUR::LuaAPI::wait_for_process_callback (size_t n_cycles, int64_t timeout_ms)
 		}
 	}
 	return true;
+}
+
+void
+ARDOUR::LuaAPI::segfault ()
+{
+	int* p = NULL;
+	*p = 0;
 }
 
 int
@@ -850,7 +925,7 @@ LuaAPI::Vamp::initialize ()
 }
 
 int
-LuaAPI::Vamp::analyze (boost::shared_ptr<ARDOUR::Readable> r, uint32_t channel, luabridge::LuaRef cb)
+LuaAPI::Vamp::analyze (boost::shared_ptr<ARDOUR::AudioReadable> r, uint32_t channel, luabridge::LuaRef cb)
 {
 	if (!_initialized) {
 		if (!initialize ()) {
@@ -863,7 +938,7 @@ LuaAPI::Vamp::analyze (boost::shared_ptr<ARDOUR::Readable> r, uint32_t channel, 
 	float* data = new float[_bufsize];
 	float* bufs[1] = { data };
 
-	samplecnt_t len = r->readable_length();
+	samplecnt_t len = r->readable_length_samples();
 	samplepos_t pos = 0;
 
 	int rv = 0;
@@ -940,9 +1015,9 @@ LuaAPI::Rubberband::Rubberband (boost::shared_ptr<AudioRegion> r, bool percussiv
 	, _cb (0)
 {
 	_n_channels  = r->n_channels ();
-	_read_len    = r->length () / (double)r->stretch ();
-	_read_start  = r->ancestral_start () + samplecnt_t (r->start () / (double)r->stretch ());
-	_read_offset = _read_start - r->start () + r->position ();
+	_read_len    = r->length_samples () / (double)r->stretch ();
+	_read_start  = r->ancestral_start_sample () + samplecnt_t (r->start_sample () / (double)r->stretch ());
+	_read_offset = _read_start - r->start_sample () + r->position_sample ();
 }
 
 LuaAPI::Rubberband::~Rubberband ()
@@ -989,13 +1064,13 @@ LuaAPI::Rubberband::read (Sample* buf, samplepos_t pos, samplecnt_t cnt, int cha
 
 static void null_deleter (LuaAPI::Rubberband*) {}
 
-boost::shared_ptr<Readable>
+boost::shared_ptr<AudioReadable>
 LuaAPI::Rubberband::readable ()
 {
 	if (!_self) {
 		_self = boost::shared_ptr<Rubberband> (this, &null_deleter);
 	}
-	return boost::dynamic_pointer_cast<Readable> (_self);
+	return boost::dynamic_pointer_cast<AudioReadable> (_self);
 }
 
 bool
@@ -1142,7 +1217,7 @@ LuaAPI::Rubberband::finalize ()
 		boost::shared_ptr<AudioFileSource> afs = boost::dynamic_pointer_cast<AudioFileSource> (*i);
 		assert (afs);
 		afs->done_with_peakfile_writes ();
-		afs->update_header (_region->position (), *now, xnow);
+		afs->update_header (_region->position_sample (), *now, xnow);
 		afs->mark_immutable ();
 		Analyser::queue_source_for_analysis (*i, false);
 		sl.push_back (*i);
@@ -1153,10 +1228,10 @@ LuaAPI::Rubberband::finalize ()
 
 	PropertyList plist;
 	plist.add (Properties::start, 0);
-	plist.add (Properties::length, _region->length ());
+	plist.add (Properties::length, _region->length_samples ());
 	plist.add (Properties::name, region_name);
 	plist.add (Properties::whole_file, true);
-	plist.add (Properties::position, _region->position ());
+	plist.add (Properties::position, _region->position_sample ());
 
 	boost::shared_ptr<Region>      r  = RegionFactory::create (sl, plist);
 	boost::shared_ptr<AudioRegion> ar = boost::dynamic_pointer_cast<AudioRegion> (r);
@@ -1168,9 +1243,9 @@ LuaAPI::Rubberband::finalize ()
 	ar->set_fade_out (_region->fade_out ());
 	*(ar->envelope ()) = *(_region->envelope ());
 
-	ar->set_ancestral_data (_read_start, _read_len, _stretch_ratio, _pitch_ratio);
+	ar->set_ancestral_data (timepos_t (_read_start), timecnt_t (_read_len), _stretch_ratio, _pitch_ratio);
 	ar->set_master_sources (_region->master_sources ());
-	ar->set_length (ar->length () * _stretch_ratio, 0); // XXX
+	ar->set_length (ar->length () * _stretch_ratio); // XXX
 	if (_stretch_ratio != 1.0) {
 		// TODO: apply mapping
 		ar->envelope ()->x_scale (_stretch_ratio);

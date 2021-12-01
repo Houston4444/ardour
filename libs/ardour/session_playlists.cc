@@ -187,6 +187,62 @@ SessionPlaylists::n_playlists () const
 }
 
 boost::shared_ptr<Playlist>
+SessionPlaylists::for_pgroup (string pgroup_id, const PBD::ID& id)
+{
+	if(pgroup_id.length()==0) {
+		/*matching empty pgroup-id's would be meaningless*/
+		return boost::shared_ptr<Playlist>();
+	}
+
+	Glib::Threads::Mutex::Lock lm (lock);
+
+	for (List::iterator i = playlists.begin(); i != playlists.end(); ++i) {
+		if ((*i)->pgroup_id() == pgroup_id) {
+			if ((*i)->get_orig_track_id() == id) {
+				return* i;
+			}
+		}
+	}
+
+	for (List::iterator i = unused_playlists.begin(); i != unused_playlists.end(); ++i) {
+		if ((*i)->pgroup_id() == pgroup_id) {
+			if ((*i)->get_orig_track_id() == id) {
+				return* i;
+			}
+		}
+	}
+
+	return boost::shared_ptr<Playlist>();
+}
+
+std::vector<boost::shared_ptr<Playlist> > 
+SessionPlaylists::playlists_for_pgroup (std::string pgroup)
+{
+	vector<boost::shared_ptr<Playlist> > pl_tr;
+
+	if(pgroup.length()==0) {
+		/*matching empty pgroup-id's would be meaningless*/
+		return pl_tr;
+	}
+
+	Glib::Threads::Mutex::Lock lm (lock);
+
+	for (List::iterator i = playlists.begin(); i != playlists.end(); ++i) {
+		if ((*i)->pgroup_id().compare(pgroup)==0) {
+			pl_tr.push_back (*i);
+		}
+	}
+
+	for (List::iterator i = unused_playlists.begin(); i != unused_playlists.end(); ++i) {
+		if ((*i)->pgroup_id().compare(pgroup)==0) {
+			pl_tr.push_back (*i);
+		}
+	}
+
+	return pl_tr;
+}
+
+boost::shared_ptr<Playlist>
 SessionPlaylists::by_name (string name)
 {
 	Glib::Threads::Mutex::Lock lm (lock);
@@ -290,13 +346,6 @@ SessionPlaylists::destroy_region (boost::shared_ptr<Region> r)
 	}
 }
 
-void
-SessionPlaylists::find_equivalent_playlist_regions (boost::shared_ptr<Region> region, vector<boost::shared_ptr<Region> >& result)
-{
-	for (List::iterator i = playlists.begin(); i != playlists.end(); ++i)
-		(*i)->get_region_list_equivalent_regions (region, result);
-}
-
 /** Return the number of playlists (not regions) that contain @a src
  *  Important: this counts usage in both used and not-used playlists.
  */
@@ -351,7 +400,7 @@ SessionPlaylists::update_after_tempo_map_change ()
 namespace {
 struct id_compare
 {
-	bool operator()(const boost::shared_ptr<Playlist>& p1, const boost::shared_ptr<Playlist>& p2)
+	bool operator()(const boost::shared_ptr<Playlist>& p1, const boost::shared_ptr<Playlist>& p2) const
 	{
 		return p1->id () < p2->id ();
 	}
@@ -503,7 +552,7 @@ SessionPlaylists::load_unused (Session& session, const XMLNode& node)
 	for (niter = nlist.begin(); niter != nlist.end(); ++niter) {
 
 		if ((playlist = XMLPlaylistFactory (session, **niter)) == 0) {
-			error << _("Session: cannot create Playlist from XML description.") << endmsg;
+			error << _("Session: cannot create Unused Playlist from XML description.") << endmsg;
 			continue;
 		}
 

@@ -107,6 +107,8 @@ public:
 
 	void get_connected_latency_range (LatencyRange& range, bool playback) const;
 
+	void collect_latency_from_backend (LatencyRange& range, bool playback) const;
+
 	void set_private_latency_range (LatencyRange& range, bool playback);
 	const LatencyRange&  private_latency_range (bool playback) const;
 
@@ -132,7 +134,8 @@ public:
 	void decrement_external_connections() { if (_externally_connected) _externally_connected--; }
 
 	PBD::Signal1<void,bool> MonitorInputChanged;
-	static PBD::Signal2<void,boost::shared_ptr<Port>,boost::shared_ptr<Port> > PostDisconnect;
+	PBD::Signal3<void,boost::shared_ptr<Port>,boost::shared_ptr<Port>, bool > ConnectedOrDisconnected;
+
 	static PBD::Signal0<void> PortDrop;
 	static PBD::Signal0<void> PortSignalDrop;
 
@@ -154,6 +157,7 @@ public:
 
 	static pframes_t cycle_nframes () { return _cycle_nframes; }
 	static double speed_ratio () { return _speed_ratio; }
+	static uint32_t resampler_quality () { return _resampler_quality; }
 
 protected:
 

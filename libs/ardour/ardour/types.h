@@ -43,12 +43,14 @@
 #include <inttypes.h>
 
 #include "temporal/bbt_time.h"
+#include "temporal/range.h"
+#include "temporal/superclock.h"
 #include "temporal/time.h"
+#include "temporal/timeline.h"
 #include "temporal/types.h"
 
 #include "pbd/id.h"
-
-#include "evoral/Range.h"
+#include "pbd/microseconds.h"
 
 #include "ardour/chan_count.h"
 #include "ardour/plugin_types.h"
@@ -58,7 +60,7 @@
 using Temporal::max_samplepos;
 using Temporal::max_samplecnt;
 
-#if __GNUC__ < 3
+#if defined (__GNUC__) && (__GNUC__ < 3)
 typedef int intptr_t;
 #endif
 
@@ -77,13 +79,16 @@ typedef float    Sample;
 typedef float    pan_t;
 typedef float    gain_t;
 typedef uint32_t layer_t;
-typedef uint64_t microseconds_t;
 typedef uint32_t pframes_t;
 
 /* rebind Temporal position types into ARDOUR namespace */
 typedef Temporal::samplecnt_t samplecnt_t;
 typedef Temporal::samplepos_t samplepos_t;
 typedef Temporal::sampleoffset_t sampleoffset_t;
+
+typedef Temporal::timepos_t timepos_t;
+typedef Temporal::timecnt_t timecnt_t;
+typedef Temporal::superclock_t superclock_t;
 
 static const layer_t    max_layer    = UINT32_MAX;
 
@@ -249,14 +254,6 @@ enum ColorMode {
 	TrackColor
 };
 
-enum RoundMode {
-	RoundDownMaybe  = -2,  ///< Round down only if necessary
-	RoundDownAlways = -1,  ///< Always round down, even if on a division
-	RoundNearest    = 0,   ///< Round to nearest
-	RoundUpAlways   = 1,   ///< Always round up, even if on a division
-	RoundUpMaybe    = 2    ///< Round up only if necessary
-};
-
 enum SnapPref {
 	SnapToAny_Visual    = 0, /**< Snap to the editor's visual snap
 	                          * (incoprorating snap prefs and the current zoom scaling)
@@ -284,7 +281,7 @@ class AnyTime {
 	Type type;
 
 	Timecode::Time     timecode;
-	Timecode::BBT_Time bbt;
+	Temporal::BBT_Time bbt;
 
 	union {
 		samplecnt_t     samples;
@@ -349,47 +346,44 @@ struct MusicSample {
 	MusicSample operator- (MusicSample other) { return MusicSample (sample - other.sample, 0); }
 };
 
-/* XXX: slightly unfortunate that there is this and Evoral::Range<>,
-   but this has a uint32_t id which Evoral::Range<> does not.
-*/
-struct AudioRange {
-	samplepos_t start;
-	samplepos_t end;
+/* Just a Temporal::Range with an ID for identity
+ */
+struct TimelineRange : public Temporal::TimeRange
+{
 	uint32_t id;
 
-	AudioRange (samplepos_t s, samplepos_t e, uint32_t i) : start (s), end (e) , id (i) {}
+	TimelineRange (Temporal::timepos_t const & s, Temporal::timepos_t e, uint32_t i) : Temporal::TimeRange (s, e), id (i) {}
 
-	samplecnt_t length() const { return end - start + 1; }
+	samplecnt_t length_samples() const { return length().samples(); }
 
-	bool operator== (const AudioRange& other) const {
-		return start == other.start && end == other.end && id == other.id;
+	bool operator== (const TimelineRange& other) const {
+		return id == other.id && Temporal::TimeRange::operator== (other);
 	}
 
-	bool equal (const AudioRange& other) const {
-		return start == other.start && end == other.end;
-	}
-
-	Evoral::OverlapType coverage (samplepos_t s, samplepos_t e) const {
-		return Evoral::coverage (start, end, s, e);
+	bool equal (const TimelineRange& other) const {
+		return Temporal::TimeRange::operator== (other);
 	}
 };
 
-struct MusicRange {
-	Timecode::BBT_Time start;
-	Timecode::BBT_Time end;
-	uint32_t id;
+class CueMarker {
+  public:
+	CueMarker (std::string const& text, timepos_t const & position) : _text (text), _position (position) {}
 
-	MusicRange (Timecode::BBT_Time& s, Timecode::BBT_Time& e, uint32_t i)
-		: start (s), end (e), id (i) {}
+	std::string text() const { return _text; }
+	void set_text (std::string const & str) { _text = str; }
 
-	bool operator== (const MusicRange& other) const {
-		return start == other.start && end == other.end && id == other.id;
-	}
+	timepos_t position() const { return _position; }
+	void set_position (timepos_t const & pos) { _position = pos; }
 
-	bool equal (const MusicRange& other) const {
-		return start == other.start && end == other.end;
-	}
+	bool operator== (CueMarker const & other) const { return _position == other.position() && _text == other.text(); }
+	bool operator< (CueMarker const & other) const { return _position < other.position(); }
+
+  private:
+	std::string _text;
+	timepos_t _position;
 };
+
+typedef std::set<CueMarker> CueMarkers;
 
 /*
   Slowest = 6.6dB/sec falloff at update rate of 40ms
@@ -417,8 +411,8 @@ enum MeterHold {
 
 enum EditMode {
 	Slide,
-	Splice,
 	Ripple,
+	RippleAll,
 	Lock
 };
 
@@ -482,6 +476,12 @@ enum MeterLineUp {
 	MeteringLineUp20,
 	MeteringLineUp18,
 	MeteringLineUp15
+};
+
+enum InputMeterLayout {
+	LayoutVertical,
+	LayoutHorizontal,
+	LayoutAutomatic,
 };
 
 enum PFLPosition {
@@ -600,11 +600,6 @@ enum TransportRequestType {
 	TR_Locate    = 0x4
 };
 
-enum ShuttleBehaviour {
-	Sprung,
-	Wheel
-};
-
 enum ShuttleUnits {
 	Percentage,
 	Semitones
@@ -621,6 +616,7 @@ enum SrcQuality {
 };
 
 typedef std::list<samplepos_t> AnalysisFeatureList;
+typedef std::vector<samplepos_t> XrunPositions;
 
 typedef std::list<boost::shared_ptr<Route> > RouteList;
 typedef std::list<boost::shared_ptr<Stripable> > StripableList;
@@ -662,11 +658,6 @@ struct CleanupReport {
 	CleanupReport () : space (0) {}
 	std::vector<std::string> paths;
 	size_t                   space;
-};
-
-enum PositionLockStyle {
-	AudioTime,
-	MusicTime
 };
 
 /** A struct used to describe changes to processors in a route.
@@ -794,9 +785,10 @@ enum MidiTempoMapDisposition {
 };
 
 struct CaptureInfo {
-	samplepos_t start;
-	samplecnt_t samples;
-	samplecnt_t loop_offset;
+	samplepos_t   start;
+	samplecnt_t   samples;
+	samplecnt_t   loop_offset;
+	XrunPositions xruns;
 };
 
 enum LoopFadeChoice {

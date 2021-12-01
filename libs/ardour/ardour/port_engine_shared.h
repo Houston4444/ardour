@@ -121,6 +121,16 @@ private:
 
 }; // class BackendPort
 
+class LIBARDOUR_API BackendMIDIEvent
+{
+public:
+	virtual ~BackendMIDIEvent () {}
+	virtual size_t size () const = 0;
+	virtual pframes_t timestamp () const = 0;
+	virtual const uint8_t* data () const = 0;
+	bool operator< (const BackendMIDIEvent &other) const;
+};
+
 class LIBARDOUR_API PortEngineSharedImpl
 {
 public:
@@ -183,7 +193,8 @@ protected:
 
 	std::vector<PortConnectData *> _port_connection_queue;
 	pthread_mutex_t _port_callback_mutex;
-	bool _port_change_flag;
+
+	GATOMIC_QUAL gint _port_change_flag; /* atomic */
 
 	void port_connect_callback (const std::string& a, const std::string& b, bool conn) {
 		pthread_mutex_lock (&_port_callback_mutex);
@@ -192,9 +203,7 @@ protected:
 	}
 
 	void port_connect_add_remove_callback () {
-		pthread_mutex_lock (&_port_callback_mutex);
-		_port_change_flag = true;
-		pthread_mutex_unlock (&_port_callback_mutex);
+		g_atomic_int_set (&_port_change_flag, 1);
 	}
 
 	virtual void update_system_port_latencies ();
@@ -230,6 +239,10 @@ protected:
 	}
 
 	virtual BackendPort* port_factory (std::string const& name, ARDOUR::DataType dt, ARDOUR::PortFlags flags) = 0;
+
+#ifndef NDEBUG
+	void list_ports () const;
+#endif
 };
 
 } /* namespace ARDOUR */

@@ -32,7 +32,6 @@
 #include <gtkmm/notebook.h>
 
 namespace Gtk {
-	class CellRendererCombo;
 	class ListStore;
 }
 
@@ -59,9 +58,8 @@ private:
 	Gtk::Image    image;
 
 	void update_port_combos ();
-	PBD::ScopedConnection connection_change_connection;
 	void connection_handler ();
-	PBD::ScopedConnection port_reg_connection;
+	PBD::ScopedConnectionList _port_connections;
 
 	struct MidiPortColumns : public Gtk::TreeModel::ColumnRecord {
 		MidiPortColumns() {

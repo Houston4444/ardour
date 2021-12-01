@@ -25,7 +25,7 @@
 			<Tool
 				Name="VCPreBuildEventTool"
 				Description="Prepare configuration file(s)"
-				CommandLine="cd ..&#x0D;&#x0A;del gtk2_ardour\ardour.keys&#x0D;&#x0A;perl msvc32-fixup.pl&#x0D;&#x0A;perl tools/fmt-bindings --platform=&quot;windows&quot; --winkey=&quot;Win&quot; --accelmap  gtk2_ardour/ardour.keys.in &gt; gtk2_ardour/ardour.keys&#x0D;&#x0A;"
+				CommandLine="cd ..&#x0D;&#x0A;del gtk2_ardour\ardour.keys&#x0D;&#x0A;perl msvc32-fixup.pl&#x0D;&#x0A;perl tools/fmt-bindings --platform=&quot;windows&quot; --winkey=&quot;Win&quot; --accelmap 1  gtk2_ardour/ardour.keys.in &gt; gtk2_ardour/ardour.keys&#x0D;&#x0A;"
 			/>
 			<Tool
 				Name="VCCustomBuildTool"
@@ -112,7 +112,7 @@
 			<Tool
 				Name="VCPreBuildEventTool"
 				Description="Prepare configuration file(s)"
-				CommandLine="cd ..&#x0D;&#x0A;del gtk2_ardour\ardour.keys&#x0D;&#x0A;perl msvc32-fixup.pl&#x0D;&#x0A;perl tools/fmt-bindings --platform=&quot;windows&quot; --winkey=&quot;Win&quot; --accelmap  gtk2_ardour/ardour.keys.in &gt; gtk2_ardour/ardour.keys&#x0D;&#x0A;"
+				CommandLine="cd ..&#x0D;&#x0A;del gtk2_ardour\ardour.keys&#x0D;&#x0A;perl msvc32-fixup.pl&#x0D;&#x0A;perl tools/fmt-bindings --platform=&quot;windows&quot; --winkey=&quot;Win&quot; --accelmap 1  gtk2_ardour/ardour.keys.in &gt; gtk2_ardour/ardour.keys&#x0D;&#x0A;"
 			/>
 			<Tool
 				Name="VCCustomBuildTool"
@@ -196,7 +196,7 @@
 			<Tool
 				Name="VCPreBuildEventTool"
 				Description="Prepare configuration file(s)"
-				CommandLine="cd ..&#x0D;&#x0A;del gtk2_ardour\ardour.keys&#x0D;&#x0A;perl msvc32-fixup.pl&#x0D;&#x0A;perl tools/fmt-bindings --platform=&quot;windows&quot; --winkey=&quot;Win&quot; --accelmap  gtk2_ardour/ardour.keys.in &gt; gtk2_ardour/ardour.keys&#x0D;&#x0A;"
+				CommandLine="cd ..&#x0D;&#x0A;del gtk2_ardour\ardour.keys&#x0D;&#x0A;perl msvc32-fixup.pl&#x0D;&#x0A;perl tools/fmt-bindings --platform=&quot;windows&quot; --winkey=&quot;Win&quot; --accelmap 1  gtk2_ardour/ardour.keys.in &gt; gtk2_ardour/ardour.keys&#x0D;&#x0A;"
 			/>
 			<Tool
 				Name="VCCustomBuildTool"
@@ -472,6 +472,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\dsp_stats_ui.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\dsp_stats_window.cc"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\duplicate_routes_dialog.cc"
 				>
 			</File>
@@ -608,6 +616,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\export_analysis_graphs.cc"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\export_channel_selector.cc"
 				>
 			</File>
@@ -708,6 +720,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\input_port_monitor.cc"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\insert_remove_time_dialog.cc"
 				>
 			</File>
@@ -717,6 +733,10 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\interthread_progress_window.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\io_button.cc"
 				>
 			</File>
 			<File
@@ -749,6 +769,10 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\loudness_dialog.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\loudness_settings.cc"
 				>
 			</File>
 			<File
@@ -1008,6 +1032,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\plugin_manager_ui.cc"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\plugin_pin_dialog.cc"
 				>
 			</File>
@@ -1093,6 +1121,18 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\rc_option_editor.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\rec_info_box.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\recorder_group_tabs.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\recorder_ui.cc"
 				>
 			</File>
 			<File
@@ -1312,6 +1352,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\track_record_axis.cc"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\track_selection.cc"
 				>
 			</File>
@@ -1357,6 +1401,10 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\utils_videotl.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\varispeed_dialog.cc"
 				>
 			</File>
 			<File
@@ -1610,6 +1658,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\dsp_stats_ui.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\dsp_stats_window.h"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\duplicate_routes_dialog.h"
 				>
 			</File>
@@ -1691,6 +1747,10 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\enums_convert.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\export_analysis_graphs.h"
 				>
 			</File>
 			<File
@@ -1806,6 +1866,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\input_port_monitor.h"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\insert_remove_time_dialog.h"
 				>
 			</File>
@@ -1815,6 +1879,10 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\interthread_progress_window.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\io_button.h"
 				>
 			</File>
 			<File
@@ -1851,6 +1919,10 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\loudness_dialog.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\loudness_settings.h"
 				>
 			</File>
 			<File
@@ -2138,6 +2210,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\plugin_manager_ui.h"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\plugin_pin_dialog.h"
 				>
 			</File>
@@ -2235,6 +2311,18 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\rc_option_editor.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\rec_info_box.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\recorder_group_tabs.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\recorder_ui.h"
 				>
 			</File>
 			<File
@@ -2482,6 +2570,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\gtk2_ardour\track_record_axis.h"
+				>
+			</File>
+			<File
 				RelativePath="..\gtk2_ardour\track_selection.h"
 				>
 			</File>
@@ -2531,6 +2623,10 @@
 			</File>
 			<File
 				RelativePath="..\gtk2_ardour\utils_videotl.h"
+				>
+			</File>
+			<File
+				RelativePath="..\gtk2_ardour\varispeed_dialog.h"
 				>
 			</File>
 			<File

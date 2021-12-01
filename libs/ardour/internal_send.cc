@@ -159,12 +159,12 @@ InternalSend::use_target (boost::shared_ptr<Route> sendto, bool update_name)
 
 	_send_to->add_send_to_internal_return (this);
 
-	mixbufs.ensure_buffers (_send_to->internal_return ()->input_streams (), _session.get_block_size ());
+	ensure_mixbufs ();
 	mixbufs.set_count (_send_to->internal_return ()->input_streams ());
 
-	_meter->configure_io (ChanCount (DataType::AUDIO, pan_outs ()), ChanCount (DataType::AUDIO, pan_outs ()));
+	_meter->configure_io (_send_to->internal_return ()->input_streams (), _send_to->internal_return ()->input_streams ());
 
-	_send_delay->configure_io (ChanCount (DataType::AUDIO, pan_outs ()), ChanCount (DataType::AUDIO, pan_outs ()));
+	_send_delay->configure_io (_send_to->internal_return ()->input_streams (), _send_to->internal_return ()->input_streams ());
 
 	reset_panner ();
 
@@ -186,7 +186,7 @@ void
 InternalSend::target_io_changed ()
 {
 	assert (_send_to);
-	mixbufs.ensure_buffers (_send_to->internal_return ()->input_streams (), _session.get_block_size ());
+	ensure_mixbufs ();
 	mixbufs.set_count (_send_to->internal_return ()->input_streams ());
 	reset_panner ();
 }
@@ -211,7 +211,7 @@ InternalSend::send_to_going_away ()
 void
 InternalSend::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample, double speed, pframes_t nframes, bool)
 {
-	if ((!_active && !_pending_active) || !_send_to) {
+	if (!check_active() || !_send_to) {
 		_meter->reset ();
 		return;
 	}
@@ -314,7 +314,7 @@ InternalSend::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sa
 		/* we were quiet last time, and we're still supposed to be quiet. */
 		_meter->reset ();
 		Amp::apply_simple_gain (mixbufs, nframes, GAIN_COEFF_ZERO);
-		goto out;
+		return;
 	} else if (tgain != GAIN_COEFF_UNITY) {
 		/* target gain has not changed, but is not zero or unity */
 		Amp::apply_simple_gain (mixbufs, nframes, tgain);
@@ -339,16 +339,22 @@ InternalSend::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sa
 	_thru_delay->run (bufs, start_sample, end_sample, speed, nframes, true);
 
 	/* target will pick up our output when it is ready */
+}
 
-out:
-	_active = _pending_active;
+void
+InternalSend::ensure_mixbufs ()
+{
+	for (DataType::iterator t = DataType::begin (); t != DataType::end (); ++t) {
+		size_t size = (*t == DataType::MIDI) ? _session.engine ().raw_buffer_size (*t) : _session.get_block_size ();
+		mixbufs.ensure_buffers (*t, _send_to->internal_return ()->input_streams ().get (*t), size);
+	}
 }
 
 int
-InternalSend::set_block_size (pframes_t nframes)
+InternalSend::set_block_size (pframes_t)
 {
 	if (_send_to) {
-		mixbufs.ensure_buffers (_send_to->internal_return ()->input_streams (), nframes);
+		ensure_mixbufs ();
 	}
 
 	return 0;
@@ -412,12 +418,13 @@ InternalSend::set_state (const XMLNode& node, int version)
 		 * exist.
 		 */
 
-		if (!IO::connecting_legal) {
-			IO::ConnectingLegal.connect_same_thread (connect_c, boost::bind (&InternalSend::connect_when_legal, this));
+		if (_session.loading()) {
+			Session::AfterConnect.connect_same_thread (connect_c, boost::bind (&InternalSend::after_connect, this));
 		} else {
-			connect_when_legal ();
+			after_connect ();
 		}
 	}
+
 	allow_pan_reset ();
 
 	if (!is_foldback ()) {
@@ -430,7 +437,7 @@ InternalSend::set_state (const XMLNode& node, int version)
 }
 
 int
-InternalSend::connect_when_legal ()
+InternalSend::after_connect ()
 {
 	connect_c.disconnect ();
 

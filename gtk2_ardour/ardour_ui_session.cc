@@ -50,6 +50,7 @@
 
 #include "ardour/audioengine.h"
 #include "ardour/filename_extensions.h"
+#include "ardour/plugin_manager.h"
 #include "ardour/profile.h"
 #include "ardour/session.h"
 #include "ardour/session_utils.h"
@@ -62,6 +63,7 @@
 #include "missing_filesource_dialog.h"
 #include "missing_plugin_dialog.h"
 #include "opts.h"
+#include "plugin_scan_dialog.h"
 #include "public_editor.h"
 #include "save_as_dialog.h"
 #include "session_dialog.h"
@@ -474,15 +476,25 @@ ARDOUR_UI::load_session_stage_two (const std::string& path, const std::string& s
 	{
 		list<string> const u = new_session->missing_filesources (DataType::MIDI);
 		if (!u.empty()) {
-			MissingFileSourceDialog d (_session, u, DataType::MIDI);
+			MissingFileSourceDialog d (_main_window, _session, u, DataType::MIDI);
 			d.run ();
 		}
 	}
 	{
 		list<string> const u = new_session->unknown_processors ();
+		bool scan_now = false;
 		if (!u.empty()) {
-			MissingPluginDialog d (_session, u);
-			d.run ();
+			MissingPluginDialog d (_main_window, _session, u, PluginManager::instance ().cache_valid ());
+			if (d.run () == RESPONSE_YES) {
+				scan_now = true;
+			}
+		}
+		if (scan_now) {
+			PluginScanDialog psd (false, true);
+			psd.start ();
+		}
+		if (!u.empty()) {
+			show_plugin_manager ();
 		}
 	}
 
@@ -514,18 +526,11 @@ ARDOUR_UI::load_session_stage_two (const std::string& path, const std::string& s
 		_session->set_clean ();
 	}
 
-#ifdef WINDOWS_VST_SUPPORT
-	fst_stop_threading();
-#endif
-
 	{
 		Timers::TimerSuspender t;
 		flush_pending (10);
 	}
 
-#ifdef WINDOWS_VST_SUPPORT
-	fst_start_threading();
-#endif
 	retval = 0;
 
 	if (!mix_template.empty ()) {

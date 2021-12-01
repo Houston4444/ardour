@@ -625,7 +625,7 @@ PulseAudioBackend::_start (bool /*for_latency_measurement*/)
 	engine.reconnect_ports ();
 
 	_run = true;
-	_port_change_flag = false;
+	g_atomic_int_set (&_port_change_flag, 0);
 
 	if (pbd_realtime_pthread_create (PBD_SCHED_FIFO, PBD_RT_PRI_MAIN, PBD_RT_STACKSIZE_PROC,
 	                                 &_main_thread, pthread_process, this)) {
@@ -664,6 +664,9 @@ PulseAudioBackend::stop ()
 
 	_run = false;
 
+	if (pa_stream_is_corked (p_stream) == 0) {
+		cork_pulse (true);
+	}
 	pa_threaded_mainloop_lock (p_mainloop);
 	sync_pulse (pa_stream_flush (p_stream, stream_operation_cb, this));
 
@@ -1019,23 +1022,32 @@ PulseAudioBackend::main_process_thread ()
 			_freewheel = _freewheeling;
 			engine.freewheel_callback (_freewheel);
 
-			/* flush stream before freewheeling */
+			if (_freewheel) {
+				assert (!pa_stream_is_corked (p_stream));
+				if (!cork_pulse (true)) {
+					break;
+				}
+			}
+
+			/* flush stream before and after freewheeling */
+			assert (pa_stream_is_corked (p_stream));
 			pa_threaded_mainloop_lock (p_mainloop);
 			_operation_succeeded = false;
 			if (!sync_pulse (pa_stream_flush (p_stream, stream_operation_cb, this)) || !_operation_succeeded) {
 				break;
 			}
 
-			/* suspend output while freewheeling, re-anable after */
-			if (!cork_pulse (_freewheel)) {
-				break;
-			}
 			if (!_freewheel) {
+				if (!cork_pulse (false)) {
+					break;
+				}
+#if 0
 				pa_threaded_mainloop_lock (p_mainloop);
 				_operation_succeeded = false;
 				if (!sync_pulse (pa_stream_drain (p_stream, stream_operation_cb, this)) || !_operation_succeeded) {
 					break;
 				}
+#endif
 				_dsp_load_calc.reset ();
 			}
 		}
@@ -1104,9 +1116,8 @@ PulseAudioBackend::main_process_thread ()
 		bool connections_changed = false;
 		bool ports_changed       = false;
 		if (!pthread_mutex_trylock (&_port_callback_mutex)) {
-			if (_port_change_flag) {
-				ports_changed     = true;
-				_port_change_flag = false;
+			if (g_atomic_int_compare_and_exchange (&_port_change_flag, 1, 0)) {
+				ports_changed = true;
 			}
 			if (!_port_connection_queue.empty ()) {
 				connections_changed = true;

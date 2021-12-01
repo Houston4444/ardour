@@ -20,13 +20,13 @@
 #ifndef __libbackend_alsa_audiobackend_h__
 #define __libbackend_alsa_audiobackend_h__
 
-#include <string>
-#include <vector>
 #include <map>
 #include <set>
+#include <string>
+#include <vector>
 
-#include <stdint.h>
 #include <pthread.h>
+#include <stdint.h>
 
 #include <boost/shared_ptr.hpp>
 
@@ -41,23 +41,22 @@
 
 #include "ardouralsautil/deviceinfo.h"
 
-#include "zita-alsa-pcmi.h"
 #include "alsa_rawmidi.h"
 #include "alsa_sequencer.h"
 #include "alsa_slave.h"
+#include "zita-alsa-pcmi.h"
 
 namespace ARDOUR {
 
 class AlsaAudioBackend;
 
-class AlsaMidiEvent {
+class AlsaMidiEvent : public BackendMIDIEvent {
 	public:
 		AlsaMidiEvent (const pframes_t timestamp, const uint8_t* data, size_t size);
 		AlsaMidiEvent (const AlsaMidiEvent& other);
 		size_t size () const { return _size; };
 		pframes_t timestamp () const { return _timestamp; };
 		const uint8_t* data () const { return _data; };
-		bool operator< (const AlsaMidiEvent &other) const { return timestamp () < other.timestamp (); };
 	private:
 		size_t _size;
 		pframes_t _timestamp;

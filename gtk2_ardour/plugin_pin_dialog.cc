@@ -1636,9 +1636,22 @@ PluginPinWidget::add_remove_port_clicked (bool add, ARDOUR::DataType dt)
 	ChanCount out = _out;
 	ChanCount sinks = _sinks;
 	assert (add || out.get (dt) > 0);
+	uint32_t n_before = std::min (out.get (dt), _sources.get (dt) * _n_plugins);
 	out.set (dt, out.get (dt) + (add ? 1 : -1));
 	if (!_route ()->customize_plugin_insert (_pi, _n_plugins, out, sinks)) {
 		error_message_dialog (_("Failed to alter plugin output configuration."));
+	} else if (add && dt == DataType::AUDIO) {
+		ChanCount ins, outs, src;
+		_pi->configured_io (ins, outs);
+		src = _pi->natural_output_streams ();
+		for (uint32_t i = n_before; i < outs.get (dt); ++i) {
+			uint32_t pc = i / src.get (dt);
+			uint32_t pn = i % src.get (dt);
+			assert (pc <= _n_plugins);
+			ChanMapping map (_pi->output_map (pc));
+			map.set (dt, pn, pn);
+			_pi->set_output_map (pc, map);
+		}
 	}
 }
 
@@ -1743,7 +1756,6 @@ PluginPinWidget::add_send_from (boost::weak_ptr<ARDOUR::Port> wp, boost::weak_pt
 		return;
 	}
 
-	boost::shared_ptr<Pannable> sendpan (new Pannable (*_session));
 	boost::shared_ptr<Send> send (new Send (*_session, r->pannable (), r->mute_master ()));
 	const ChanCount& outs (r->amp ()->input_streams ());
 	try {

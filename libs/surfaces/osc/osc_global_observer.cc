@@ -115,7 +115,6 @@ OSCGlobalObserver::OSCGlobalObserver (OSC& o, Session& s, ArdourSurface::OSC::OS
 		session->TransportLooped.connect(session_connections, MISSING_INVALIDATOR, boost::bind (&OSCGlobalObserver::send_transport_state_changed, this), OSC::instance());
 		session->RecordStateChanged.connect(session_connections, MISSING_INVALIDATOR, boost::bind (&OSCGlobalObserver::send_record_state_changed, this), OSC::instance());
 		send_record_state_changed ();
-		session->locations_modified.connect(session_connections, MISSING_INVALIDATOR, boost::bind (&OSCGlobalObserver::marks_changed, this), OSC::instance());
 		marks_changed ();
 
 		// session feedback
@@ -243,9 +242,9 @@ OSCGlobalObserver::tick ()
 			_osc.text_message (X_("/position/smpte"), os.str(), addr);
 		}
 		if (feedback[5]) { // Bar beat enabled
-			Timecode::BBT_Time bbt_time;
+			Temporal::BBT_Time bbt_time;
 
-			session->bbt_time (now_sample, bbt_time);
+			session->bbt_time (timepos_t (now_sample), bbt_time);
 
 			// semantics:  BBB/bb/tttt
 			ostringstream os;
@@ -287,6 +286,10 @@ OSCGlobalObserver::tick ()
 		}
 		_last_sample = now_sample;
 		mark_update ();
+	} else {
+		if (!_heartbeat) {
+			marks_changed ();
+		}
 	}
 	if (feedback[3]) { //heart beat enabled
 		if (_heartbeat == 10) {
@@ -295,8 +298,6 @@ OSCGlobalObserver::tick ()
 		if (!_heartbeat) {
 			_osc.float_message (X_("/heartbeat"), 0.0, addr);
 		}
-		_heartbeat++;
-		if (_heartbeat > 20) _heartbeat = 0;
 	}
 	if (feedback[7] || feedback[8] || feedback[9]) { // meters enabled
 		// the only meter here is master
@@ -343,6 +344,8 @@ OSCGlobalObserver::tick ()
 		}
 		extra_check ();
 	}
+	_heartbeat++;
+	if (_heartbeat > 20) _heartbeat = 0;
 }
 
 void
@@ -423,16 +426,17 @@ OSCGlobalObserver::send_transport_state_changed()
 void
 OSCGlobalObserver::marks_changed ()
 {
+	lm.clear();
 	const Locations::LocationList& ll (session->locations ()->list ());
 	// get Locations that are marks
 	for (Locations::LocationList::const_iterator l = ll.begin(); l != ll.end(); ++l) {
 		if ((*l)->is_session_range ()) {
-			lm.push_back (LocationMarker(_("start"), (*l)->start ()));
-			lm.push_back (LocationMarker(_("end"), (*l)->end ()));
+			lm.push_back (LocationMarker(_("start"), (*l)->start_sample ()));
+			lm.push_back (LocationMarker(_("end"), (*l)->end_sample ()));
 			continue;
 		}
 		if ((*l)->is_mark ()) {
-			lm.push_back (LocationMarker((*l)->name(), (*l)->start ()));
+			lm.push_back (LocationMarker((*l)->name(), (*l)->start_sample ()));
 		}
 	}
 	// sort them by position
@@ -450,27 +454,24 @@ OSCGlobalObserver::mark_update ()
 		uint32_t prev = 0;
 		uint32_t next = lm.size() - 1;
 		for (uint32_t i = 0; i < lm.size (); i++) {
-			if ((lm[i].when <= _last_sample) && (i > prev)) {
+			if (lm[i].when <= _last_sample) {
 				prev = i;
 			}
-			if ((lm[i].when >= _last_sample) && (i < next)) {
+			if (lm[i].when >= _last_sample) {
 				next = i;
 				break;
 			}
 		}
-		if ((prev_mark != lm[prev].when) || (next_mark != lm[next].when)) {
-			string send_str = lm[prev].label;
+		if (_last_sample > lm[lm.size() - 1].when) {
+			send_str = string_compose ("%1 <-", lm[lm.size() - 1].label);
+		} else if (_last_sample < lm[0].when) {
+			send_str = string_compose ("-> %1", lm[0].label);
+		} else if (prev == next) {
+			send_str = lm[prev].label;
 			prev_mark = lm[prev].when;
 			next_mark = lm[next].when;
-			if (prev != next) {
-				send_str = string_compose ("%1 <-> %2", lm[prev].label, lm[next].label);
-			}
-			if (_last_sample > lm[lm.size() - 1].when) {
-				send_str = string_compose ("%1 <-", lm[lm.size() - 1].label);
-			}
-			if (_last_sample < lm[0].when) {
-				send_str = string_compose ("-> %1", lm[0].label);
-			}
+		} else if ((prev_mark != lm[prev].when) || (next_mark != lm[next].when)) {
+			send_str = string_compose ("%1 <-> %2", lm[prev].label, lm[next].label);
 		}
 	}
 	if (send_str != mark_text) {

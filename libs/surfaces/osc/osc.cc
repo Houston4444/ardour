@@ -42,6 +42,8 @@
 #include <pbd/file_utils.h>
 #include <pbd/failed_constructor.h>
 
+#include "temporal/timeline.h"
+
 #include "ardour/amp.h"
 #include "ardour/session.h"
 #include "ardour/route.h"
@@ -741,9 +743,9 @@ OSC::send_current_value (const char* path, lo_arg** argv, int argc, lo_message m
 }
 
 int
-OSC::_catchall (const char *path, const char *types, lo_arg **argv, int argc, void *data, void *user_data)
+OSC::_catchall (const char *path, const char *types, lo_arg **argv, int argc, lo_message msg, void *user_data)
 {
-	return ((OSC*)user_data)->catchall (path, types, argv, argc, data);
+	return ((OSC*)user_data)->catchall (path, types, argv, argc, msg);
 }
 
 int
@@ -975,7 +977,7 @@ OSC::session_exported (std::string path, std::string name)
 /* path callbacks */
 
 int
-OSC::current_value (const char */*path*/, const char */*types*/, lo_arg **/*argv*/, int /*argc*/, void */*data*/, void* /*user_data*/)
+OSC::current_value (const char */*path*/, const char */*types*/, lo_arg **/*argv*/, int /*argc*/, lo_message /*msg*/, void* /*user_data*/)
 {
 #if 0
 	const char* returl;
@@ -1303,9 +1305,9 @@ OSC::osc_toggle_roll (bool ret2strt)
 	} else {
 
 		if (session->get_play_loop() && Config->get_loop_is_mode()) {
-			session->request_locate (session->locations()->auto_loop_location()->start(), MustRoll);
+			session->request_locate (session->locations()->auto_loop_location()->start().samples(), MustRoll);
 		} else {
-			session->request_transport_speed (1.0f);
+			session->request_roll (TRS_UI);
 		}
 	}
 	return 0;
@@ -2991,7 +2993,7 @@ OSC::scrub (float delta, lo_message msg)
 
 	float speed;
 
-	int64_t now = ARDOUR::get_microseconds ();
+	int64_t now = PBD::get_microseconds ();
 	int64_t diff = now - scrub_time;
 	if (diff > 35000) {
 		// speed 1 (or 0 if jog wheel supports touch)
@@ -3022,7 +3024,7 @@ OSC::scrub (float delta, lo_message msg)
 			session->request_transport_speed (-1);
 		}
 	} else {
-		session->request_transport_speed (0);
+		session->request_stop ();
 	}
 
 	return 0;
@@ -3141,7 +3143,7 @@ OSC::set_marker (const char* types, lo_arg **argv, int argc, lo_message msg)
 				for (Locations::LocationList::const_iterator l = ll.begin(); l != ll.end(); ++l) {
 					if ((*l)->is_mark ()) {
 						if (strcmp (&argv[0]->s, (*l)->name().c_str()) == 0) {
-							session->request_locate ((*l)->start (), MustStop);
+							session->request_locate ((*l)->start_sample (), MustStop);
 							return 0;
 						} else if ((*l)->start () == session->transport_sample()) {
 							cur_mark = (*l);
@@ -3170,7 +3172,7 @@ OSC::set_marker (const char* types, lo_arg **argv, int argc, lo_message msg)
 	// get Locations that are marks
 	for (Locations::LocationList::const_iterator l = ll.begin(); l != ll.end(); ++l) {
 		if ((*l)->is_mark ()) {
-			lm.push_back (LocationMarker((*l)->name(), (*l)->start ()));
+			lm.push_back (LocationMarker((*l)->name(), (*l)->start_sample ()));
 		}
 	}
 	// sort them by position
@@ -3217,6 +3219,12 @@ OSC::click_level (float position)
 		session->click_gain()->gain_control()->set_value (session->click_gain()->gain_control()->interface_to_internal (position), PBD::Controllable::NoGroup);
 	}
 	return 0;
+}
+
+void
+OSC::loop_location (int start, int end)
+{
+	BasicUI::loop_location (timepos_t (start), timepos_t (end));
 }
 
 int
@@ -3497,7 +3505,6 @@ OSC::select_parse (const char *path, const char* types, lo_arg **argv, int argc,
 	}
 
 	return ret;
-
 }
 
 
@@ -3628,7 +3635,6 @@ OSC::_strip_parse (const char *path, const char *sub_path, const char* types, lo
 	OSCSurface *sur = get_surface(get_address (msg));
 	bool send_active = strp && sur->temp_mode == BusOnly && get_send (s, get_address (msg));
 	bool control_disabled = strp && (sur->temp_mode == BusOnly) && (s != sur->temp_master);
-	bool n_ma = !s->is_master();
 	bool n_mo = !s->is_monitor();
 	boost::shared_ptr<Route> rt = boost::dynamic_pointer_cast<Route> (s);
 
@@ -3669,6 +3675,8 @@ OSC::_strip_parse (const char *path, const char *sub_path, const char* types, lo
 						} else {
 							abs = dB_to_coefficient (db);
 						}
+					} else {
+						abs = 0;
 					}
 					float top = gain_control->upper();
 					if (abs > top) {
@@ -4452,11 +4460,11 @@ OSC::touch_detect (const char *path, const char* types, lo_arg **argv, int argc,
 		if (control) {
 			if (touch) {
 				//start touch
-				control->start_touch (control->session().transport_sample());
+				control->start_touch (timepos_t (control->session().transport_sample()));
 				ret = 0;
 			} else {
 				// end touch
-				control->stop_touch (control->session().transport_sample());
+				control->stop_touch (timepos_t (control->session().transport_sample()));
 				ret = 0;
 			}
 			// just in case some crazy surface starts sending control values before touch
@@ -4476,8 +4484,8 @@ OSC::fake_touch (boost::shared_ptr<ARDOUR::AutomationControl> ctrl)
 	if (ctrl) {
 		//start touch
 		if (ctrl->automation_state() == Touch && !ctrl->touching ()) {
-		ctrl->start_touch (ctrl->session().transport_sample());
-		_touch_timeout[ctrl] = 10;
+			ctrl->start_touch (timepos_t (ctrl->session().transport_sample()));
+			_touch_timeout[ctrl] = 10;
 		}
 	}
 
@@ -5080,7 +5088,7 @@ OSC::select_plugin_parameter (const char *path, const char* types, lo_arg **argv
 		const char * par = strstr (&path[25], "/");
 		if (par) {
 			piid = atoi (&path[25]);
-			_sel_plugin (piid, msg);
+			_sel_plugin (piid, get_address (msg));
 			paid = atoi (&par[1]);
 			value = argv[0]->f;
 			// we have plugin id too
@@ -5891,11 +5899,10 @@ OSC::periodic (void)
 
 	if (scrub_speed != 0) {
 		// for those jog wheels that don't have 0 on release (touch), time out.
-		int64_t now = ARDOUR::get_microseconds ();
+		int64_t now = PBD::get_microseconds ();
 		int64_t diff = now - scrub_time;
 		if (diff > 120000) {
 			scrub_speed = 0;
-			session->request_transport_speed (0);
 			// locate to the place PH was at last tick
 			session->request_locate (scrub_place, MustStop);
 		}
@@ -5927,7 +5934,7 @@ OSC::periodic (void)
 		if (!(*x).second) {
 			boost::shared_ptr<ARDOUR::AutomationControl> ctrl = (*x).first;
 			// turn touch off
-			ctrl->stop_touch (ctrl->session().transport_sample());
+			ctrl->stop_touch (timepos_t (ctrl->session().transport_sample()));
 			_touch_timeout.erase (x++);
 		} else {
 			x++;
@@ -6220,7 +6227,6 @@ OSC::cue_parse (const char *path, const char* types, lo_arg **argv, int argc, lo
 int
 OSC::cue_set (uint32_t aux, lo_message msg)
 {
-
 	return _cue_set (aux, get_address (msg));
 }
 
@@ -6604,7 +6610,7 @@ OSC::text_message_with_id (std::string path, uint32_t ssid, std::string val, boo
 // we have to have a sorted list of stripables that have sends pointed at our aux
 // we can use the one in osc.cc to get an aux list
 OSC::Sorted
-OSC::cue_get_sorted_stripables(boost::shared_ptr<Stripable> aux, uint32_t id, lo_message msg)
+OSC::cue_get_sorted_stripables(boost::shared_ptr<Stripable> aux, uint32_t id, lo_address addr)
 {
 	Sorted sorted;
 
@@ -6614,7 +6620,7 @@ OSC::cue_get_sorted_stripables(boost::shared_ptr<Stripable> aux, uint32_t id, lo
 		if (i->sends_only) {
 			boost::shared_ptr<Stripable> s (i->r.lock());
 			sorted.push_back (s);
-			s->DropReferences.connect (*this, MISSING_INVALIDATOR, boost::bind (&OSC::cue_set, this, id, msg), this);
+			s->DropReferences.connect (*this, MISSING_INVALIDATOR, boost::bind (&OSC::_cue_set, this, id, addr), this);
 		}
 	}
 	sort (sorted.begin(), sorted.end(), StripableByPresentationOrder());

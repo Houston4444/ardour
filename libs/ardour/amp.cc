@@ -43,7 +43,7 @@ using namespace PBD;
 #define GAIN_COEFF_DELTA (1e-5)
 
 Amp::Amp (Session& s, const std::string& name, boost::shared_ptr<GainControl> gc, bool control_midi_also)
-	: Processor(s, "Amp")
+	: Processor(s, "Amp", Temporal::AudioTime)
 	, _apply_gain_automation(false)
 	, _current_gain(GAIN_COEFF_ZERO)
 	, _current_automation_sample (INT64_MAX)
@@ -82,7 +82,7 @@ scale_midi_velocity(Evoral::Event<MidiBuffer::TimeType>& ev, float factor)
 void
 Amp::run (BufferSet& bufs, samplepos_t /*start_sample*/, samplepos_t /*end_sample*/, double /*speed*/, pframes_t nframes, bool)
 {
-	if (!_active && !_pending_active) {
+	if (!check_active()) {
 		/* disregard potentially prepared gain-automation. */
 		_apply_gain_automation = false;
 		return;
@@ -155,8 +155,6 @@ Amp::run (BufferSet& bufs, samplepos_t /*start_sample*/, samplepos_t /*end_sampl
 			_current_gain = target_gain;
 		}
 	}
-
-	_active = _pending_active;
 }
 
 gain_t
@@ -219,7 +217,7 @@ Amp::apply_gain (BufferSet& bufs, samplecnt_t sample_rate, samplecnt_t nframes, 
 				Evoral::Event<MidiBuffer::TimeType> ev = *m;
 
 				if (ev.is_note_on() || ev.is_note_off()) {
-					const gain_t scale = fabsf (initial + delta * (ev.time() / (double) nframes));
+					const gain_t scale = fabsf (initial + delta * (ev.time() / (float) nframes));
 					if (scale < GAIN_COEFF_SMALL) {
 						m = mb.erase (m);
 						continue;

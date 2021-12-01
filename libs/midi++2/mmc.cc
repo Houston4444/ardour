@@ -32,19 +32,15 @@
 #include "midi++/parser.h"
 
 #ifndef __INT_MAX__   // 'ssize_t' won't be defined yet
+                      // (except in later versions of MSVC)
+#if !defined (_MSC_VER) || (_MSC_VER < 1800)
 typedef long ssize_t;
+#endif
 #endif
 
 using namespace std;
 using namespace MIDI;
 using namespace PBD;
-
-/**
- * As libtimecode is linked statically to libmidi++ this
- * is necessary to pull in all the symbols from libtimecode
- * so they are exported for other users of libtimecode.
- */
-double tmp = Timecode::BBT_Time::ticks_per_beat;
 
 static std::map<int,string> mmc_cmd_map;
 static void build_mmc_cmd_map ()

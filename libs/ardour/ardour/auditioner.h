@@ -100,9 +100,9 @@ private:
 	boost::shared_ptr<AudioRegion> the_region;
 	boost::shared_ptr<MidiRegion> midi_region;
 	samplepos_t current_sample;
-	mutable gint _auditioning;
+	mutable GATOMIC_QUAL gint _auditioning;
 	Glib::Threads::Mutex lock;
-	samplecnt_t length;
+	timecnt_t length;
 	sampleoffset_t _seek_sample;
 	bool _seeking;
 	bool _seek_complete;
@@ -120,7 +120,7 @@ private:
 	static void*_drop_ports (void*);
 	void actually_drop_ports ();
 	void output_changed (IOChange, void*);
-	sampleoffset_t _import_position;
+	timepos_t _import_position;
 };
 
 }; /* namespace ARDOUR */

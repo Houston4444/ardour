@@ -80,7 +80,7 @@ Ruler::Ruler (Item* parent, const Metric& m, Rect const& r)
 }
 
 void
-Ruler::set_range (double l, double u)
+Ruler::set_range (int64_t l, int64_t u)
 {
 	begin_visual_change ();
 	_lower = l;
@@ -233,6 +233,8 @@ Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
 
 
 	}
+
+	render_children (area, cr);
 
 	/* done! */
 }

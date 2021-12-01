@@ -49,7 +49,7 @@ PBD::trace_twb ()
 #include <execinfo.h>
 
 void
-PBD::stacktrace (std::ostream& out, int levels)
+PBD::stacktrace (std::ostream& out, int levels, int start)
 {
 	void *array[200];
 	size_t size;
@@ -58,25 +58,25 @@ PBD::stacktrace (std::ostream& out, int levels)
 
 	size = backtrace (array, 200);
 
-	if (size) {
+	if (size && size >= start) {
 		strings = backtrace_symbols (array, size);
 
 		if (strings) {
 
-			for (i = 0; i < size && (levels == 0 || i < size_t(levels)); i++) {
+			for (i = start; i < size && (levels == 0 || i < size_t(levels)); i++) {
 				out << "  " << demangle (strings[i]) << std::endl;
 			}
 
 			free (strings);
 		}
 	} else {
-		out << "no stacktrace available!" << std::endl;
+		out << "No stacktrace available!" << std::endl;
 	}
 }
 
-#elif defined (PLATFORM_WINDOWS)
+#elif defined PLATFORM_WINDOWS
 
-#if defined DEBUG && !defined CaptureStackBackTrace
+#if !defined CaptureStackBackTrace
 #define CaptureStackBackTrace RtlCaptureStackBackTrace
 
 extern "C" {
@@ -89,52 +89,42 @@ extern "C" {
 #endif
 
 void
-PBD::stacktrace (std::ostream& out, int)
+PBD::stacktrace (std::ostream& out, int levels, int start)
 {
-#ifdef DEBUG
-	const size_t levels = 62; // does not support more then 62 levels of stacktrace
-	unsigned int   i;
-	void         * stack[ levels ];
+	void*          stack[62]; // does not support more then 62 levels of stacktrace
 	unsigned short frames;
-	SYMBOL_INFO  * symbol;
+	SYMBOL_INFO*   symbol;
 	HANDLE         process;
 
 	process = GetCurrentProcess();
-	out << "+++++Backtrace process: " <<  DEBUG_THREAD_SELF << std::endl;
+	out << string_compose ("Backtrace thread: %1", DEBUG_THREAD_SELF) << std::endl;
 
 	SymInitialize (process, NULL, TRUE);
 
-	frames = CaptureStackBackTrace (0, levels, stack, NULL);
+	frames = CaptureStackBackTrace (0, 62, stack, NULL);
 
-	out << "+++++Backtrace frames: " << frames << std::endl;
+	out << "Backtrace frames: " << (int) frames << std::endl;
 
 	symbol               = (SYMBOL_INFO*)calloc (sizeof (SYMBOL_INFO) + 256 * sizeof (char), 1);
 	symbol->MaxNameLen   = 255;
 	symbol->SizeOfStruct = sizeof (SYMBOL_INFO);
 
-	for (i = 0; i < frames; ++i) {
+	for (int i = start; i < frames && (levels == 0 || i < levels); ++i) {
 		SymFromAddr (process, (DWORD64)(stack[i]), 0, symbol);
-		out << string_compose ("%1: %2 - %3\n", frames - i - 1, symbol->Name, symbol->Address);
+		out << string_compose (" %1: %2 - %3\n", frames - i - 1, symbol->Name, symbol->Address);
 	}
 
 	out.flush ();
 
 	free (symbol);
-#endif
 }
 
 #else
 
 void
-PBD::stacktrace (std::ostream& out, int /*levels*/)
+PBD::stacktrace (std::ostream& out, int, int)
 {
 	out << "stack tracing is not enabled on this platform" << std::endl;
 }
 
 #endif
-
-void
-c_stacktrace ()
-{
-	PBD::stacktrace (std::cout);
-}

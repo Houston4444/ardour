@@ -32,6 +32,7 @@
 
 #include <sndfile.h>
 
+#include "pbd/integer_division.h"
 #include "pbd/pthread_utils.h"
 #include "pbd/basename.h"
 #include "pbd/shortpath.h"
@@ -74,6 +75,8 @@ using namespace PBD;
 using namespace Gtk;
 using namespace Gtkmm2ext;
 using namespace Editing;
+using namespace Temporal;
+
 using std::string;
 
 /* Functions supporting the incorporation of external (non-captured) audio material into ardour */
@@ -267,7 +270,7 @@ Editor::get_nth_selected_midi_track (int nth) const
 }
 
 void
-Editor::import_smf_tempo_map (Evoral::SMF const & smf, samplepos_t pos)
+Editor::import_smf_tempo_map (Evoral::SMF const & smf, timepos_t const & pos)
 {
 	if (!_session) {
 		return;
@@ -279,8 +282,19 @@ Editor::import_smf_tempo_map (Evoral::SMF const & smf, samplepos_t pos)
 		return;
 	}
 
-	const samplecnt_t sample_rate = _session->sample_rate ();
-	TempoMap new_map (sample_rate);
+	/* we have to create this in order to start the update process, but
+	   we're going to throw it away by creating our own new map and
+	   populating it. This will go out of scope when we return from this
+	   method.
+	*/
+
+	TempoMap::SharedPtr ignore (TempoMap::write_copy());
+
+	/* cannot create an empty TempoMap, so create one with "default" single
+	   values for tempo and meter, then overwrite them.
+	*/
+
+	TempoMap::SharedPtr new_map (new TempoMap (Tempo (120, 4), Meter (4, 4)));
 	Meter last_meter (4.0, 4.0);
 	bool have_initial_meter = false;
 
@@ -290,27 +304,58 @@ Editor::import_smf_tempo_map (Evoral::SMF const & smf, samplepos_t pos)
 		assert (t);
 
 		Tempo tempo (t->tempo(), 32.0 / (double) t->notes_per_note);
+
+		cerr << "new tempo from SMF : " << tempo << endl;
+
 		Meter meter (t->numerator, t->denominator);
-		Timecode::BBT_Time bbt; /* 1|1|0 which is correct for the no-meter case */
+
+		cerr << "new meter from SMF : " << meter << endl;
+
+
+		Temporal::BBT_Time bbt; /* 1|1|0 which is correct for the no-meter case */
 
 		if (have_initial_meter) {
-			new_map.add_tempo (tempo, t->time_pulses/ (double)smf.ppqn() / 4.0, 0, MusicTime);
+
+			bbt = new_map->bbt_at (timepos_t (Temporal::Beats (int_div_round (t->time_pulses * 4, (size_t) smf.ppqn()), 0)));
+			new_map->set_tempo (tempo, bbt);
+
 			if (!(meter == last_meter)) {
-				bbt = new_map.bbt_at_quarter_note (t->time_pulses/(double)smf.ppqn());
-				new_map.add_meter (meter, bbt, 0, MusicTime);
+				new_map->set_meter (meter, bbt);
 			}
 
 		} else {
-			new_map.replace_meter (new_map.meter_section_at_sample (0), meter, bbt, pos, AudioTime);
-			new_map.replace_tempo (new_map.tempo_section_at_sample (0), tempo, 0.0, pos, AudioTime);
+			new_map->set_meter (meter, bbt);
+			new_map->set_tempo (tempo, bbt);
 			have_initial_meter = true;
-
 		}
 
 		last_meter = meter;
 	}
 
-	_session->tempo_map() = new_map;
+	TempoMap::update (new_map);
+}
+
+void
+Editor::import_smf_markers (Evoral::SMF & smf, timepos_t const & pos)
+{
+	if (!_session) {
+		return;
+	}
+
+	smf.load_markers ();
+
+	Evoral::SMF::Markers const & markers = smf.markers();
+
+	if (markers.empty()) {
+		return;
+	}
+
+	for (Evoral::SMF::Markers::const_iterator m = markers.begin(); m != markers.end(); ++m) {
+		Beats beats = Beats::from_double (m->time_pulses / (double) smf.ppqn());
+		Location* loc = new Location (*_session, timepos_t (beats), timepos_t (Temporal::BeatTime), m->text, Location::IsMark);
+		_session->locations()->add (loc);
+	}
+
 }
 
 void
@@ -320,29 +365,53 @@ Editor::do_import (vector<string>          paths,
                    SrcQuality              quality,
                    MidiTrackNameSource     midi_track_name_source,
                    MidiTempoMapDisposition smf_tempo_disposition,
-                   samplepos_t&            pos,
-                   ARDOUR::PluginInfoPtr   instrument)
+                   timepos_t&              pos,
+                   ARDOUR::PluginInfoPtr   instrument,
+                   bool with_markers)
 {
 	boost::shared_ptr<Track> track;
 	vector<string> to_import;
 	int nth = 0;
-	bool use_timestamp = (pos == -1);
+	bool use_timestamp = (pos == timepos_t::max (pos.time_domain()));
+	std::string const& pgroup_id = Playlist::generate_pgroup_id ();
 
-	if (smf_tempo_disposition == SMFTempoUse) {
-		/* Find the first MIDI file with a tempo map, and import it
-		   before we do anything else.
-		*/
+	/* XXX nutempo2: we will import markers using music (beat) time, which
+	   will make any imported tempo map irrelevant. Not doing that (in 6.7,
+	   before nutempo2) is much more complicated because we don't know
+	   which file may have the tempo map, and if we're importing that
+	   it will change the marker positions. So for now, there's an implicit
+	   limitation that if you import more than 1 MIDI file and the first
+	   has markers but the second has the tempo map, the markers could be
+	   in the wrong position.
+	*/
+
+	if (with_markers || (smf_tempo_disposition == SMFTempoUse)) {
+
+		bool tempo_map_done = false;
 
 		for (vector<string>::iterator a = paths.begin(); a != paths.end(); ++a) {
+
 			Evoral::SMF smf;
+
 			if (smf.open (*a)) {
 				continue;
 			}
-			if (smf.num_tempos() > 0) {
-				import_smf_tempo_map (smf, pos);
-				smf.close ();
-				break;
+
+			/* Find the first MIDI file with a tempo map, and import it
+			   before we do anything else.
+			*/
+			if (!tempo_map_done && smf_tempo_disposition == SMFTempoUse) {
+				if (smf.num_tempos() > 0) {
+					import_smf_tempo_map (smf, pos);
+					tempo_map_done = true;
+				}
 			}
+
+			if (with_markers) {
+
+				import_smf_markers (smf, pos);
+			}
+
 			smf.close ();
 		}
 	}
@@ -372,7 +441,7 @@ Editor::do_import (vector<string>          paths,
 
 		if (!cancel) {
 			ipw.show ();
-			import_sndfiles (paths, disposition, mode, quality, pos, 1, 1, track, false, instrument);
+			import_sndfiles (paths, disposition, mode, quality, pos, 1, 1, track, pgroup_id, false, instrument);
 			import_status.clear();
 		}
 
@@ -403,7 +472,7 @@ Editor::do_import (vector<string>          paths,
 			/* have to reset this for every file we handle */
 
 			if (use_timestamp) {
-				pos = -1;
+				pos = timepos_t::max (pos.time_domain());
 			}
 
 			ipw.show ();
@@ -418,7 +487,7 @@ Editor::do_import (vector<string>          paths,
 					track = get_nth_selected_audio_track (nth++);
 				}
 
-				import_sndfiles (to_import, disposition, mode, quality, pos, 1, -1, track, replace, instrument);
+				import_sndfiles (to_import, disposition, mode, quality, pos, 1, -1, track, pgroup_id, replace, instrument);
 				import_status.clear();
 				break;
 
@@ -427,7 +496,7 @@ Editor::do_import (vector<string>          paths,
 				to_import.clear ();
 				to_import.push_back (*a);
 
-				import_sndfiles (to_import, disposition, mode, quality, pos, -1, -1, track, replace, instrument);
+				import_sndfiles (to_import, disposition, mode, quality, pos, -1, -1, track, pgroup_id, replace, instrument);
 				import_status.clear();
 				break;
 
@@ -436,7 +505,7 @@ Editor::do_import (vector<string>          paths,
 				to_import.clear ();
 				to_import.push_back (*a);
 
-				import_sndfiles (to_import, disposition, mode, quality, pos, 1, 1, track, replace, instrument);
+				import_sndfiles (to_import, disposition, mode, quality, pos, 1, 1, track, pgroup_id, replace, instrument);
 				import_status.clear();
 				break;
 
@@ -451,14 +520,15 @@ Editor::do_import (vector<string>          paths,
 }
 
 void
-Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode mode, samplepos_t& pos, ARDOUR::PluginInfoPtr instrument)
+Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode mode, timepos_t& pos, ARDOUR::PluginInfoPtr instrument)
 {
 	boost::shared_ptr<Track> track;
 	bool check_sample_rate = true;
 	vector<string> to_embed;
 	bool multi = paths.size() > 1;
 	int nth = 0;
-	bool use_timestamp = (pos == -1);
+	bool use_timestamp = (pos == timepos_t::max (pos.time_domain()));
+	std::string const& pgroup_id = Playlist::generate_pgroup_id ();
 
 	switch (import_as) {
 	case Editing::ImportDistinctFiles:
@@ -466,7 +536,7 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 
 			/* have to reset this for every file we handle */
 			if (use_timestamp) {
-				pos = -1;
+				pos = timepos_t::max (pos.time_domain());
 			}
 
 			to_embed.clear ();
@@ -476,7 +546,7 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 				track = get_nth_selected_audio_track (nth++);
 			}
 
-			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, -1, track, instrument) < -1) {
+			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, -1, track, pgroup_id, instrument) < -1) {
 				/* error, bail out */
 				return;
 			}
@@ -488,13 +558,13 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 
 			/* have to reset this for every file we handle */
 			if (use_timestamp) {
-				pos = -1;
+				pos = timepos_t::max (pos.time_domain());
 			}
 
 			to_embed.clear ();
 			to_embed.push_back (*a);
 
-			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, -1, -1, track, instrument) < -1) {
+			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, -1, -1, track, pgroup_id, instrument) < -1) {
 				/* error, bail out */
 				return;
 			}
@@ -502,7 +572,7 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 		break;
 
 	case Editing::ImportMergeFiles:
-		if (embed_sndfiles (paths, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, instrument) < -1) {
+		if (embed_sndfiles (paths, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, pgroup_id, instrument) < -1) {
 			/* error, bail out */
 			return;
 		}
@@ -513,13 +583,13 @@ Editor::do_embed (vector<string> paths, ImportDisposition import_as, ImportMode 
 
 			/* have to reset this for every file we handle */
 			if (use_timestamp) {
-				pos = -1;
+				pos = timepos_t::max (pos.time_domain());
 			}
 
 			to_embed.clear ();
 			to_embed.push_back (*a);
 
-			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, instrument) < -1) {
+			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, pgroup_id, instrument) < -1) {
 				/* error, bail out */
 				return;
 			}
@@ -533,10 +603,11 @@ Editor::import_sndfiles (vector<string>            paths,
                          ImportDisposition         disposition,
                          ImportMode                mode,
                          SrcQuality                quality,
-                         samplepos_t&              pos,
+                         timepos_t&                pos,
                          int                       target_regions,
                          int                       target_tracks,
                          boost::shared_ptr<Track>& track,
+                         std::string const&        pgroup_id,
                          bool                      replace,
                          ARDOUR::PluginInfoPtr     instrument)
 {
@@ -588,7 +659,7 @@ Editor::import_sndfiles (vector<string>            paths,
 			import_status.mode,
 			import_status.target_regions,
 			import_status.target_tracks,
-			track, false, instrument
+			track, pgroup_id, false, instrument
 			);
 
 		/* update position from results */
@@ -605,10 +676,11 @@ Editor::embed_sndfiles (vector<string>            paths,
                         bool&                     check_sample_rate,
                         ImportDisposition         disposition,
                         ImportMode                mode,
-                        samplepos_t&              pos,
+                        timepos_t&              pos,
                         int                       target_regions,
                         int                       target_tracks,
                         boost::shared_ptr<Track>& track,
+                        std::string const&        pgroup_id,
                         ARDOUR::PluginInfoPtr     instrument)
 {
 	boost::shared_ptr<AudioFileSource> source;
@@ -725,7 +797,7 @@ Editor::embed_sndfiles (vector<string>            paths,
 	}
 
 	if (!sources.empty()) {
-		return add_sources (paths, sources, pos, disposition, mode, target_regions, target_tracks, track, true, instrument);
+		return add_sources (paths, sources, pos, disposition, mode, target_regions, target_tracks, track, pgroup_id, true, instrument);
 	}
 
 	return 0;
@@ -734,12 +806,13 @@ Editor::embed_sndfiles (vector<string>            paths,
 int
 Editor::add_sources (vector<string>            paths,
                      SourceList&               sources,
-                     samplepos_t&              pos,
+                     timepos_t&              pos,
                      ImportDisposition         disposition,
                      ImportMode                mode,
                      int                       target_regions,
                      int                       target_tracks,
                      boost::shared_ptr<Track>& track,
+                     std::string const&        pgroup_id,
                      bool                      /*add_channel_suffix*/,
                      ARDOUR::PluginInfoPtr     instrument)
 {
@@ -750,7 +823,7 @@ Editor::add_sources (vector<string>            paths,
 	bool use_timestamp;
 	vector<string> track_names;
 
-	use_timestamp = (pos == -1);
+	use_timestamp = (pos == timepos_t::max (pos.time_domain()));
 
 	// kludge (for MIDI we're abusing "channel" for "track" here)
 	if (SMFSource::safe_midi_file_extension (paths.front())) {
@@ -771,8 +844,8 @@ Editor::add_sources (vector<string>            paths,
 
 		PropertyList plist;
 
-		plist.add (ARDOUR::Properties::start, 0);
-		plist.add (ARDOUR::Properties::length, sources[0]->length (pos));
+		plist.add (ARDOUR::Properties::start, timecnt_t (sources[0]->type() == DataType::AUDIO ? Temporal::AudioTime : Temporal::BeatTime));
+		plist.add (ARDOUR::Properties::length, sources[0]->length ());
 		plist.add (ARDOUR::Properties::name, region_name);
 		plist.add (ARDOUR::Properties::layer, 0);
 		plist.add (ARDOUR::Properties::whole_file, true);
@@ -855,12 +928,14 @@ Editor::add_sources (vector<string>            paths,
 			   is a MIDI region the conversion from samples -> beats -> samples will
 			   round it back down to 0 again.
 			*/
-			samplecnt_t len = (*x)->length (pos);
+			timecnt_t len = (*x)->length ();
+			cerr << "for " << (*x)->name() << " source length appears to be " << len << endl;
 			if (len == 0) {
-				len = (60.0 / 120.0) * _session->sample_rate ();
+				len = timecnt_t (_session->sample_rate ()) / 2;
+				cerr << " reset to use " << len << endl;
 			}
 
-			plist.add (ARDOUR::Properties::start, 0);
+			plist.add (ARDOUR::Properties::start, timecnt_t ((*x)->type() == DataType::AUDIO ? Temporal::AudioTime : Temporal::BeatTime));
 			plist.add (ARDOUR::Properties::length, len);
 			plist.add (ARDOUR::Properties::name, region_name);
 			plist.add (ARDOUR::Properties::layer, 0);
@@ -878,7 +953,7 @@ Editor::add_sources (vector<string>            paths,
 	}
 
 	if (target_regions == 1) {
-		input_chan = regions.front()->n_channels();
+		input_chan = regions.front()->sources().size();
 	} else {
 		if (target_tracks == 1) {
 			input_chan = regions.size();
@@ -894,7 +969,7 @@ Editor::add_sources (vector<string>            paths,
 	}
 
 	int n = 0;
-	samplepos_t rlen = 0;
+	timecnt_t rlen;
 
 	begin_reversible_command (Operations::insert_file);
 
@@ -936,7 +1011,7 @@ Editor::add_sources (vector<string>            paths,
 			}
 		}
 
-		finish_bringing_in_material (*r, input_chan, output_chan, pos, mode, track, track_names[n], instrument);
+		finish_bringing_in_material (*r, input_chan, output_chan, pos, mode, track, track_names[n], pgroup_id, instrument);
 
 		rlen = (*r)->length();
 
@@ -965,10 +1040,11 @@ int
 Editor::finish_bringing_in_material (boost::shared_ptr<Region> region,
                                      uint32_t                  in_chans,
                                      uint32_t                  out_chans,
-                                     samplepos_t&               pos,
+                                     timepos_t&               pos,
                                      ImportMode                mode,
                                      boost::shared_ptr<Track>& existing_track,
-                                     const string&             new_track_name,
+                                     string const&             new_track_name,
+                                     string const&             pgroup_id,
                                      ARDOUR::PluginInfoPtr     instrument)
 {
 	boost::shared_ptr<AudioRegion> ar = boost::dynamic_pointer_cast<AudioRegion>(region);
@@ -997,11 +1073,15 @@ Editor::finish_bringing_in_material (boost::shared_ptr<Region> region,
 		boost::shared_ptr<Playlist> playlist = existing_track->playlist();
 		boost::shared_ptr<Region> copy (RegionFactory::create (region, region->properties()));
 		playlist->clear_changes ();
+		playlist->clear_owned_changes ();
 		playlist->add_region (copy, pos);
-		if (Config->get_edit_mode() == Ripple)
-			playlist->ripple (pos, copy->length(), copy);
 
-		_session->add_command (new StatefulDiffCommand (playlist));
+		if (should_ripple()) {
+			do_ripple (playlist, pos, copy->length(), copy, true);
+		} else {
+			playlist->rdiff_and_add_command (_session);
+		}
+
 		break;
 	}
 
@@ -1014,10 +1094,11 @@ Editor::finish_bringing_in_material (boost::shared_ptr<Region> region,
 				if (at.empty()) {
 					return -1;
 				}
-				if (Config->get_strict_io ()) {
-					for (list<boost::shared_ptr<AudioTrack> >::iterator i = at.begin(); i != at.end(); ++i) {
+				for (list<boost::shared_ptr<AudioTrack> >::iterator i = at.begin(); i != at.end(); ++i) {
+					if (Config->get_strict_io ()) {
 						(*i)->set_strict_io (true);
 					}
+					(*i)->playlist()->set_pgroup_id (pgroup_id);
 				}
 
 				existing_track = at.front();
@@ -1030,13 +1111,22 @@ Editor::finish_bringing_in_material (boost::shared_ptr<Region> region,
 					                          (RouteGroup*) 0,
 					                          1,
 					                          string(),
-					                          PresentationInfo::max_order));
+					                          PresentationInfo::max_order,
+					                          Normal,
+					                          true
+						));
 
 				if (mt.empty()) {
 					return -1;
 				}
 
-				// TODO set strict_io from preferences
+				for (list<boost::shared_ptr<MidiTrack> >::iterator i = mt.begin(); i != mt.end(); ++i) {
+					if (Config->get_strict_io ()) {
+						(*i)->set_strict_io (true);
+					}
+					(*i)->playlist()->set_pgroup_id (pgroup_id);
+				}
+
 				existing_track = mt.front();
 			}
 
@@ -1072,6 +1162,8 @@ Editor::_import_thread (void *arg)
 void *
 Editor::import_thread ()
 {
+	Temporal::TempoMap::fetch ();
+
 	_session->import_files (import_status);
 	return 0;
 }

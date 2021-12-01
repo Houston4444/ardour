@@ -44,6 +44,7 @@ class LIBARDOUR_API SessionEvent {
 public:
 	enum Type {
 		SetTransportSpeed,
+		SetDefaultPlaySpeed,
 		Locate,
 		LocateRoll,
 		LocateRollLocate,
@@ -63,6 +64,10 @@ public:
 		SetTimecodeTransmission,
 		Skip,
 		SetTransportMaster,
+		StartRoll,
+		EndRoll,
+		TransportStateChange,
+		TriggerSceneChange,
 
 		/* only one of each of these events can be queued at any one time */
 
@@ -86,6 +91,7 @@ public:
 		bool             yes_or_no;
 		samplepos_t      target2_sample;
 		OverwriteReason  overwrite;
+		int32_t          scene;
 	};
 
 	boost::weak_ptr<Track> track;
@@ -110,8 +116,8 @@ public:
 	RTeventCallback              rt_return;  /* called after rt_slot, with this event as an argument */
 	PBD::EventLoop*              event_loop;
 
-	std::list<AudioRange> audio_range;
-	std::list<MusicRange> music_range;
+	std::list<TimelineRange> audio_range;
+	std::list<TimelineRange> music_range;
 
 	boost::shared_ptr<Region> region;
 	boost::shared_ptr<TransportMaster> transport_master;

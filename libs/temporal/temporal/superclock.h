@@ -21,15 +21,29 @@
 
 #include <stdint.h>
 
-namespace ARDOUR {
+#include "pbd/integer_division.h"
 
-typedef uint64_t superclock_t;
+#include "temporal/visibility.h"
 
-static const superclock_t superclock_ticks_per_second = 508032000; // 2^10 * 3^4 * 5^3 * 7^2
+namespace Temporal {
 
-static inline superclock_t superclock_to_samples (superclock_t s, int sr) { return (s * sr) / superclock_ticks_per_second; }
-static inline superclock_t samples_to_superclock (int samples, int sr) { return (samples * superclock_ticks_per_second) / sr; }
+typedef int64_t superclock_t;
+
+#ifndef COMPILER_MSVC
+	extern superclock_t superclock_ticks_per_second;
+#else
+	static superclock_t superclock_ticks_per_second = 508032000; // 2^10 * 3^4 * 5^3 * 7^2
+#endif
+
+static inline superclock_t superclock_to_samples (superclock_t s, int sr) { return int_div_round (s * sr, superclock_ticks_per_second); }
+static inline superclock_t samples_to_superclock (int64_t samples, int sr) { return int_div_round (samples * superclock_ticks_per_second, superclock_t (sr)); }
+
+extern int (*sample_rate_callback)();
+
+LIBTEMPORAL_API void set_sample_rate_callback (int (*function)());
 
 }
+
+#define TEMPORAL_SAMPLE_RATE (sample_rate_callback ())
 
 #endif /* __ardour_superclock_h__ */

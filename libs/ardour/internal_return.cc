@@ -28,8 +28,8 @@
 using namespace std;
 using namespace ARDOUR;
 
-InternalReturn::InternalReturn (Session& s)
-	: Return (s, true)
+InternalReturn::InternalReturn (Session& s, Temporal::TimeDomain td, std::string const& name)
+	: Processor (s, name, td)
 {
 	_display_to_user = false;
 }
@@ -37,10 +37,9 @@ InternalReturn::InternalReturn (Session& s)
 void
 InternalReturn::run (BufferSet& bufs, samplepos_t /*start_sample*/, samplepos_t /*end_sample*/, double /*speed*/, pframes_t nframes, bool)
 {
-	if (!_active && !_pending_active) {
+	if (!check_active()) {
 		return;
 	}
-	_active = _pending_active;
 
 	Glib::Threads::Mutex::Lock lm (_sends_mutex, Glib::Threads::TRY_LOCK);
 
@@ -83,7 +82,7 @@ InternalReturn::set_playback_offset (samplecnt_t cnt)
 XMLNode&
 InternalReturn::state ()
 {
-	XMLNode& node (Return::state ());
+	XMLNode& node (Processor::state ());
 	/* override type */
 	node.set_property("type", "intreturn");
 	return node;
@@ -99,6 +98,6 @@ InternalReturn::can_support_io_configuration (const ChanCount& in, ChanCount& ou
 bool
 InternalReturn::configure_io (ChanCount in, ChanCount out)
 {
-	IOProcessor::configure_io (in, out);
+	Processor::configure_io (in, out);
 	return true;
 }

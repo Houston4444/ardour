@@ -28,6 +28,8 @@
 
 #include "pbd/signals.h"
 
+#include "temporal/timeline.h"
+
 #include "ardour/types.h"
 #include "ardour/presentation_info.h"
 
@@ -57,12 +59,13 @@ class LIBCONTROLCP_API BasicUI {
 	/* transport control */
 
 	void loop_toggle ();
-	void loop_location (samplepos_t start, samplepos_t end);
+	void loop_location (Temporal::timepos_t const & start, Temporal::timepos_t const & end);
 	void access_action ( std::string action_path );
 	static PBD::Signal2<void,std::string,std::string> AccessAction;
 	void goto_zero ();
 	void goto_start (bool and_roll = false);
 	void goto_end ();
+	void button_varispeed (bool fwd);
 	void rewind ();
 	void ffwd ();
 	void transport_stop ();
@@ -73,8 +76,8 @@ class LIBCONTROLCP_API BasicUI {
 	double transport_rolling () const;
 
 	void jump_by_seconds (double sec, ARDOUR::LocateTransportDisposition ltd = ARDOUR::RollIfAppropriate);
-	void jump_by_bars (double bars, ARDOUR::LocateTransportDisposition ltd = ARDOUR::RollIfAppropriate);
-	void jump_by_beats (double beats, ARDOUR::LocateTransportDisposition ltd = ARDOUR::RollIfAppropriate);
+	void jump_by_bars (int bars, ARDOUR::LocateTransportDisposition ltd = ARDOUR::RollIfAppropriate);
+	void jump_by_beats (int beats, ARDOUR::LocateTransportDisposition ltd = ARDOUR::RollIfAppropriate);
 
 	ARDOUR::samplepos_t transport_sample ();
 	void locate (ARDOUR::samplepos_t sample, ARDOUR::LocateTransportDisposition ltd);

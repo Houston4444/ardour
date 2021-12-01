@@ -89,7 +89,6 @@ namespace PBD {
 		LIBARDOUR_API extern DebugBits Selection;
 		LIBARDOUR_API extern DebugBits SessionEvents;
 		LIBARDOUR_API extern DebugBits Slave;
-		LIBARDOUR_API extern DebugBits SnapBBT;
 		LIBARDOUR_API extern DebugBits Solo;
 		LIBARDOUR_API extern DebugBits Soundcloud;
 		LIBARDOUR_API extern DebugBits TFSMEvents;
@@ -98,6 +97,7 @@ namespace PBD {
 		LIBARDOUR_API extern DebugBits TempoMap;
 		LIBARDOUR_API extern DebugBits TempoMath;
 		LIBARDOUR_API extern DebugBits Transport;
+		LIBARDOUR_API extern DebugBits Triggers;
 		LIBARDOUR_API extern DebugBits US2400;
 		LIBARDOUR_API extern DebugBits VCA;
 		LIBARDOUR_API extern DebugBits VST3Callbacks;

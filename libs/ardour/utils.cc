@@ -54,7 +54,6 @@
 #include "pbd/cpus.h"
 #include "pbd/control_math.h"
 #include "pbd/error.h"
-#include "pbd/stacktrace.h"
 #include "pbd/xml++.h"
 #include "pbd/basename.h"
 #include "pbd/scoped_file_descriptor.h"
@@ -416,12 +415,12 @@ ARDOUR::compute_equal_power_fades (samplecnt_t nframes, float* in, float* out)
 EditMode
 ARDOUR::string_to_edit_mode (string str)
 {
-	if (str == _("Splice")) {
-		return Splice;
-	} else if (str == _("Slide")) {
+	if (str == _("Slide")) {
 		return Slide;
 	} else if (str == _("Ripple")) {
 		return Ripple;
+	} else if (str == _("Ripple All")) {
+		return RippleAll;
 	} else if (str == _("Lock")) {
 		return Lock;
 	}
@@ -434,18 +433,18 @@ const char*
 ARDOUR::edit_mode_to_string (EditMode mode)
 {
 	switch (mode) {
-	case Slide:
-		return _("Slide");
-
 	case Lock:
 		return _("Lock");
 
 	case Ripple:
 		return _("Ripple");
 
+	case RippleAll:
+		return _("Ripple All");
+
 	default:
-	case Splice:
-		return _("Splice");
+	case Slide:
+		return _("Slide");
 	}
 }
 
@@ -699,8 +698,3 @@ ARDOUR::compute_sha1_of_file (std::string path)
 	sha1_result_hash (&s, hash);
 	return std::string (hash);
 }
-
-extern "C" {
-	void c_stacktrace() { stacktrace (cerr); }
-}
-

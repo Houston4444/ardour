@@ -36,6 +36,7 @@
 #include "ardour/audio_buffer.h"
 #include "ardour/audioengine.h"
 #include "ardour/debug.h"
+#include "ardour/rc_configuration.h"
 #include "ardour/selection.h"
 #include "ardour/session.h"
 #include "ardour/stripable.h"
@@ -48,6 +49,7 @@
 
 using namespace PBD;
 using namespace ARDOUR;
+using namespace Temporal;
 using namespace Steinberg;
 using namespace Presonus;
 
@@ -245,6 +247,15 @@ VST3Plugin::print_parameter (uint32_t port, std::string& rv) const
 Plugin::IOPortDescription
 VST3Plugin::describe_io_port (ARDOUR::DataType dt, bool input, uint32_t id) const
 {
+	if ((dt == DataType::AUDIO &&
+	        ((input && id >= _plug->n_audio_inputs())
+	          || (!input && id >= _plug->n_audio_outputs())))
+	    || (dt == DataType::MIDI &&
+	        ((input && id >= _plug->n_midi_inputs())
+	          || (!input && id >= _plug->n_midi_outputs())))) {
+		return Plugin::describe_io_port(dt, input, id);
+	}
+
 	return _plug->describe_io_port (dt, input, id);
 }
 
@@ -623,15 +634,14 @@ VST3Plugin::connect_and_run (BufferSet&  bufs,
 	context.systemTime           = g_get_monotonic_time ();
 
 	{
-		TempoMap const&           tmap (_session.tempo_map ());
-		const Tempo&              t (tmap.tempo_at_sample (start));
-		const Timecode::BBT_Time& bbt (tmap.bbt_at_sample_rt (start));
-		const MeterSection&       ms (tmap.meter_section_at_sample (start));
+		TempoMap::SharedPtr tmap (TempoMap::use());
+		const TempoMetric&  metric (tmap->metric_at (start));
+		const BBT_Time&     bbt (metric.bbt_at (timepos_t (start)));
 
-		context.tempo              = t.quarter_notes_per_minute ();
-		context.timeSigNumerator   = ms.divisions_per_bar ();
-		context.timeSigDenominator = ms.note_divisor ();
-		context.projectTimeMusic   = tmap.quarter_note_at_sample_rt (start);
+		context.tempo              = metric.tempo().quarter_notes_per_minute ();
+		context.timeSigNumerator   = metric.meter().divisions_per_bar ();
+		context.timeSigDenominator = metric.meter().note_value ();
+		context.projectTimeMusic   = DoubleableBeats (metric.tempo().quarters_at_sample (start)).to_double();
 		context.barPositionMusic   = bbt.bars * 4; // PPQN, NOT tmap.metric_at(bbt).meter().divisions_per_bar()
 	}
 
@@ -648,10 +658,11 @@ VST3Plugin::connect_and_run (BufferSet&  bufs,
 		Location* looploc = _session.locations ()->auto_loop_location ();
 		try {
 			/* loop start/end in quarter notes */
-			TempoMap const& tmap (_session.tempo_map ());
-			context.cycleStartMusic = tmap.quarter_note_at_sample_rt (looploc->start ());
-			context.cycleEndMusic   = tmap.quarter_note_at_sample_rt (looploc->end ());
-			context.state |= Vst::ProcessContext::kCycleValid;
+
+			TempoMap::SharedPtr tmap (TempoMap::use());
+			context.cycleStartMusic = DoubleableBeats (tmap->quarters_at (looploc->start ())).to_double ();
+			context.cycleEndMusic   = DoubleableBeats (tmap->quarters_at (looploc->end ())).to_double ();
+			 context.state |= Vst::ProcessContext::kCycleValid;
 			context.state |= Vst::ProcessContext::kCycleActive;
 		} catch (...) {
 		}
@@ -720,6 +731,16 @@ VST3Plugin::connect_and_run (BufferSet&  bufs,
 
 	/* handle outgoing MIDI events */
 	if (_plug->n_midi_outputs () > 0 && bufs.count ().n_midi () > 0) {
+		/* clear valid in-place MIDI buffers (forward MIDI otherwise) */
+		in_index = 0;
+		for (int32_t i = 0; i < (int32_t)_plug->n_midi_inputs (); ++i) {
+			bool     valid = false;
+			uint32_t index = in_map.get (DataType::MIDI, in_index++, &valid);
+			if (valid && bufs.count ().n_midi () > index) {
+				bufs.get_midi (index).clear ();
+			}
+		}
+
 		_plug->vst3_to_midi_buffers (bufs, out_map);
 	}
 
@@ -834,7 +855,7 @@ VST3Plugin::find_presets ()
 	_preset_uri_map.clear ();
 
 	/* read vst3UnitPrograms */
-	Vst::IUnitInfo* nfo = _plug->unit_info ();
+	IPtr<Vst::IUnitInfo> nfo = _plug->unit_info ();
 	if (nfo && _plug->program_change_port ().id != Vst::kNoParamId) {
 		Vst::UnitID program_unit_id = _plug->program_change_port ().unitId;
 
@@ -1032,43 +1053,65 @@ VST3PI::VST3PI (boost::shared_ptr<ARDOUR::VST3PluginModule> m, std::string uniqu
 #endif
 
 	if (factory->createInstance (_fuid.toTUID (), Vst::IComponent::iid, (void**)&_component) != kResultTrue) {
+		DEBUG_TRACE (DEBUG::VST3Config, "VST3PI create instance failed\n");
 		throw failed_constructor ();
 	}
 
-	if (_component->initialize (HostApplication::getHostContext ()) != kResultOk) {
+	if (!_component || _component->initialize (HostApplication::getHostContext ()) != kResultOk) {
+		DEBUG_TRACE (DEBUG::VST3Config, "VST3PI component initialize failed\n");
 		throw failed_constructor ();
 	}
 
-	_controller = FUnknownPtr<Vst::IEditController> (_component);
+	_controller = FUnknownPtr<Vst::IEditController> (_component).take ();
+
 	if (!_controller) {
 		TUID controllerCID;
 		if (_component->getControllerClassId (controllerCID) == kResultTrue) {
 			if (factory->createInstance (controllerCID, Vst::IEditController::iid, (void**)&_controller) != kResultTrue) {
-				throw failed_constructor ();
-			}
-			if (_controller && (_controller->initialize (HostApplication::getHostContext ()) != kResultOk)) {
+				_component->terminate ();
+				_component->release ();
 				throw failed_constructor ();
 			}
 		}
 	}
 
 	if (!_controller) {
+		DEBUG_TRACE (DEBUG::VST3Config, "VST3PI no controller was found\n");
 		_component->terminate ();
 		_component->release ();
 		throw failed_constructor ();
 	}
+
+	/* The official Steinberg SDK's source/vst/hosting/plugprovider.cpp
+	 * only initializes the controller if it is separate of the component.
+	 *
+	 * However some plugins expect and unconditional call and other
+	 * hosts incl. JUCE based one initialize a controller separately because
+	 * FUnknownPtr<> cast may return a new obeject.
+	 *
+	 * So do not check for errors.
+	 * if Vst::IEditController is-a Vst::IComponent the Controller
+	 * may or may not already be initialized.
+	 */
+	_controller->initialize (HostApplication::getHostContext ());
 
 	if (_controller->setComponentHandler (this) != kResultOk) {
+		_controller->terminate ();
+		_controller->release ();
 		_component->terminate ();
 		_component->release ();
 		throw failed_constructor ();
 	}
 
-	if (!(_processor = FUnknownPtr<Vst::IAudioProcessor> (_component))) {
+	if (!(_processor = FUnknownPtr<Vst::IAudioProcessor> (_component).take ())) {
+		_controller->terminate ();
+		_controller->release ();
 		_component->terminate ();
 		_component->release ();
 		throw failed_constructor ();
 	}
+
+	_processor->addRef ();
 
 	/* prepare process context */
 	memset (&_context, 0, sizeof (Vst::ProcessContext));
@@ -1077,8 +1120,8 @@ VST3PI::VST3PI (boost::shared_ptr<ARDOUR::VST3PluginModule> m, std::string uniqu
 	_n_bus_in  = _component->getBusCount (Vst::kAudio, Vst::kInput);
 	_n_bus_out = _component->getBusCount (Vst::kAudio, Vst::kOutput);
 
-	_busbuf_in.reserve (_n_bus_in);
-	_busbuf_out.reserve (_n_bus_out);
+	_busbuf_in.resize (_n_bus_in);
+	_busbuf_out.resize (_n_bus_out);
 
 	/* do not re-order, _io_name is build in sequence */
 	_n_inputs       = count_channels (Vst::kAudio, Vst::kInput,  Vst::kMain);
@@ -1102,7 +1145,7 @@ VST3PI::VST3PI (boost::shared_ptr<ARDOUR::VST3PluginModule> m, std::string uniqu
 
 	FUnknownPtr<Vst::IEditController2> controller2 (_controller);
 	if (controller2) {
-		controller2->setKnobMode (Vst::kRelativCircularMode);
+		controller2->setKnobMode (Vst::kLinearMode);
 	}
 
 	int32 n_params = _controller->getParameterCount ();
@@ -1168,10 +1211,10 @@ VST3PI::~VST3PI ()
 	terminate ();
 }
 
-Vst::IUnitInfo*
+IPtr<Vst::IUnitInfo>
 VST3PI::unit_info ()
 {
-	Vst::IUnitInfo* nfo = FUnknownPtr<Vst::IUnitInfo> (_component);
+	IPtr<Vst::IUnitInfo> nfo = FUnknownPtr<Vst::IUnitInfo> (_component);
 	if (nfo) {
 		return nfo;
 	}
@@ -1179,7 +1222,7 @@ VST3PI::unit_info ()
 }
 
 #if 0
-Vst::IUnitData*
+IPtr<Vst::IUnitData>
 VST3PI::unit_data ()
 {
 	Vst::IUnitData* iud = FUnknownPtr<Vst::IUnitData> (_component);
@@ -1199,26 +1242,19 @@ VST3PI::terminate ()
 
 	deactivate ();
 
+	_processor->release ();
 	_processor = 0;
 
 	disconnect_components ();
 
-	bool controller_is_component = false;
-	if (_component) {
-		controller_is_component = FUnknownPtr<Vst::IEditController> (_component) != 0;
-		_component->terminate ();
-	}
-
 	if (_controller) {
 		_controller->setComponentHandler (0);
-	}
-
-	if (_controller && controller_is_component == false) {
 		_controller->terminate ();
 		_controller->release ();
 	}
 
 	if (_component) {
+		_component->terminate ();
 		_component->release ();
 	}
 
@@ -1610,7 +1646,7 @@ VST3PI::get_parameter_descriptor (uint32_t port, ParameterDescriptor& desc) cons
 	desc.normal       = _controller->normalizedParamToPlain (id, p.normal);
 	desc.toggled      = 1 == p.steps;
 	desc.logarithmic  = false;
-	desc.integer_step = p.steps > 1 ? p.steps : 0;
+	desc.integer_step = p.steps > 1 && (desc.upper - desc.lower) == p.steps;
 	desc.sr_dependent = false;
 	desc.enumeration  = p.is_enum;
 	desc.label        = p.label;
@@ -1619,11 +1655,16 @@ VST3PI::get_parameter_descriptor (uint32_t port, ParameterDescriptor& desc) cons
 	} else if (p.unit == "Hz") {
 		desc.unit = ARDOUR::ParameterDescriptor::HZ;
 	}
+	if (p.steps > 1) {
+		desc.rangesteps = 1 + p.steps;
+	}
 
 	FUnknownPtr<IEditControllerExtra> extra_ctrl (_controller);
 	if (extra_ctrl && port != designated_bypass_port ()) {
 		int32 flags      = extra_ctrl->getParamExtraFlags (id);
-		desc.inline_ctrl = (flags & kParamFlagMicroEdit) ? true : false;
+		if (Config->get_show_vst3_micro_edit_inline ()) {
+			desc.inline_ctrl = (flags & kParamFlagMicroEdit) ? true : false;
+		}
 	}
 }
 
@@ -1754,10 +1795,10 @@ VST3PI::synchronize_states ()
 			std::cerr << "Failed to synchronize VST3 component <> controller state\n";
 			stream.hexdump (0);
 #endif
-			return false;
 		}
+		return res == kResultOk;
 	}
-	return true;
+	return false;
 }
 
 void
@@ -2259,6 +2300,7 @@ VST3PI::load_state (RAMStream& stream)
 	}
 
 	bool rv = true;
+	bool synced = false;
 
 	/* parse chunks */
 	for (ChunkEntryVector::const_iterator i = entries.begin (); i != entries.end (); ++i) {
@@ -2274,13 +2316,21 @@ VST3PI::load_state (RAMStream& stream)
 			s.rewind ();
 			tresult re2 = _controller->setComponentState (&s);
 
+			if (re2 == kResultOk) {
+				synced = true;
+			}
+
 			if (!(re2 == kResultOk || re2 == kNotImplemented || res == kResultOk || res == kNotImplemented)) {
 				DEBUG_TRACE (DEBUG::VST3Config, "VST3PI::load_state: failed to restore component state\n");
 				rv = false;
 			}
 		} else if (is_equal_ID (i->_id, Vst::getChunkID (Vst::kControllerState))) {
-			stream.seek (i->_offset, IBStream::kIBSeekSet, &seek_result);
-			tresult res = _controller->setState (&stream);
+			ROMStream s (stream, i->_offset, i->_size);
+			tresult res = _controller->setState (&s);
+			if (res == kResultOk) {
+				synced = true;
+			}
+
 			if (!(res == kResultOk || res == kNotImplemented)) {
 				DEBUG_TRACE (DEBUG::VST3Config, "VST3PI::load_state: failed to restore controller state\n");
 				rv = false;
@@ -2302,8 +2352,11 @@ VST3PI::load_state (RAMStream& stream)
 			DEBUG_TRACE (DEBUG::VST3Config, "VST3PI::load_state: ignored unsupported state chunk.\n");
 		}
 	}
+	if (rv && !synced) {
+		synced = synchronize_states ();
+	}
 
-	if (rv) {
+	if (rv && synced) {
 		update_shadow_data ();
 	}
 	return rv;
@@ -2777,7 +2830,7 @@ VST3PI::beginEditContextInfoValue (FIDString id)
 		return kInvalidArgument;
 	}
 	DEBUG_TRACE (DEBUG::VST3Callbacks, string_compose ("VST3PI::beginEditContextInfoValue %1\n", id));
-	ac->start_touch (ac->session ().transport_sample ());
+	ac->start_touch (timepos_t (ac->session ().transport_sample ()));
 	return kResultOk;
 }
 
@@ -2793,7 +2846,7 @@ VST3PI::endEditContextInfoValue (FIDString id)
 		return kInvalidArgument;
 	}
 	DEBUG_TRACE (DEBUG::VST3Callbacks, string_compose ("VST3PI::endEditContextInfoValue %1\n", id));
-	ac->stop_touch (ac->session ().transport_sample ());
+	ac->stop_touch (timepos_t (ac->session ().transport_sample ()));
 	return kResultOk;
 }
 
@@ -2890,7 +2943,7 @@ VST3PI::try_create_view () const
 		view = _controller->createView (0);
 	}
 	if (!view) {
-		view = FUnknownPtr<IPlugView> (_controller);
+		view = FUnknownPtr<IPlugView> (_controller).take ();
 		if (view) {
 			view->addRef ();
 		}

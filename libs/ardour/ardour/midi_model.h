@@ -300,15 +300,15 @@ public:
 	int set_state(const XMLNode&) { return 0; }
 
 	PBD::Signal0<void> ContentsChanged;
-	PBD::Signal1<void, double> ContentsShifted;
+	PBD::Signal1<void, Temporal::timecnt_t> ContentsShifted;
 
 	boost::shared_ptr<const MidiSource> midi_source ();
 	void set_midi_source (boost::shared_ptr<MidiSource>);
 
 	boost::shared_ptr<Evoral::Note<TimeType> > find_note (NotePtr);
 	PatchChangePtr find_patch_change (Evoral::event_id_t);
-	boost::shared_ptr<Evoral::Note<TimeType> > find_note (gint note_id);
-	boost::shared_ptr<Evoral::Event<TimeType> > find_sysex (gint);
+	boost::shared_ptr<Evoral::Note<TimeType> > find_note (Evoral::event_id_t);
+	boost::shared_ptr<Evoral::Event<TimeType> > find_sysex (Evoral::event_id_t);
 
 	InsertMergePolicy insert_merge_policy () const;
 	void set_insert_merge_policy (InsertMergePolicy);

@@ -64,7 +64,6 @@ PannerUI::PannerUI (Session* s)
 {
 	set_session (s);
 
-	ignore_toggle = false;
 	pan_menu = 0;
 	pan_astate_menu = 0;
 	pan_astyle_menu = 0;
@@ -353,7 +352,7 @@ PannerUI::start_touch (boost::weak_ptr<AutomationControl> wac)
 	if (!ac) {
 		return;
 	}
-	ac->start_touch (ac->session().transport_sample());
+	ac->start_touch (timepos_t (ac->session().transport_sample()));
 }
 
 void
@@ -363,7 +362,7 @@ PannerUI::stop_touch (boost::weak_ptr<AutomationControl> wac)
 	if (!ac) {
 		return;
 	}
-	ac->stop_touch (ac->session().transport_sample());
+	ac->stop_touch (timepos_t (ac->session().transport_sample()));
 }
 
 bool
@@ -547,9 +546,7 @@ PannerUI::pan_automation_state_changed ()
 	bool x = (pannable->automation_state() != ARDOUR::Off);
 
 	if (pan_automation_state_button.get_active() != x) {
-		ignore_toggle = true;
 		pan_automation_state_button.set_active (x);
-		ignore_toggle = false;
 	}
 
 	update_pan_sensitive ();

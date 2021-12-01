@@ -35,6 +35,7 @@
 
 #include "ardour/vst_types.h"
 #include "ardour/vst_plugin.h"
+#include "ardour/vst2_scan.h"
 #include "ardour/vestige/vestige.h"
 #include "ardour/session.h"
 #include "ardour/filesystem_paths.h"
@@ -323,7 +324,6 @@ VSTPlugin::set_state (const XMLNode& node, int version)
 			_plugin->dispatcher (_plugin, effSetProgram, 0, pgm, NULL, 0);
 		};
 
-		XMLPropertyList::const_iterator i;
 		XMLNodeList::const_iterator n;
 
 		for (n = child->children ().begin (); n != child->children ().end (); ++n) {
@@ -526,8 +526,9 @@ VSTPlugin::load_user_preset (PresetRecord r)
 
 					if (!(*j)->get_property (X_("index"), index) ||
 					    !(*j)->get_property (X_("value"), value)) {
-					  // flag error and continue?
 						assert (false);
+						// flag error and continue?
+						continue;
 					}
 
 					set_parameter (index, value, 0);
@@ -943,23 +944,25 @@ VSTPlugin::presets_file () const
 }
 
 
-VSTPluginInfo::VSTPluginInfo (VSTInfo* nfo)
+VSTPluginInfo::VSTPluginInfo (VST2Info const& nfo)
 {
 
 	char buf[32];
-	snprintf (buf, sizeof (buf), "%d", nfo->UniqueID);
+	snprintf (buf, sizeof (buf), "%d", nfo.id);
 	unique_id = buf;
 
 	index = 0;
 
-	name = nfo->name;
-	creator = nfo->creator;
-	n_inputs.set_audio  (nfo->numInputs);
-	n_outputs.set_audio (nfo->numOutputs);
-	n_inputs.set_midi  ((nfo->wantMidi & 1) ? 1 : 0);
-	n_outputs.set_midi ((nfo->wantMidi & 2) ? 1 : 0);
+	name     = nfo.name;
+	creator  = nfo.creator;
+	category = nfo.category;
 
-	_is_instrument = nfo->isInstrument;
+	n_inputs.set_audio  (nfo.n_inputs);
+	n_outputs.set_audio (nfo.n_outputs);
+	n_inputs.set_midi   (nfo.n_midi_inputs);
+	n_outputs.set_midi  (nfo.n_midi_outputs);
+
+	_is_instrument = nfo.is_instrument;
 }
 
 bool

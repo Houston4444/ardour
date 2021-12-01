@@ -131,6 +131,12 @@ MTC_TransportMaster::pre_process (MIDI::pframes_t nframes, samplepos_t now, boos
 
 	maybe_reset ();
 
+	if (!_midi_port) {
+		_current_delta = 0;
+		DEBUG_TRACE (DEBUG::MTC, "No MTC port registered");
+		return;
+	}
+
 	_midi_port->read_and_parse_entire_midi_buffer_with_no_speed_adjustment (nframes, parser, now);
 
 	if (session_pos) {
@@ -401,7 +407,6 @@ MTC_TransportMaster::update_mtc_time (const MIDI::byte *msg, bool was_full, samp
 		boost::shared_ptr<TransportMaster> c = TransportMasterManager::instance().current();
 		if (c && c.get() == this && _session->config.get_external_sync()) {
 			_session->set_requested_return_sample (-1);
-			_session->request_transport_speed (0, TRS_MTC);
 			_session->request_locate (mtc_frame, MustStop, TRS_MTC);
 		}
 		update_mtc_status (MIDI::MTC_Stopped);

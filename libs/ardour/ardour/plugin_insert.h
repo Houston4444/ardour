@@ -31,6 +31,7 @@
 
 #include "pbd/stack_allocator.h"
 #include "pbd/timing.h"
+#include "pbd/g_atomic_compat.h"
 
 #include "ardour/ardour.h"
 #include "ardour/libardour_visibility.h"
@@ -58,7 +59,7 @@ class Plugin;
 class LIBARDOUR_API PluginInsert : public Processor
 {
 public:
-	PluginInsert (Session&, boost::shared_ptr<Plugin> = boost::shared_ptr<Plugin>());
+	PluginInsert (Session&, Temporal::TimeDomain td, boost::shared_ptr<Plugin> = boost::shared_ptr<Plugin>());
 	~PluginInsert ();
 
 	void drop_references ();
@@ -87,7 +88,7 @@ public:
 	bool write_immediate_event (Evoral::EventType event_type, size_t size, const uint8_t* buf);
 
 	void automation_run (samplepos_t, pframes_t, bool only_active = false);
-	bool find_next_event (double, double, Evoral::ControlEvent&, bool only_active = true) const;
+	bool find_next_event (Temporal::timepos_t const &, Temporal::timepos_t const &, Evoral::ControlEvent&, bool only_active = true) const;
 
 	int set_block_size (pframes_t nframes);
 
@@ -197,7 +198,7 @@ public:
 	bool load_preset (Plugin::PresetRecord);
 
 	bool provides_stats () const;
-	bool get_stats (uint64_t& min, uint64_t& max, double& avg, double& dev) const;
+	bool get_stats (PBD::microseconds_t& min, PBD::microseconds_t& max, double& avg, double& dev) const;
 	void clear_stats ();
 
 	/** A control that manipulates a plugin parameter (control port). */
@@ -371,7 +372,10 @@ private:
 	/* ordered map [plugin instance ID] => ARDOUR::ChanMapping
 	 * TODO: consider replacing with boost::flat_map<> or std::vector<>.
 	 */
-#if defined(_MSC_VER) && (_MSC_VER < 1900)
+#if defined(_MSC_VER) /* && (_MSC_VER < 1900)
+	                   * Regarding the note (below) it was initially
+	                   * thought that this got fixed in VS2015 - but
+	                   * in fact it's still faulty (JE - Feb 2021) */
 	/* Use the older (heap based) mapping for early versions of MSVC.
 	 * In fact it might be safer to use this for all MSVC builds - as
 	 * our StackAllocator class depends on 'boost::aligned_storage'
@@ -438,10 +442,9 @@ private:
 
 	void preset_load_set_value (uint32_t, float);
 
-	PBD::TimingStats _timing_stats;
-	volatile gint _stat_reset;
-
-	volatile gint _flush;
+	PBD::TimingStats  _timing_stats;
+	GATOMIC_QUAL gint _stat_reset;
+	GATOMIC_QUAL gint _flush;
 };
 
 } // namespace ARDOUR

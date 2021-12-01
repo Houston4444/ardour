@@ -99,7 +99,7 @@ private:
 		Gtk::TreeModelColumn<std::string> name;
 		Gtk::TreeModelColumn<int> channels;
 		Gtk::TreeModelColumn<std::string> tags;
-		Gtk::TreeModelColumn<samplepos_t> position;
+		Gtk::TreeModelColumn<Temporal::timepos_t> position;
 		Gtk::TreeModelColumn<std::string> start;
 		Gtk::TreeModelColumn<std::string> end;
 		Gtk::TreeModelColumn<std::string> length;
@@ -121,10 +121,13 @@ private:
 
 	void freeze_tree_model ();
 	void thaw_tree_model ();
-	void region_changed (boost::shared_ptr<ARDOUR::Region>, PBD::PropertyChange const &);
+	void regions_changed (boost::shared_ptr<ARDOUR::RegionList>, PBD::PropertyChange const &);
 	void selection_changed ();
 
 	sigc::connection _change_connection;
+
+	int           _sort_col_id;
+	Gtk::SortType _sort_type;
 
 	bool selection_filter (const Glib::RefPtr<Gtk::TreeModel>& model, const Gtk::TreeModel::Path& path, bool yn);
 
@@ -155,7 +158,7 @@ private:
 
 	void show_context_menu (int button, int time);
 
-	void format_position (ARDOUR::samplepos_t pos, char* buf, size_t bufsize, bool onoff = true);
+	void format_position (Temporal::timepos_t const & pos, char* buf, size_t bufsize, bool onoff = true);
 
 	void add_region (boost::shared_ptr<ARDOUR::Region>);
 	void destroy_region (boost::shared_ptr<ARDOUR::Region>);

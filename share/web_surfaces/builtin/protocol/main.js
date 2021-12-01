@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright (C) 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 import ArdourClient from '/shared/ardour.js';
 
-(() => {
+{
 
     const MAX_LOG_LINES = 1000;
     
@@ -65,4 +65,4 @@ import ArdourClient from '/shared/ardour.js';
 
     main();
 
-})();
+}

@@ -57,6 +57,8 @@ canvas_sources = [
         'ruler.cc',
         'scroll_group.cc',
         'stateful_image.cc',
+        'step_button.cc',
+	'table.cc',
         'text.cc',
         'tracking_text.cc',
         'types.cc',
@@ -161,6 +163,7 @@ def build(bld):
                     manual_testobj.target       = target
                     manual_testobj.install_path = ''
 
+    
 def shutdown():
     autowaf.shutdown()
 

@@ -88,13 +88,13 @@ public:
 	void handle_fader_touch (Fader&, bool touch_on);
 	void handle_pot (Pot&, float delta);
 
-	void periodic (ARDOUR::microseconds_t now_usecs);
-	void redisplay (ARDOUR::microseconds_t now_usecs, bool force = true);
+	void periodic (PBD::microseconds_t now_usecs);
+	void redisplay (PBD::microseconds_t now_usecs, bool force = true);
 
-	MidiByteArray display (uint32_t line_number, const std::string&);
-	MidiByteArray blank_display (uint32_t line_number);
+	MidiByteArray display (uint32_t lcd_number, uint32_t line_number, const std::string&);
+	MidiByteArray blank_display (uint32_t lcd_number, uint32_t line_number);
 	
-	static std::string format_paramater_for_display(
+	static std::string format_parameter_for_display(
 		ARDOUR::ParameterDescriptor const& desc, 
 		float val, 
 		boost::shared_ptr<ARDOUR::Stripable> stripable_for_non_mixbus_azimuth_automation, 
@@ -136,10 +136,14 @@ private:
 	bool     _controls_locked;
 	bool     _transport_is_rolling;
 	bool     _metering_active;
+	bool     _lcd2_available;
+	uint32_t _lcd2_label_pitch;				// number of label characters including the required space between strips
 	std::string pending_display[2];
 	std::string current_display[2];
-	uint64_t _block_screen_redisplay_until;
-	uint64_t return_to_vpot_mode_display_at;
+	std::string lcd2_pending_display[2];
+	std::string lcd2_current_display[2];
+	PBD::microseconds_t _block_screen_redisplay_until;
+	PBD::microseconds_t return_to_vpot_mode_display_at;
 	boost::shared_ptr<ARDOUR::Stripable> _stripable;
 	PBD::ScopedConnectionList stripable_connections;
 

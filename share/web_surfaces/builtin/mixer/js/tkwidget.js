@@ -1,5 +1,5 @@
 /*
- * Copyright © 2020 Luciano Iam <lucianito@gmail.com>
+ * Copyright © 2020 Luciano Iam <oss@lucianoiam.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -167,7 +167,7 @@ export class Dialog extends BaseDialog {
 
     show () {
         // opening a TK.Dialog with auto_close=true from a TK.Button callback 
-        // fails otherwise ev.stopPropagation() is called in the button event
+        // fails unless ev.stopPropagation() is called in the button event
         // handler or setTimeout() is used here
         setTimeout(() => {
             this.tk.set('display_state', 'show');

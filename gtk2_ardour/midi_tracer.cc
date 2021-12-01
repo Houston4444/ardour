@@ -34,10 +34,13 @@
 #include "ardour/async_midi_port.h"
 #include "ardour/midi_port.h"
 #include "ardour/audioengine.h"
+#include "ardour/transport_master_manager.h"
 
 #include "midi_tracer.h"
 #include "gui_thread.h"
 #include "pbd/i18n.h"
+
+unsigned int MidiTracer::window_count = 0;
 
 using namespace Gtk;
 using namespace std;
@@ -53,7 +56,6 @@ MidiTracer::MidiTracer ()
 	, autoscroll (true)
 	, show_hex (true)
 	, show_delta_time (false)
-	, _update_queued (0)
 	, fifo (1024)
 	, buffer_pool ("miditracer", buffer_size, 1024) // 1024 256 byte buffers
 	, autoscroll_button (_("Auto-Scroll"))
@@ -61,6 +63,11 @@ MidiTracer::MidiTracer ()
 	, collect_button (_("Enabled"))
 	, delta_time_button (_("Delta times"))
 {
+	g_atomic_int_set (&_update_queued, 0);
+
+	std::string portname (string_compose(X_("MIDI Tracer %1"), ++window_count));
+	tracer_port = ARDOUR::AudioEngine::instance()->register_input_port (ARDOUR::DataType::MIDI, portname, false, ARDOUR::IsInput);
+
 	ARDOUR::AudioEngine::instance()->PortRegisteredOrUnregistered.connect
 		(_manager_connection, invalidator (*this), boost::bind (&MidiTracer::ports_changed, this), gui_context());
 
@@ -158,10 +165,14 @@ MidiTracer::port_changed ()
 
 	disconnect ();
 
+	if (_port_combo.get_active_text().empty()) {
+		return;
+	}
+
 	boost::shared_ptr<ARDOUR::Port> p = AudioEngine::instance()->get_port_by_name (_port_combo.get_active_text());
 
 	if (!p) {
-		std::cerr << "port not found\n";
+		std::cerr << "port not found: " << _port_combo.get_active_text() << "\n";
 		return;
 	}
 
@@ -171,16 +182,29 @@ MidiTracer::port_changed ()
 	 * this mess will all go away ...
 	 */
 
+	/* Some ports have a parser avaiable (Transport Masters and ASYNC ports)
+	 * and some do not. If the port has a parser already, just attach to it.
+	 * If not use our local parser and tell the port that we need it to be called.
+	 */
+
 	boost::shared_ptr<AsyncMIDIPort> async = boost::dynamic_pointer_cast<AsyncMIDIPort> (p);
 
 	if (!async) {
 
 		boost::shared_ptr<ARDOUR::MidiPort> mp = boost::dynamic_pointer_cast<ARDOUR::MidiPort> (p);
-
 		if (mp) {
-			my_parser.any.connect_same_thread (_parser_connection, boost::bind (&MidiTracer::tracer, this, _1, _2, _3, _4));
-			mp->set_trace (&my_parser);
-			traced_port = mp;
+			if (mp->flags() & TransportMasterPort) {
+				boost::shared_ptr<TransportMaster> tm = TransportMasterManager::instance().master_by_port(boost::dynamic_pointer_cast<ARDOUR::Port> (p));
+				boost::shared_ptr<TransportMasterViaMIDI> tm_midi = boost::dynamic_pointer_cast<TransportMasterViaMIDI> (tm);
+				if (tm_midi) {
+					tm_midi->transport_parser().any.connect_same_thread(_parser_connection, boost::bind (&MidiTracer::tracer, this, _1, _2, _3, _4));
+				}
+			}
+			else {
+				my_parser.any.connect_same_thread (_parser_connection, boost::bind (&MidiTracer::tracer, this, _1, _2, _3, _4));
+				mp->set_trace (&my_parser);
+				traced_port = mp;
+			}
 		}
 
 	} else {
@@ -200,7 +224,7 @@ MidiTracer::disconnect ()
 }
 
 void
-MidiTracer::tracer (Parser&, byte* msg, size_t len, samplecnt_t now)
+MidiTracer::tracer (Parser&, MIDI::byte* msg, size_t len, samplecnt_t now)
 {
 	stringstream ss;
 	char* buf;
@@ -407,9 +431,8 @@ MidiTracer::tracer (Parser&, byte* msg, size_t len, samplecnt_t now)
 
 	fifo.write (&buf, 1);
 
-	if (g_atomic_int_get (const_cast<gint*> (&_update_queued)) == 0) {
+	if (g_atomic_int_compare_and_exchange (&_update_queued, 0, 1)) {
 		gui_context()->call_slot (invalidator (*this), boost::bind (&MidiTracer::update, this));
-		g_atomic_int_inc (const_cast<gint*> (&_update_queued));
 	}
 }
 
@@ -417,7 +440,7 @@ void
 MidiTracer::update ()
 {
 	bool updated = false;
-	g_atomic_int_dec_and_test (const_cast<gint*> (&_update_queued));
+	g_atomic_int_set (&_update_queued, 0);
 
 	RefPtr<TextBuffer> buf (text.get_buffer());
 

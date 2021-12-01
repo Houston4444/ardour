@@ -30,11 +30,11 @@
 #include "pbd/crossthread.h"
 #include "pbd/ringbuffer.h"
 #include "pbd/pool.h"
+#include "pbd/g_atomic_compat.h"
+
 #include "ardour/libardour_visibility.h"
 #include "ardour/types.h"
 #include "ardour/session_handle.h"
-
-
 
 namespace ARDOUR {
 
@@ -66,8 +66,6 @@ class LIBARDOUR_API Butler : public SessionHandleRef
 	samplecnt_t audio_playback_buffer_size() const { return _audio_playback_buffer_size; }
 	uint32_t midi_buffer_size()  const { return _midi_buffer_size; }
 
-	bool flush_tracks_to_disk_after_locate (boost::shared_ptr<RouteList>, uint32_t& errors);
-
 	static void* _thread_work(void *arg);
 	void*         thread_work();
 
@@ -79,15 +77,18 @@ class LIBARDOUR_API Butler : public SessionHandleRef
 		};
 	};
 
-	pthread_t    thread;
-	bool         have_thread;
-	Glib::Threads::Mutex  request_lock;
-        Glib::Threads::Cond   paused;
-	bool         should_run;
-	mutable gint should_do_transport_work;
-	samplecnt_t  _audio_capture_buffer_size;
-	samplecnt_t  _audio_playback_buffer_size;
-	uint32_t     _midi_buffer_size;
+	pthread_t thread;
+	bool      have_thread;
+
+	Glib::Threads::Mutex      request_lock;
+	Glib::Threads::Cond       paused;
+	bool                      should_run;
+	mutable GATOMIC_QUAL gint should_do_transport_work;
+
+	samplecnt_t _audio_capture_buffer_size;
+	samplecnt_t _audio_playback_buffer_size;
+	uint32_t    _midi_buffer_size;
+
 	PBD::RingBuffer<CrossThreadPool*> pool_trash;
 
 private:
