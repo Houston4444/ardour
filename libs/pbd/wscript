@@ -2,6 +2,7 @@
 from waflib.extras import autowaf as autowaf
 from waflib import Options
 from waflib import TaskGen
+import os
 import sys
 
 # Version of this package (even if built as a child)
@@ -181,6 +182,14 @@ def build(bld):
         obj.source += [ 'windows_mmcss.cc' ]
         obj.uselib += ' OLE'
 
+    # i18n
+    if bld.is_defined('ENABLE_NLS'):
+        mo_files = bld.path.ant_glob('po/*.mo')
+        for mo in mo_files:
+            lang = os.path.basename(mo.srcpath()).replace('.mo', '')
+            bld.install_as(os.path.join(bld.env['LOCALEDIR'], lang, 'LC_MESSAGES', I18N_PACKAGE + '.mo'),
+                           mo)
+
     if bld.env['BUILD_TESTS'] and bld.is_defined('HAVE_CPPUNIT'):
         # Unit tests
         testobj              = bld(features = 'cxx cxxprogram')
@@ -209,3 +218,15 @@ def build(bld):
         testobj.defines      = [ 'PACKAGE="' + I18N_PACKAGE + '"' ]
         if sys.platform != 'darwin' and bld.env['build_target'] != 'mingw':
             testobj.lib      = ['rt', 'dl']
+
+def i18n_func(bld):
+    autowaf.build_i18n(bld, '.', 'libs/pbd', I18N_PACKAGE, libpbd_sources)
+
+def i18n_pot_func(bld):
+    autowaf.build_i18n_pot(bld, '.', 'libs/pbd', I18N_PACKAGE, libpbd_sources)
+
+def i18n_po_func(bld):
+    autowaf.build_i18n_po(bld, '.', 'libs/pbd', I18N_PACKAGE, libpbd_sources)
+
+def i18n_mo_func(bld):
+    autowaf.build_i18n_mo(bld, '.', 'libs/pbd', I18N_PACKAGE, libpbd_sources)

@@ -399,6 +399,7 @@ i18n_children = [
         'libs/ardour',
         'libs/gtkmm2ext',
         'libs/tk/ytk',
+        'libs/pbd'
 ]
 
 def set_compiler_flags (conf,opt):
