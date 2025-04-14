@@ -61,6 +61,8 @@ tags
 /libs/gtkmm2ext/libgtkmm2ext.pot
 /libs/tk/ytk/po/*.mo
 /libs/tk/ytk/*.pot
+/libs/pbd/po/*.mo
+/libs/pbd/*/pot
 /gtk2_ardour/appdata/po/*.mo
 /gtk2_ardour/appdata/*.pot
 /gtk2_ardour/ardour.appdata.xml.in
